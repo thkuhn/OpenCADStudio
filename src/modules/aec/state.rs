@@ -118,7 +118,7 @@ pub enum AecOpeningPreviewMode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AecOpeningCellBuffer {
     pub kind: crate::modules::aec::engine::opening_style::OpeningCellKind,
-    pub hinge: Option<crate::modules::aec::engine::opening_style::HingeSide>,
+    pub hinge: Option<crate::modules::aec::engine::opening_style::LeafOperation>,
     pub sill: String,
 }
 

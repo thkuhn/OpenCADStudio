@@ -3406,20 +3406,28 @@ mod tests {
 
         let mut library = StyleLibrary::default();
         let mut standard = OpeningStyle::standard_window();
-        standard.grid = DivisionGrid {
-            vertical: vec![0.25, 0.75],
-            cells: vec![OpeningCell::default(), OpeningCell::default()],
-            ..DivisionGrid::default()
-        };
+        standard.grid = crate::modules::aec::engine::opening_style::construction_from_division(
+            &DivisionGrid {
+                vertical: vec![0.25, 0.75],
+                cells: vec![OpeningCell::default(), OpeningCell::default()],
+                ..DivisionGrid::default()
+            },
+            standard.default_width,
+            standard.default_height,
+        );
         library.opening_styles.push(standard.clone());
 
         let mut custom = OpeningStyle::standard_window();
         custom.style.id = "custom_window_grid".into();
-        custom.grid = DivisionGrid {
-            vertical: vec![0.4, 0.6],
-            cells: vec![OpeningCell::default(), OpeningCell::default()],
-            ..DivisionGrid::default()
-        };
+        custom.grid = crate::modules::aec::engine::opening_style::construction_from_division(
+            &DivisionGrid {
+                vertical: vec![0.4, 0.6],
+                cells: vec![OpeningCell::default(), OpeningCell::default()],
+                ..DivisionGrid::default()
+            },
+            custom.default_width,
+            custom.default_height,
+        );
         library.opening_styles.push(custom.clone());
 
         let mut unstyled = Opening::from_kind(
@@ -3441,7 +3449,7 @@ mod tests {
         fill_missing_opening_grids(std::slice::from_mut(&mut selected), &library);
         assert_eq!(selected.division_override, Some(custom.grid.clone()));
 
-        let instance_grid = DivisionGrid::default();
+        let instance_grid = crate::modules::aec::engine::construction_grid::ConstructionGrid::default();
         selected.division_override = Some(instance_grid.clone());
         fill_missing_opening_grids(std::slice::from_mut(&mut selected), &library);
         assert_eq!(selected.division_override, Some(instance_grid));

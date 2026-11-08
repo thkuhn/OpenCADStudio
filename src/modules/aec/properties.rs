@@ -6,7 +6,7 @@ use crate::modules::aec::engine::join_ops;
 use crate::modules::aec::engine::junction_pick;
 use crate::modules::aec::engine::opening_display;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
-use crate::modules::aec::engine::opening_style::{apply_style_defaults, HingeSide};
+use crate::modules::aec::engine::opening_style::{apply_style_defaults, LeafOperation};
 use crate::modules::aec::engine::opening_xdata;
 use crate::modules::aec::engine::openings::{
     NicheSide, Opening, OpeningKind, OpeningReferenceSide, SwingSide,
@@ -687,7 +687,7 @@ pub fn apply_opening_property(
             true
         }
         "opening_hinge" => {
-            let h = HingeSide::from_str(val);
+            let h = LeafOperation::from_str(val);
             if opening.hinge == h {
                 return false;
             }
@@ -880,8 +880,8 @@ pub fn opening_prop_section(
             value: crate::scene::model::object::PropValue::Choice {
                 selected: opening.hinge.as_str().to_string(),
                 options: vec![
-                    HingeSide::Left.as_str().into(),
-                    HingeSide::Right.as_str().into(),
+                    LeafOperation::left().as_str().into(),
+                    LeafOperation::right().as_str().into(),
                 ],
             },
         },
@@ -3954,7 +3954,7 @@ mod tests {
     fn hinge_and_arch_spring_apply() {
         let mut o = Opening::door(Handle::new(1), Handle::new(2), 1.0);
         assert!(apply_opening_property(&mut o, "opening_hinge", "Right", None));
-        assert_eq!(o.hinge, HingeSide::Right);
+        assert_eq!(o.hinge, LeafOperation::right());
         assert!(apply_opening_property(&mut o, "opening_shape", "Arch", None));
         assert_eq!(o.shape, OpeningShape::Arch);
         assert!(o.spring_height > 0.0);

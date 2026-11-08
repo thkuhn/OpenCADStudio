@@ -3082,7 +3082,23 @@ pub fn to_toml(lib: &StyleLibrary) -> Result<String, String> {
 /// Chosen format: JSON (via `serde_json`) because the `toml` crate is not
 /// present in Cargo.toml.
 pub fn from_toml(s: &str) -> Result<StyleLibrary, String> {
-    serde_json::from_str(s).map_err(|e| e.to_string())
+    let mut value: serde_json::Value = serde_json::from_str(s).map_err(|e| e.to_string())?;
+    discard_unreadable_opening_styles(&mut value);
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+/// Removes individually unreadable opening styles without discarding the rest
+/// of a style library or project document.
+pub(crate) fn discard_unreadable_opening_styles(value: &mut serde_json::Value) -> bool {
+    let Some(styles) = value
+        .get_mut("opening_styles")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+    let original_len = styles.len();
+    styles.retain(|style| serde_json::from_value::<OpeningStyle>(style.clone()).is_ok());
+    styles.len() != original_len
 }
 
 /// Per-thread scratch dir for the on-disk style / display-config libraries
@@ -3178,7 +3194,9 @@ pub fn load_or_seed() -> StyleLibrary {
                     // in-memory (see `layers_from_serde`). Persist only then
                     // so subsequent loads keep those IDs — a plain read must
                     // not rewrite the file (parallel tests share no lock).
-                    if library_source_missing_layer_ids(&content) {
+                    if library_source_missing_layer_ids(&content)
+                        || library_has_unreadable_opening_styles(&content)
+                    {
                         let _ = save_to_default_path(&lib);
                     }
                     return lib;
@@ -3189,6 +3207,13 @@ pub fn load_or_seed() -> StyleLibrary {
     let seed = seed_default_library();
     let _ = save_to_default_path(&seed);
     seed
+}
+
+fn library_has_unreadable_opening_styles(content: &str) -> bool {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(content) else {
+        return false;
+    };
+    discard_unreadable_opening_styles(&mut value)
 }
 
 /// True when any persisted layer is missing `layer_id` (the deserializer
@@ -3711,7 +3736,7 @@ mod tests {
         assert!(library.opening_styles.iter().all(|style| {
             style.parts.fixed_frame.profile_id.is_none()
                 && style.parts.leaf_frame.profile_id.is_none()
-                && style.grid.profile_id.is_none()
+                && style.grid.muntin_profile_id.is_none()
         }));
     }
 
@@ -4076,6 +4101,48 @@ mod tests {
         let serialized = to_toml(&lib).expect("serialize");
         let back = from_toml(&serialized).expect("deserialize");
         assert_eq!(lib.opening_styles, back.opening_styles);
+    }
+
+    #[test]
+    fn unreadable_opening_style_is_dropped_without_losing_other_library_data() {
+        let library = seed_default_library();
+        let expected_style_count = library.opening_styles.len();
+        let mut value = serde_json::to_value(library).expect("serialize library");
+        value["opening_styles"]
+            .as_array_mut()
+            .expect("opening style array")
+            .push(serde_json::json!({ "invalid": true }));
+
+        let loaded = from_toml(&value.to_string()).expect("load remaining library");
+        assert_eq!(loaded.opening_styles.len(), expected_style_count);
+        assert!(!loaded.materials.is_empty());
+        assert!(!loaded.wall_styles.is_empty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn load_or_seed_persists_removed_opening_styles() {
+        let path = default_library_path();
+        let library = seed_default_library();
+        let expected_style_count = library.opening_styles.len();
+        let mut value = serde_json::to_value(library).expect("serialize library");
+        value["opening_styles"]
+            .as_array_mut()
+            .expect("opening style array")
+            .push(serde_json::json!({ "invalid": true }));
+        std::fs::write(&path, value.to_string()).expect("write library with invalid style");
+
+        let loaded = load_or_seed();
+        assert_eq!(loaded.opening_styles.len(), expected_style_count);
+        let persisted = std::fs::read_to_string(&path).expect("read cleaned library");
+        let persisted_value: serde_json::Value =
+            serde_json::from_str(&persisted).expect("parse cleaned library");
+        assert_eq!(
+            persisted_value["opening_styles"].as_array().unwrap().len(),
+            expected_style_count
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::modules::aec::engine::opening_display::BakedPath;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_style::{
     FamilyPlacement, OpeningCellKind, OpeningEditorGroup, OpeningLookRole, OpeningProfilePart,
-    OpeningStyle, HingeSide,
+    construction_from_division, project_division_sized, OpeningStyle, LeafOperation,
 };
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::project::ProjectFile;
@@ -95,7 +95,8 @@ pub struct OpeningStyleFormState<'a> {
     pub elevation_placement: FamilyPlacement,
     pub angle: &'a str,
     pub spring: &'a str,
-    pub hinge: HingeSide,
+    pub hinge: LeafOperation,
+    pub authored_grid: Option<&'a crate::modules::aec::engine::construction_grid::ConstructionGrid>,
 }
 
 pub fn parts<'a>(
@@ -203,8 +204,8 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         .map(|s| s.as_str().to_string())
         .collect();
     let hinges: Vec<String> = vec![
-        HingeSide::Left.as_str().to_string(),
-        HingeSide::Right.as_str().to_string(),
+        LeafOperation::left().as_str().to_string(),
+        LeafOperation::right().as_str().to_string(),
     ];
     let height_locked = matches!(
         form.shape,
@@ -362,6 +363,8 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         .unwrap_or(preview_style.default_width);
     let preview_height = crate::modules::aec::styles::opening_style_manager::parse_dim(form.height)
         .unwrap_or(preview_style.default_height);
+    let preview_sill = crate::modules::aec::styles::opening_style_manager::parse_dim(form.sill)
+        .unwrap_or(preview_style.default_sill);
     let frame = crate::modules::aec::styles::opening_style_manager::parse_dim(form.frame)
         .unwrap_or(0.06);
     let paths = preview_baked_paths_for_mode_with_library(
@@ -414,6 +417,7 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             mode: form.preview_mode,
             width: preview_width.max(1e-6),
             height: preview_height.max(1e-6),
+            sill: preview_sill.max(0.0),
             thickness: PREVIEW_WALL_THICKNESS,
             frame: frame.max(0.0),
             look_styles,
@@ -486,14 +490,17 @@ fn form_preview_style(form: &OpeningStyleFormState<'_>) -> OpeningStyle {
         spring,
     )
     .unwrap_or_else(|_| OpeningStyle::standard_window());
-    style.grid = crate::modules::aec::styles::opening_style_manager::opening_grid_from_fields(
+    let mut division = crate::modules::aec::styles::opening_style_manager::opening_grid_from_fields(
         form.vertical,
         form.horizontal,
         form.vertical_muntins,
         form.horizontal_muntins,
         form.cells,
     );
-    style.grid.profile_id = form.profile_ids.get(&OpeningProfilePart::Division).cloned();
+    division.profile_id = form.profile_ids.get(&OpeningProfilePart::Division).cloned();
+    style.grid = form.authored_grid.cloned().unwrap_or_else(|| {
+        construction_from_division(&division, width.max(1e-6), height.max(1e-6))
+    });
     let dim = |value: &str, fallback: f64| {
         crate::modules::aec::styles::opening_style_manager::parse_dim(value).unwrap_or(fallback)
     };
@@ -996,8 +1003,8 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     let height = crate::modules::aec::styles::opening_style_manager::parse_dim(form.height)
         .unwrap_or(style.default_height);
     let selected_index = form.selected_cell.unwrap_or(0);
-    let selected_cell = style
-        .grid
+    let division = project_division_sized(&style.grid, width, height);
+    let selected_cell = division
         .resolved_cells(style.kind)
         .get(selected_index)
         .cloned()
@@ -1019,7 +1026,7 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     })
     .text_size(11)
     .width(130);
-    let selected_hinge = selected_cell.hinge.unwrap_or(HingeSide::Left);
+    let selected_hinge = selected_cell.hinge.unwrap_or(LeafOperation::left());
     let hinge_selector: Element<'a, Message> = if selected_cell.kind.permits_hinge() {
         pick_list(
             Some(selected_hinge.as_str().to_string()),
@@ -1042,12 +1049,31 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
             .into()
     };
 
+    let presets = row![
+        button(text(t!("Doppelflügel")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDivisionPreset(
+                "double".to_string(),
+            )))
+            .style(button::secondary),
+        button(text(t!("Falten")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDivisionPreset(
+                "fold".to_string(),
+            )))
+            .style(button::secondary),
+        button(text(t!("Schieben")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDivisionPreset(
+                "slide".to_string(),
+            )))
+            .style(button::secondary),
+    ]
+    .spacing(6);
     column![
         text(opening_label("opening-grid")).size(11).style(muted),
+        presets,
         text(tr!("aec", "opening-division-sketch-hint")).size(10).style(muted),
         row![
             crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
-                &style.grid,
+                &division,
                 width,
                 height,
                 style.kind,
@@ -1300,6 +1326,9 @@ struct PreviewCamera {
     oy: f32,
 }
 
+/// Wall drawn above the rough head in the section preview, independent of lintel or frame.
+const SECTION_SAMPLE_ABOVE: f64 = 0.3;
+
 impl PreviewCamera {
     fn fit(
         bounds: Rectangle,
@@ -1307,41 +1336,47 @@ impl PreviewCamera {
         mode: AecOpeningPreviewMode,
         width: f64,
         height: f64,
+        sill: f64,
         thickness: f64,
     ) -> Self {
         let pad = 14.0f32;
-        let mut min_x = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
+        let hw = width.max(1e-6) * 0.5;
+        let ht = thickness.max(1e-6) * 0.5;
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = match mode {
+            AecOpeningPreviewMode::Plan2D => (-hw, hw, -ht, ht),
+            AecOpeningPreviewMode::Section => {
+                let head = sill.max(0.0) + height.max(1e-6) + SECTION_SAMPLE_ABOVE;
+                (-ht, ht, 0.0, head)
+            }
+            AecOpeningPreviewMode::Elevation2D | AecOpeningPreviewMode::Model3D => (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ),
+        };
 
-        for path in paths {
-            for &(x, y) in &path.points {
-                if x.is_finite() && y.is_finite() {
-                    min_x = min_x.min(x);
-                    max_x = max_x.max(x);
-                    min_y = min_y.min(y);
-                    max_y = max_y.max(y);
+        if matches!(
+            mode,
+            AecOpeningPreviewMode::Elevation2D | AecOpeningPreviewMode::Model3D
+        ) {
+            for path in paths {
+                for &(x, y) in &path.points {
+                    if x.is_finite() && y.is_finite() {
+                        min_x = min_x.min(x);
+                        max_x = max_x.max(x);
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y);
+                    }
                 }
             }
         }
 
-        let hw = width.max(1e-6) * 0.5;
-        match mode {
-            AecOpeningPreviewMode::Plan2D => {
-                let ht = thickness.max(1e-6) * 0.5;
-                min_x = min_x.min(-hw);
-                max_x = max_x.max(hw);
-                min_y = min_y.min(-ht);
-                max_y = max_y.max(ht);
-            }
-            AecOpeningPreviewMode::Elevation2D => {
-                min_x = min_x.min(-hw);
-                max_x = max_x.max(hw);
-                min_y = min_y.min(0.0);
-                max_y = max_y.max(height.max(1e-6));
-            }
-            AecOpeningPreviewMode::Section | AecOpeningPreviewMode::Model3D => {}
+        if mode == AecOpeningPreviewMode::Elevation2D {
+            min_x = min_x.min(-hw);
+            max_x = max_x.max(hw);
+            min_y = min_y.min(0.0);
+            max_y = max_y.max(height.max(1e-6));
         }
 
         if !min_x.is_finite() || !max_x.is_finite() || (max_x - min_x) < 1e-4 {
@@ -1468,6 +1503,7 @@ struct OpeningPreviewCanvas {
     mode: AecOpeningPreviewMode,
     width: f64,
     height: f64,
+    sill: f64,
     thickness: f64,
     frame: f64,
     look_styles: HashMap<OpeningLookRole, PreviewLookColors>,
@@ -1494,6 +1530,7 @@ impl Program<Message> for OpeningPreviewCanvas {
             self.mode,
             self.width,
             self.height,
+            self.sill,
             self.thickness,
         );
         let (x, y) = cam.to_local(pos);
@@ -1525,6 +1562,7 @@ impl Program<Message> for OpeningPreviewCanvas {
             self.mode,
             self.width,
             self.height,
+            self.sill,
             self.thickness,
         );
         let (x, y) = cam.to_local(pos);
@@ -1550,6 +1588,7 @@ impl Program<Message> for OpeningPreviewCanvas {
             self.mode,
             self.width,
             self.height,
+            self.sill,
             self.thickness,
         );
 
@@ -1716,5 +1755,24 @@ mod hit_tests {
         let colors = preview_look_styles(&style, &library)[&OpeningLookRole::FixedFrame];
         assert_eq!(colors.line, Some(IcedColor::from_rgb8(210, 20, 30)));
         assert_eq!(colors.hatch, Some(IcedColor::from_rgb8(10, 40, 90)));
+    }
+
+    #[test]
+    fn plan_and_section_fit_ignore_paths_outside_the_rough_opening() {
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let inside = vec![rect(OpeningComponentSlot::Frame2D, -0.2, -0.05, 0.2, 0.05)];
+        let grown = vec![rect(OpeningComponentSlot::Frame2D, -2.0, -1.0, 2.0, 1.0)];
+        for mode in [AecOpeningPreviewMode::Plan2D, AecOpeningPreviewMode::Section] {
+            let a = PreviewCamera::fit(bounds, &inside, mode, 1.2, 1.4, 0.9, 0.3);
+            let b = PreviewCamera::fit(bounds, &grown, mode, 1.2, 1.4, 0.9, 0.3);
+            assert_eq!(a.scale, b.scale);
+            assert_eq!(a.ox, b.ox);
+            assert_eq!(a.oy, b.oy);
+        }
     }
 }

@@ -7,7 +7,8 @@ use acadrust::{CadDocument, EntityType, Handle};
 use uuid::Uuid;
 
 use crate::modules::aec::engine::opening_shape::OpeningShape;
-use crate::modules::aec::engine::opening_style::{DivisionGrid, HingeSide};
+use crate::modules::aec::engine::construction_grid::ConstructionGrid;
+use crate::modules::aec::engine::opening_style::LeafOperation;
 use crate::modules::aec::engine::opening_xdata::opening_from_entity;
 use crate::modules::aec::engine::join::JunctionOverride;
 use crate::modules::aec::engine::openings::{OpeningKind, OpeningReferenceSide};
@@ -34,14 +35,14 @@ pub struct CollectedOpening {
     pub host_wall_handle: Handle,
     pub kind: OpeningKind,
     pub style_id: Option<String>,
-    pub division_override: Option<DivisionGrid>,
+    pub division_override: Option<ConstructionGrid>,
     pub distance_along_axis: f64,
     pub width: f64,
     pub height: f64,
     pub sill_height: f64,
     pub spring_height: f64,
     pub shape: OpeningShape,
-    pub hinge: HingeSide,
+    pub hinge: LeafOperation,
     pub swing_side: crate::modules::aec::engine::openings::SwingSide,
     pub reference_side: OpeningReferenceSide,
     pub cross_axis_offset: f64,

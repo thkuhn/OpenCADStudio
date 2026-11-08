@@ -1,6 +1,11 @@
 //! Opening styles (window / door / breakthrough) with absolute part dimensions
 //! and a shared division grid.
 
+pub use crate::modules::aec::engine::construction_grid::{
+    CellFill, ConstructionGrid, GridCell, GridTrack, LeafOperation, TrackEnd, TrackMeasure,
+    TrackMeeting,
+};
+use crate::modules::aec::engine::construction_grid::resolve_grid;
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::openings::OpeningKind;
@@ -35,36 +40,6 @@ pub const DEFAULT_FRAME_THICKNESS: f64 = 0.06;
 /// Default swing angle for door generators.
 pub const DEFAULT_OPENING_ANGLE_DEG: f64 = 90.0;
 
-/// Hinge / strike side of a door or window leaf.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum HingeSide {
-    #[default]
-    Left,
-    Right,
-}
-
-impl HingeSide {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            HingeSide::Left => "Left",
-            HingeSide::Right => "Right",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "Right" | "right" | "R" | "r" => HingeSide::Right,
-            _ => HingeSide::Left,
-        }
-    }
-
-    pub fn mirrored(self) -> Self {
-        match self {
-            HingeSide::Left => HingeSide::Right,
-            HingeSide::Right => HingeSide::Left,
-        }
-    }
-}
 
 /// Placement mode for a reusable block in an opening display profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -600,6 +575,8 @@ pub struct LeafFrameDimensions {
     pub face_width: f64,
     pub depth: f64,
     pub rebate_overlap: f64,
+    pub lateral_overlap: f64,
+    pub depth_offset: f64,
 }
 
 impl Default for LeafFrameDimensions {
@@ -610,6 +587,8 @@ impl Default for LeafFrameDimensions {
             face_width: 0.04,
             depth: 0.06,
             rebate_overlap: 0.01,
+            lateral_overlap: 0.0,
+            depth_offset: 0.0,
         }
     }
 }
@@ -718,6 +697,7 @@ pub struct LintelDimensions {
     #[serde(default)]
     pub profile_id: Option<String>,
     pub height: f64,
+    pub depth: f64,
     pub bearing_left: f64,
     pub bearing_right: f64,
     pub material_id: Option<String>,
@@ -729,6 +709,7 @@ impl Default for LintelDimensions {
             enabled: true,
             profile_id: None,
             height: 0.0,
+            depth: 0.0,
             bearing_left: 0.0,
             bearing_right: 0.0,
             material_id: None,
@@ -1152,7 +1133,7 @@ impl OpeningCellKind {
 #[serde(default)]
 pub struct OpeningCell {
     pub kind: OpeningCellKind,
-    pub hinge: Option<HingeSide>,
+    pub hinge: Option<LeafOperation>,
     pub sill: f64,
 }
 
@@ -1163,6 +1144,216 @@ impl Default for OpeningCell {
             hinge: None,
             sill: 0.0,
         }
+    }
+}
+
+pub fn stulp_pair(fill: CellFill) -> ConstructionGrid {
+    ConstructionGrid {
+        columns: vec![
+            GridTrack {
+                measure: TrackMeasure::Fraction(1.0),
+                profile_id: None,
+                meeting: TrackMeeting::Stulp { bearer: TrackEnd::Start },
+            },
+            GridTrack {
+                measure: TrackMeasure::Fraction(1.0),
+                ..GridTrack::default()
+            },
+        ],
+        rows: vec![GridTrack::default()],
+        cells: vec![
+            GridCell {
+                column: 0,
+                row: 0,
+                columns: 1,
+                rows: 1,
+                fill: fill.clone(),
+                operation: Some(LeafOperation::left()),
+                ..GridCell::default()
+            },
+            GridCell {
+                column: 1,
+                row: 0,
+                columns: 1,
+                rows: 1,
+                fill,
+                operation: Some(LeafOperation::right()),
+                ..GridCell::default()
+            },
+        ],
+        muntin_profile_id: None,
+    }
+}
+
+/// Projects a construction grid onto the bake view. Empty source grids stay implicit.
+pub fn construction_from_division(grid: &DivisionGrid, width: f64, height: f64) -> ConstructionGrid {
+    if grid.is_implicit_single_cell()
+        && grid.profile_id.is_none()
+        && grid.vertical_muntins.is_empty()
+        && grid.horizontal_muntins.is_empty()
+    {
+        return ConstructionGrid::default();
+    }
+    let width = width.max(1e-9);
+    let height = height.max(1e-9);
+    let columns = if grid.vertical.is_empty() {
+        vec![GridTrack::default()]
+    } else {
+        grid.vertical
+            .iter()
+            .map(|fraction| GridTrack {
+                measure: TrackMeasure::Fraction(fraction.max(0.0)),
+                ..GridTrack::default()
+            })
+            .collect()
+    };
+    let mut fixed_rows: Vec<GridTrack> = grid
+        .horizontal
+        .iter()
+        .map(|row_height| GridTrack {
+            measure: TrackMeasure::Fixed(row_height.max(0.0)),
+            ..GridTrack::default()
+        })
+        .collect();
+    let fixed_sum: f64 = grid.horizontal.iter().copied().sum();
+    if fixed_rows.is_empty() || fixed_sum < height - 1e-6 {
+        fixed_rows.push(GridTrack::default());
+    }
+    let column_count = columns.len() as u32;
+    let row_count = fixed_rows.len() as u32;
+    let cells = if grid.cells.is_empty() {
+        Vec::new()
+    } else {
+        grid.cells
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let column = (index as u32) % column_count;
+                let row = (index as u32) / column_count;
+                GridCell {
+                    column,
+                    row,
+                    columns: 1,
+                    rows: 1,
+                    fill: match cell.kind {
+                        OpeningCellKind::Opaque => CellFill::Opaque,
+                        OpeningCellKind::DoorLeaf => CellFill::Door,
+                        OpeningCellKind::Fixed => CellFill::Fixed,
+                        OpeningCellKind::Glass => CellFill::Glass,
+                    },
+                    operation: cell.hinge,
+                    sill: cell.sill,
+                    bars: bars_from_legacy(grid, width / column_count as f64, height / row_count as f64),
+                    ..GridCell::default()
+                }
+            })
+            .collect()
+    };
+    ConstructionGrid {
+        columns,
+        rows: fixed_rows,
+        cells,
+        muntin_profile_id: grid.profile_id.clone(),
+    }
+}
+
+fn bars_from_legacy(grid: &DivisionGrid, cell_width: f64, cell_height: f64) -> Vec<crate::modules::aec::engine::construction_grid::CellBar> {
+    let mut bars = Vec::new();
+    for position in &grid.vertical_muntins {
+        bars.push(crate::modules::aec::engine::construction_grid::CellBar {
+            along: crate::modules::aec::engine::construction_grid::BarAxis::Vertical,
+            position: (position / cell_width).clamp(0.0, 1.0),
+            face_width: 0.02,
+            depth: 0.04,
+        });
+    }
+    for position in &grid.horizontal_muntins {
+        bars.push(crate::modules::aec::engine::construction_grid::CellBar {
+            along: crate::modules::aec::engine::construction_grid::BarAxis::Horizontal,
+            position: (position / cell_height).clamp(0.0, 1.0),
+            face_width: 0.02,
+            depth: 0.04,
+        });
+    }
+    bars
+}
+
+pub fn project_division(grid: &ConstructionGrid) -> DivisionGrid {
+    project_division_sized(grid, 1.0, 1.0)
+}
+
+pub fn project_division_sized(grid: &ConstructionGrid, width: f64, height: f64) -> DivisionGrid {
+    if grid.columns.is_empty() && grid.rows.is_empty() && grid.cells.is_empty() {
+        return DivisionGrid::default();
+    }
+    let resolved = resolve_grid(grid, width.max(0.0), height.max(0.0));
+    let mut vertical: Vec<f64> = resolved
+        .columns
+        .iter()
+        .map(|track| (track.end - track.start).max(0.0))
+        .collect();
+    let sum: f64 = vertical.iter().sum();
+    if sum > 1e-9 {
+        for fraction in &mut vertical {
+            *fraction /= sum;
+        }
+    }
+    if grid.columns.len() <= 1 {
+        vertical.clear();
+    }
+    let cells = resolved
+        .cells
+        .iter()
+        .map(|cell| OpeningCell {
+            kind: match cell.cell.fill {
+                CellFill::Opaque => OpeningCellKind::Opaque,
+                CellFill::Door => OpeningCellKind::DoorLeaf,
+                CellFill::Fixed => OpeningCellKind::Fixed,
+                CellFill::Glass | CellFill::Nested(_) => OpeningCellKind::Glass,
+            },
+            hinge: cell.cell.operation,
+            sill: cell.cell.sill,
+        })
+        .collect();
+    let vertical_muntins = resolved
+        .cells
+        .first()
+        .map(|cell| {
+            cell.bars
+                .iter()
+                .filter(|bar| {
+                    bar.axis == crate::modules::aec::engine::construction_grid::BarAxis::Vertical
+                })
+                .map(|bar| bar.position - cell.left)
+                .collect()
+        })
+        .unwrap_or_default();
+    let horizontal_muntins = resolved
+        .cells
+        .first()
+        .map(|cell| {
+            cell.bars
+                .iter()
+                .filter(|bar| {
+                    bar.axis == crate::modules::aec::engine::construction_grid::BarAxis::Horizontal
+                })
+                .map(|bar| bar.position - cell.bottom)
+                .collect()
+        })
+        .unwrap_or_default();
+    let horizontal = resolved
+        .rows
+        .iter()
+        .take(resolved.rows.len().saturating_sub(1))
+        .map(|track| track.end - track.start)
+        .collect();
+    DivisionGrid {
+        vertical,
+        horizontal,
+        vertical_muntins,
+        horizontal_muntins,
+        profile_id: grid.muntin_profile_id.clone(),
+        cells,
     }
 }
 
@@ -1371,7 +1562,7 @@ pub struct DivisionCellLayout {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DivisionPreset {
     pub name: String,
-    pub grid: DivisionGrid,
+    pub grid: ConstructionGrid,
 }
 
 /// A library style for windows, doors, or breakthroughs.
@@ -1382,13 +1573,13 @@ pub struct OpeningStyle {
     pub default_width: f64,
     pub default_height: f64,
     pub default_sill: f64,
-    pub hinge: HingeSide,
+    pub hinge: LeafOperation,
     #[serde(default)]
     pub parts: OpeningParts,
     #[serde(default)]
     pub looks: OpeningLooks,
     #[serde(default)]
-    pub grid: DivisionGrid,
+    pub grid: ConstructionGrid,
     #[serde(default)]
     pub division_presets: Vec<DivisionPreset>,
     pub opening_angle_deg: f64,
@@ -1433,10 +1624,10 @@ impl OpeningStyle {
             default_width: crate::modules::aec::engine::openings::DEFAULT_WINDOW_WIDTH,
             default_height: crate::modules::aec::engine::openings::DEFAULT_WINDOW_HEIGHT,
             default_sill: crate::modules::aec::engine::openings::DEFAULT_WINDOW_SILL,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
-            grid: DivisionGrid::default(),
+            grid: ConstructionGrid::default(),
             division_presets: Vec::new(),
             opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
             shape: OpeningShape::Rectangle,
@@ -1460,25 +1651,10 @@ impl OpeningStyle {
             default_width: 1.60,
             default_height: 1.40,
             default_sill: 0.90,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
-            grid: DivisionGrid {
-                vertical: vec![0.5, 0.5],
-                cells: vec![
-                    OpeningCell {
-                        kind: OpeningCellKind::Glass,
-                        hinge: Some(HingeSide::Left),
-                        sill: 0.0,
-                    },
-                    OpeningCell {
-                        kind: OpeningCellKind::Glass,
-                        hinge: Some(HingeSide::Right),
-                        sill: 0.0,
-                    },
-                ],
-                ..DivisionGrid::default()
-            },
+            grid: stulp_pair(CellFill::Glass),
             division_presets: Vec::new(),
             opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
             shape: OpeningShape::Rectangle,
@@ -1502,10 +1678,10 @@ impl OpeningStyle {
             default_width: 1.00,
             default_height: 1.80,
             default_sill: 0.80,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
-            grid: DivisionGrid::default(),
+            grid: ConstructionGrid::default(),
             division_presets: Vec::new(),
             opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
             shape: OpeningShape::Arch,
@@ -1529,10 +1705,10 @@ impl OpeningStyle {
             default_width: 0.90,
             default_height: 0.90,
             default_sill: 1.20,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
-            grid: DivisionGrid::default(),
+            grid: ConstructionGrid::default(),
             division_presets: Vec::new(),
             opening_angle_deg: 0.0,
             shape: OpeningShape::Circle,
@@ -1556,10 +1732,10 @@ impl OpeningStyle {
             default_width: 1.00,
             default_height: 2.20,
             default_sill: 0.00,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
-            grid: DivisionGrid::default(),
+            grid: ConstructionGrid::default(),
             division_presets: Vec::new(),
             opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
             shape: OpeningShape::Rectangle,
@@ -1583,10 +1759,10 @@ impl OpeningStyle {
             default_width: crate::modules::aec::engine::openings::DEFAULT_DOOR_WIDTH,
             default_height: crate::modules::aec::engine::openings::DEFAULT_DOOR_HEIGHT,
             default_sill: crate::modules::aec::engine::openings::DEFAULT_DOOR_SILL,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
-            grid: DivisionGrid::default(),
+            grid: ConstructionGrid::default(),
             division_presets: Vec::new(),
             opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
             shape: OpeningShape::Rectangle,
@@ -1601,7 +1777,7 @@ impl OpeningStyle {
         let mut door = Self::standard_door();
         door.style.id = SEED_DOOR_RIGHT_STYLE_ID.to_string();
         door.style.name = "Innentür rechts".to_string();
-        door.hinge = HingeSide::Right;
+        door.hinge = LeafOperation::right();
         door
     }
 
@@ -1618,25 +1794,10 @@ impl OpeningStyle {
             default_width: 1.80,
             default_height: 2.20,
             default_sill: 0.00,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
-            grid: DivisionGrid {
-                vertical: vec![0.5, 0.5],
-                cells: vec![
-                    OpeningCell {
-                        kind: OpeningCellKind::DoorLeaf,
-                        hinge: Some(HingeSide::Left),
-                        sill: 0.0,
-                    },
-                    OpeningCell {
-                        kind: OpeningCellKind::DoorLeaf,
-                        hinge: Some(HingeSide::Right),
-                        sill: 0.0,
-                    },
-                ],
-                ..DivisionGrid::default()
-            },
+            grid: stulp_pair(CellFill::Door),
             division_presets: Vec::new(),
             opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
             shape: OpeningShape::Rectangle,
@@ -1660,7 +1821,7 @@ impl OpeningStyle {
             default_width: crate::modules::aec::engine::openings::DEFAULT_BREAKTHROUGH_WIDTH,
             default_height: crate::modules::aec::engine::openings::DEFAULT_BREAKTHROUGH_HEIGHT,
             default_sill: crate::modules::aec::engine::openings::DEFAULT_BREAKTHROUGH_SILL,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts {
                 fixed_frame: FixedFrameDimensions {
                     enabled: true,
@@ -1672,7 +1833,7 @@ impl OpeningStyle {
                 ..OpeningParts::default()
             },
             looks: OpeningLooks::default(),
-            grid: DivisionGrid::default(),
+            grid: ConstructionGrid::default(),
             division_presets: Vec::new(),
             opening_angle_deg: 0.0,
             shape: OpeningShape::Rectangle,
@@ -1696,7 +1857,7 @@ impl OpeningStyle {
             default_width: 0.40,
             default_height: 0.40,
             default_sill: 1.80,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             parts: OpeningParts {
                 fixed_frame: FixedFrameDimensions {
                     enabled: true,
@@ -1708,7 +1869,7 @@ impl OpeningStyle {
                 ..OpeningParts::default()
             },
             looks: OpeningLooks::default(),
-            grid: DivisionGrid::default(),
+            grid: ConstructionGrid::default(),
             division_presets: Vec::new(),
             opening_angle_deg: 0.0,
             shape: OpeningShape::Circle,
@@ -1965,8 +2126,8 @@ mod tests {
         assert!(approx(br.default_width, DEFAULT_BREAKTHROUGH_WIDTH));
         assert!(approx(br.default_height, DEFAULT_BREAKTHROUGH_HEIGHT));
         assert!(approx(br.default_sill, DEFAULT_BREAKTHROUGH_SILL));
-        assert_eq!(OpeningStyle::window_double().grid.vertical, vec![0.5, 0.5]);
-        assert_eq!(OpeningStyle::door_double().grid.vertical, vec![0.5, 0.5]);
+        assert_eq!(project_division(&OpeningStyle::window_double().grid).vertical.len(), 2);
+        assert_eq!(project_division(&OpeningStyle::door_double().grid).vertical.len(), 2);
     }
 
     #[test]
@@ -2142,7 +2303,7 @@ mod tests {
             cells: vec![
                 OpeningCell {
                     kind: OpeningCellKind::DoorLeaf,
-                    hinge: Some(HingeSide::Left),
+                    hinge: Some(LeafOperation::left()),
                     sill: 0.0,
                 },
                 OpeningCell {
@@ -2199,9 +2360,9 @@ mod tests {
 
     #[test]
     fn hinge_roundtrip() {
-        assert_eq!(HingeSide::from_str("Right"), HingeSide::Right);
-        assert_eq!(HingeSide::from_str(""), HingeSide::Left);
-        assert_eq!(HingeSide::Left.mirrored(), HingeSide::Right);
+        assert_eq!(LeafOperation::from_str("Right"), LeafOperation::right());
+        assert_eq!(LeafOperation::from_str(""), LeafOperation::left());
+        assert_eq!(LeafOperation::left().mirrored(), LeafOperation::right());
     }
 
     #[test]
@@ -2248,5 +2409,20 @@ mod tests {
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-12
+    }
+
+    #[test]
+    fn double_leaf_seeds_use_stulp_without_a_mullion() {
+        for style in [OpeningStyle::window_double(), OpeningStyle::door_double()] {
+            assert!(matches!(
+                style.grid.columns[0].meeting,
+                TrackMeeting::Stulp { bearer: TrackEnd::Start }
+            ));
+            let projected = project_division(&style.grid);
+            assert_eq!(projected.vertical.len(), 2);
+            assert_eq!(projected.cells.len(), 2);
+            assert_eq!(projected.cells[0].hinge, Some(LeafOperation::left()));
+            assert_eq!(projected.cells[1].hinge, Some(LeafOperation::right()));
+        }
     }
 }

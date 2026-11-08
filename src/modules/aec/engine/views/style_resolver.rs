@@ -1085,7 +1085,7 @@ pub(crate) mod tests {
     use crate::modules::aec::engine::material::Material;
     use crate::modules::aec::engine::openings::{OpeningKind, OpeningReferenceSide};
     use crate::modules::aec::engine::opening_shape::OpeningShape;
-    use crate::modules::aec::engine::opening_style::{HingeSide, OpeningDisplayProfile, OpeningStyle};
+    use crate::modules::aec::engine::opening_style::{LeafOperation, OpeningDisplayProfile, OpeningStyle};
     use crate::modules::aec::engine::plan_view::{
         DisplayConfig, LayerDetail, PhaseFilter, PlanPhase, PlanningStage, ViewType,
     };
@@ -1361,7 +1361,7 @@ pub(crate) mod tests {
             width: 1.0,
             distance_along_axis: 2.0,
             axis_span_local: (1.5, 2.5),
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: Default::default(),
         }
     }
@@ -1623,7 +1623,7 @@ pub(crate) mod tests {
             width: 1.0,
             distance_along_axis: 2.0,
             axis_span_local: (1.5, 2.5),
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: Default::default(),
         };
 

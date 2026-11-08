@@ -199,6 +199,8 @@ pub enum AecMessage {
     AecOpeningStyleManagerCellRemove(usize),
     AecOpeningStyleManagerDivisionAdd(String),
     AecOpeningStyleManagerDivisionRemove(String, usize),
+    /// Writes a division template (`double`, `fold`, `slide`) as axes and cells.
+    AecOpeningStyleManagerDivisionPreset(String),
     /// Family id (`plan`, `section`, `elevation`) and block name.
     AecOpeningStyleManagerFamilyBlockChanged(String, String),
     AecOpeningStyleManagerFamilyPlacementChanged(String, String),

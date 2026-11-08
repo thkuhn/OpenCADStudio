@@ -23,7 +23,7 @@ use super::{
     PaperMm, Point2, ValidationError, Vector2,
 };
 use crate::modules::aec::engine::library::StyleLibrary;
-use crate::modules::aec::engine::opening_style::OpeningLookRole;
+use crate::modules::aec::engine::opening_style::{project_division_sized, OpeningLookRole};
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::plan_view::DisplayConfig;
 use crate::modules::aec::engine::section_profile::{resolve_section, ResolvedSection};
@@ -419,7 +419,11 @@ fn cut_wall_with_segment(
 
             if let Some(op) = intersecting_opening {
                 let style = resolve_opening_style(ctx, op);
-                let grid = op.division_override.as_ref().unwrap_or(&style.grid);
+                let grid = project_division_sized(
+                    op.division_override.as_ref().unwrap_or(&style.grid),
+                    op.width,
+                    op.height,
+                );
                 let (op_s0, _) = op.axis_span_local;
                 let local_x = s_along_wall - op_s0;
                 let section_dir = Vector2::new(
@@ -452,7 +456,7 @@ fn cut_wall_with_segment(
                         op.kind,
                         op.shape,
                         op.spring_height,
-                        grid,
+                        &grid,
                         local_x,
                     )
                     .into_iter()
@@ -1581,7 +1585,8 @@ mod tests {
     #[test]
     fn section_cut_uses_heterogeneous_cell_heights() {
         use crate::modules::aec::engine::opening_style::{
-            DivisionGrid, HingeSide, OpeningCell, OpeningCellKind, OpeningStyle,
+            DivisionGrid, LeafOperation, OpeningCell, OpeningCellKind, OpeningStyle,
+            construction_from_division,
         };
         use crate::modules::aec::engine::openings::{
             OpeningKind, OpeningReferenceSide, SwingSide,
@@ -1593,22 +1598,26 @@ mod tests {
 
         let mut style = OpeningStyle::standard_window();
         style.style.id = "door_window_combo".into();
-        style.grid = DivisionGrid {
-            vertical: vec![0.5, 0.5],
-            cells: vec![
-                OpeningCell {
-                    kind: OpeningCellKind::DoorLeaf,
-                    hinge: Some(HingeSide::Left),
-                    sill: 0.0,
-                },
-                OpeningCell {
-                    kind: OpeningCellKind::Glass,
-                    hinge: None,
-                    sill: 1.0,
-                },
-            ],
-            ..DivisionGrid::default()
-        };
+        style.grid = construction_from_division(
+            &DivisionGrid {
+                vertical: vec![0.5, 0.5],
+                cells: vec![
+                    OpeningCell {
+                        kind: OpeningCellKind::DoorLeaf,
+                        hinge: Some(LeafOperation::left()),
+                        sill: 0.0,
+                    },
+                    OpeningCell {
+                        kind: OpeningCellKind::Glass,
+                        hinge: None,
+                        sill: 1.0,
+                    },
+                ],
+                ..DivisionGrid::default()
+            },
+            1.8,
+            2.2,
+        );
         let mut library = StyleLibrary::default();
         library.opening_styles.push(style.clone());
 
@@ -1627,7 +1636,7 @@ mod tests {
             sill_height: 0.0,
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: SwingSide::Exterior,
             reference_side: OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,
@@ -1781,7 +1790,7 @@ mod tests {
         use crate::modules::aec::engine::library::StyleLibrary;
         use crate::modules::aec::engine::material::Material;
         use crate::modules::aec::engine::opening_style::{
-            HingeSide, LintelDimensions, OpeningStyle, ShutterBoxDimensions, SillDimensions,
+            LeafOperation, LintelDimensions, OpeningStyle, ShutterBoxDimensions, SillDimensions,
         };
         use crate::modules::aec::engine::openings::{
             OpeningKind, OpeningReferenceSide, SwingSide,
@@ -1820,6 +1829,7 @@ mod tests {
             enabled: true,
             profile_id: None,
             height: 0.20,
+            depth: 0.0,
             bearing_left: 0.15,
             bearing_right: 0.15,
             material_id: Some("lintel_material".into()),
@@ -1867,7 +1877,7 @@ mod tests {
             sill_height: 0.8,
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: SwingSide::Exterior,
             reference_side: OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,

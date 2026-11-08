@@ -394,7 +394,14 @@ impl ProjectFile {
     pub fn load(path: &Path) -> io::Result<ProjectFile> {
         match fs::read_to_string(path) {
             Ok(text) => {
-                let mut project: ProjectFile = serde_json::from_str(&text)
+                let mut value: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                if let Some(library) = value.get_mut("material_wall_style_library") {
+                    crate::modules::aec::engine::library::discard_unreadable_opening_styles(
+                        library,
+                    );
+                }
+                let mut project: ProjectFile = serde_json::from_value(value)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 for building in &mut project.buildings {
                     for storey in &mut building.storeys {
@@ -766,6 +773,30 @@ mod tests {
         assert_eq!(loaded, project);
         assert!(!loaded.material_wall_style_library.materials.is_empty());
         assert!(!loaded.display_config_library.configs.is_empty());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn project_load_drops_unreadable_opening_style_only() {
+        let project = ProjectFile {
+            material_wall_style_library: seeded_style_library(),
+            ..ProjectFile::default()
+        };
+        let expected_style_count = project.material_wall_style_library.opening_styles.len();
+        let mut value = serde_json::to_value(project).expect("serialize project");
+        value["material_wall_style_library"]["opening_styles"]
+            .as_array_mut()
+            .expect("opening style array")
+            .push(serde_json::json!({ "invalid": true }));
+
+        let path = temp_path("unreadable_opening_style");
+        fs::write(&path, value.to_string()).expect("write project");
+        let loaded = ProjectFile::load(&path).expect("load remaining project");
+        assert_eq!(
+            loaded.material_wall_style_library.opening_styles.len(),
+            expected_style_count
+        );
+        assert!(!loaded.material_wall_style_library.materials.is_empty());
         let _ = fs::remove_file(&path);
     }
 

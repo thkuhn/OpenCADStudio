@@ -13,12 +13,16 @@ use glam::DVec3;
 
 use crate::modules::aec::engine::display_component::{ComponentRuleSet, OpeningComponentSlot};
 use crate::modules::aec::engine::opening_shape::OpeningShape;
+use crate::modules::aec::engine::construction_grid::{
+    omits_threshold, resolve_grid, BarAxis, ConstructionGrid, ResolvedGrid, TrackEnd, TrackMeeting,
+};
 use crate::modules::aec::engine::opening_style::{
-    apply_plan_visibility, default_slots_for_kind, default_style_for_kind,
-    effective_slots_for_plan, BlockPlacementMode, DivisionGrid, DivisionLevel,
+    apply_plan_visibility, construction_from_division, default_slots_for_kind,
+    default_style_for_kind, effective_slots_for_plan, project_division_sized, BlockPlacementMode,
+    DivisionGrid, DivisionLevel,
     ElevationFrameLevel, OpeningParts, OpeningPlanProfiles, OpeningRepresentationLevels,
     opening_component_applies, opening_component_should_render, OpeningLookRole, PlanFrameLevel, SwingGlyph,
-    OpeningGenerator, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
+    OpeningGenerator, OpeningStyle, SlotGeometry, LeafOperation, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
 use crate::modules::aec::engine::section_profile::{resolve_section, ResolvedSection};
@@ -78,7 +82,7 @@ pub struct OpeningBakeParams {
     pub cross_axis_offset: f64,
     pub wall_y_min: f64,
     pub wall_y_max: f64,
-    pub hinge: HingeSide,
+    pub hinge: LeafOperation,
     pub swing_side: SwingSide,
     pub shape: OpeningShape,
     pub spring_height: f64,
@@ -234,11 +238,12 @@ pub fn bake_opening_representation(
     params: OpeningBakeParams,
     parts: &OpeningParts,
     library: Option<&StyleLibrary>,
-    grid: &DivisionGrid,
+    grid: &ConstructionGrid,
     levels: OpeningRepresentationLevels,
     rules: Option<&ComponentRuleSet>,
     doc: Option<&acadrust::CadDocument>,
 ) -> Vec<BakedPath> {
+    let projected = project_division_sized(grid, params.width, params.height);
     let fixed_frame_section = resolve_component_section(
         library,
         parts.fixed_frame.profile_id.as_deref(),
@@ -263,19 +268,7 @@ pub fn bake_opening_representation(
         parts.interior_board.thickness,
         parts.interior_board.thickness,
     );
-    let division_profile_section = grid
-        .profile_id
-        .as_deref()
-        .and_then(|id| library?.find_section_profile(id))
-        .filter(|profile| profile.is_valid())
-        .map(|_| {
-            resolve_component_section(
-                library,
-                grid.profile_id.as_deref(),
-                parts.fixed_frame.face_width,
-                parts.fixed_frame.wall_depth,
-            )
-        });
+    let division_fallback = division_profile_section(library, grid, parts).unwrap_or(fixed_frame_section.clone());
     let replaced_slots = [
         OpeningComponentSlot::Frame2D,
         OpeningComponentSlot::Leaf2D,
@@ -323,16 +316,18 @@ pub fn bake_opening_representation(
         ));
     }
     if slot_enabled(OpeningComponentSlot::Leaf2D) {
-        paths.extend(bake_grid_leaf_lines(grid, params));
+        paths.extend(bake_grid_leaf_lines(&projected, params));
     }
     if slot_enabled(OpeningComponentSlot::Glazing2D) {
-        paths.extend(bake_grid_glazing_lines(grid, params));
+        paths.extend(bake_grid_glazing_lines(&projected, params));
     }
     paths.extend(bake_grid_plan_divisions(
         grid,
         params,
         levels.divisions,
-        division_profile_section.as_ref(),
+        library,
+        &division_fallback,
+        &leaf_frame_section,
     ));
     if slot_enabled(OpeningComponentSlot::Swing2D) {
         paths.extend(bake_grid_swing_glyphs(grid, params, levels.swing));
@@ -343,14 +338,19 @@ pub fn bake_opening_representation(
             fixed_frame_section.face,
             leaf_frame_section.face,
             levels.elevation_frame,
+            omits_threshold(&resolve_grid(grid, params.width, params.height), params.width)
+                || params.kind == OpeningKind::Door,
         ));
+        paths.extend(bake_grid_elevation_schema(grid, params));
     }
     if slot_enabled(OpeningComponentSlot::ElevationMuntins2D) {
         paths.extend(bake_grid_elevation_divisions(
             grid,
             params,
             levels.divisions,
-            division_profile_section.as_ref(),
+            library,
+            &division_fallback,
+            &leaf_frame_section,
         ));
     }
     paths.retain(|path| {
@@ -369,6 +369,25 @@ pub fn bake_opening_elevation_paths(
     frame_level: ElevationFrameLevel,
     division_level: DivisionLevel,
 ) -> Vec<BakedPath> {
+    let built = construction_from_division(grid, params.width, params.height);
+    bake_opening_elevation_from_grid(
+        params,
+        parts,
+        library,
+        &built,
+        frame_level,
+        division_level,
+    )
+}
+
+pub fn bake_opening_elevation_from_grid(
+    params: OpeningBakeParams,
+    parts: &OpeningParts,
+    library: Option<&StyleLibrary>,
+    grid: &ConstructionGrid,
+    frame_level: ElevationFrameLevel,
+    division_level: DivisionLevel,
+) -> Vec<BakedPath> {
     let fixed_frame_section = resolve_component_section(
         library,
         parts.fixed_frame.profile_id.as_deref(),
@@ -381,31 +400,25 @@ pub fn bake_opening_elevation_paths(
         parts.leaf_frame.face_width,
         parts.leaf_frame.depth,
     );
-    let division_profile_section = grid
-        .profile_id
-        .as_deref()
-        .and_then(|id| library?.find_section_profile(id))
-        .filter(|profile| profile.is_valid())
-        .map(|_| {
-            resolve_component_section(
-                library,
-                grid.profile_id.as_deref(),
-                parts.fixed_frame.face_width,
-                parts.fixed_frame.wall_depth,
-            )
-        });
+    let division_fallback =
+        division_profile_section(library, grid, parts).unwrap_or(fixed_frame_section.clone());
     let mut paths = bake_elevation_frame_level(
         params,
         fixed_frame_section.face,
         leaf_frame_section.face,
         frame_level,
+        omits_threshold(&resolve_grid(grid, params.width, params.height), params.width)
+            || params.kind == OpeningKind::Door,
     );
     paths.extend(bake_grid_elevation_divisions(
         grid,
         params,
         division_level,
-        division_profile_section.as_ref(),
+        library,
+        &division_fallback,
+        &leaf_frame_section,
     ));
+    paths.extend(bake_grid_elevation_schema(grid, params));
     paths.retain(|path| {
         path.resolved_look_role().map_or(true, |role| {
             opening_component_should_render_with_library(parts, params.kind, role, library)
@@ -423,6 +436,27 @@ pub fn bake_opening_plan_paths(
     swing_glyph: SwingGlyph,
     division_level: DivisionLevel,
 ) -> Vec<BakedPath> {
+    let built = construction_from_division(grid, params.width, params.height);
+    bake_opening_plan_from_grid(
+        params,
+        parts,
+        library,
+        &built,
+        frame_level,
+        swing_glyph,
+        division_level,
+    )
+}
+
+pub fn bake_opening_plan_from_grid(
+    params: OpeningBakeParams,
+    parts: &OpeningParts,
+    library: Option<&StyleLibrary>,
+    grid: &ConstructionGrid,
+    frame_level: PlanFrameLevel,
+    swing_glyph: SwingGlyph,
+    division_level: DivisionLevel,
+) -> Vec<BakedPath> {
     let slots = default_slots_for_kind(params.kind);
     let levels = OpeningRepresentationLevels {
         plan_frame: frame_level,
@@ -434,6 +468,25 @@ pub fn bake_opening_plan_paths(
         .into_iter()
         .filter(|path| !path.slot.is_elevation())
         .collect()
+}
+
+fn division_profile_section(
+    library: Option<&StyleLibrary>,
+    grid: &ConstructionGrid,
+    parts: &OpeningParts,
+) -> Option<ResolvedSection> {
+    grid.muntin_profile_id
+        .as_deref()
+        .and_then(|id| library?.find_section_profile(id))
+        .filter(|profile| profile.is_valid())
+        .map(|_| {
+            resolve_component_section(
+                library,
+                grid.muntin_profile_id.as_deref(),
+                parts.fixed_frame.face_width,
+                parts.fixed_frame.wall_depth,
+            )
+        })
 }
 
 fn resolve_component_section(
@@ -613,9 +666,9 @@ fn bake_grid_leaf_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Vec<B
                 params.opening_angle_deg,
                 params.frame_thickness,
             );
-            let start_x = match hinge {
-                HingeSide::Left => cell.left + params.frame_thickness * 0.5,
-                HingeSide::Right => cell.right - params.frame_thickness * 0.5,
+            let start_x = match hinge.bearing() {
+                crate::modules::aec::engine::construction_grid::TrackEnd::Start => cell.left + params.frame_thickness * 0.5,
+                crate::modules::aec::engine::construction_grid::TrackEnd::End => cell.right - params.frame_thickness * 0.5,
             };
             paths.push(path(
                 OpeningComponentSlot::Leaf2D,
@@ -660,44 +713,100 @@ fn bake_grid_glazing_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Ve
 }
 
 fn bake_grid_plan_divisions(
-    grid: &DivisionGrid,
+    grid: &ConstructionGrid,
     params: OpeningBakeParams,
     level: DivisionLevel,
-    profile: Option<&ResolvedSection>,
+    library: Option<&StyleLibrary>,
+    fallback: &ResolvedSection,
+    leaf: &ResolvedSection,
 ) -> Vec<BakedPath> {
     if level == DivisionLevel::Off {
         return Vec::new();
     }
-    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
-        return Vec::new();
-    };
-    let columns = grid.vertical.len().max(1);
-    let rows = grid.horizontal.len() + 1;
+    let resolved = resolve_grid(grid, params.width, params.height);
     let mut paths = Vec::new();
-    for row in 0..rows {
-        for column in 0..columns.saturating_sub(1) {
-            let left = &cells[row * columns + column];
-            let right = &cells[row * columns + column + 1];
-            let x = (left.right + right.left) * 0.5;
-            paths.push(bake_plan_division_path(x, params, profile));
-        }
-    }
-    if level == DivisionLevel::PostsAndMuntins {
-        for cell in &cells {
-            if !matches!(
-                cell.cell.kind,
-                crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
-                    | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
-            ) {
-                continue;
-            }
-            for fraction in &grid.vertical_muntins {
-                let x = cell.left + (cell.right - cell.left) * fraction;
-                paths.push(bake_plan_division_path(x, params, profile));
-            }
-        }
-    }
+    collect_plan_divisions(
+        &resolved,
+        0.0,
+        params,
+        level,
+        library,
+        fallback,
+        leaf,
+        &mut paths,
+    );
     paths
+}
+
+fn collect_plan_divisions(
+    resolved: &ResolvedGrid,
+    offset_x: f64,
+    params: OpeningBakeParams,
+    level: DivisionLevel,
+    library: Option<&StyleLibrary>,
+    fallback: &ResolvedSection,
+    leaf: &ResolvedSection,
+    paths: &mut Vec<BakedPath>,
+) {
+    let origin = params.width * 0.5;
+    for edge in &resolved.edges {
+        if edge.axis != BarAxis::Vertical || edge.meeting != TrackMeeting::Mullion {
+            continue;
+        }
+        let section = section_for_profile(library, edge.profile_id.as_deref(), fallback);
+        paths.push(bake_plan_division_path(
+            edge.position + offset_x - origin,
+            params,
+            Some(&section),
+        ));
+    }
+    for edge in &resolved.edges {
+        if edge.axis != BarAxis::Vertical {
+            continue;
+        }
+        let Some(shift) = stulp_shift(edge.meeting, leaf.face) else {
+            continue;
+        };
+        paths.push(
+            bake_plan_division_path(edge.position + offset_x - origin + shift, params, Some(leaf))
+                .with_look_role(OpeningLookRole::Leaf),
+        );
+    }
+    for cell in &resolved.cells {
+        if level == DivisionLevel::PostsAndMuntins {
+            for bar in &cell.bars {
+                if bar.axis != BarAxis::Vertical {
+                    continue;
+                }
+                let Some(section) = muntin_bar_section(
+                    library,
+                    resolved.muntin_profile_id.as_deref(),
+                    bar.face_width,
+                    bar.depth,
+                    leaf,
+                ) else {
+                    continue;
+                };
+                paths.push(bake_plan_division_path(
+                    bar.position + offset_x - origin,
+                    params,
+                    Some(&section),
+                ));
+            }
+        }
+        if let Some(nested) = &cell.nested {
+            collect_plan_divisions(
+                nested,
+                offset_x + cell.left,
+                params,
+                level,
+                library,
+                fallback,
+                leaf,
+                paths,
+            );
+        }
+    }
 }
 
 fn bake_plan_division_path(
@@ -730,58 +839,278 @@ fn bake_plan_division_path(
 }
 
 fn bake_grid_swing_glyphs(
-    grid: &DivisionGrid,
+    grid: &ConstructionGrid,
     params: OpeningBakeParams,
     glyph: SwingGlyph,
 ) -> Vec<BakedPath> {
-    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
+    if glyph == SwingGlyph::Off {
+        return Vec::new();
+    }
+    let projected = project_division_sized(grid, params.width, params.height);
+    let Ok(cells) = projected.layout(params.width, params.height, params.kind) else {
         return Vec::new();
     };
+    let chained = chain_cells(&resolve_grid(grid, params.width, params.height), params.hinge);
     let mut paths = Vec::new();
-    for cell in cells {
-        if cell.cell.kind != crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf {
+    for cell in &cells {
+        if chained.contains(&(cell.column, cell.row)) {
             continue;
         }
-        let width = cell.right - cell.left;
-        let center_x = (cell.left + cell.right) * 0.5;
         let hinge = cell.cell.hinge.unwrap_or(params.hinge);
-        match glyph {
-            SwingGlyph::Off => {}
-            SwingGlyph::Arc => {
-                let mut cell_params = params;
-                cell_params.width = width;
-                cell_params.hinge = hinge;
-                paths.extend(bake_swing_arc(
-                    OpeningComponentSlot::Swing2D,
-                    cell_params,
-                    width * 0.5,
-                    params.frame_thickness,
-                ).into_iter().map(|mut p| {
-                    for point in &mut p.points {
-                        point.0 += center_x;
-                    }
-                    p
-                }));
+        let is_door = cell.cell.kind
+            == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
+            || params.kind == OpeningKind::Door;
+        if !is_door && matches!(hinge, LeafOperation::Turn { .. }) && glyph == SwingGlyph::Arc {
+            continue;
+        }
+        paths.extend(plan_operation_schema(cell, hinge, params, glyph));
+    }
+    let free_y = match params.swing_side {
+        SwingSide::Exterior => params.wall_y_max,
+        SwingSide::Interior => params.wall_y_min,
+    };
+    paths.extend(chain_schema_paths(
+        &resolve_grid(grid, params.width, params.height),
+        params.hinge,
+        OpeningComponentSlot::Swing2D,
+        ChainPlane::Plan { free_y },
+    ));
+    paths
+}
+
+enum ChainPlane {
+    Plan { free_y: f64 },
+    Elevation,
+}
+
+fn cell_operation(cell: &crate::modules::aec::engine::construction_grid::ResolvedCell, fallback: LeafOperation) -> LeafOperation {
+    cell.cell.operation.unwrap_or(fallback)
+}
+
+fn slide_or_fold(operation: LeafOperation) -> Option<LeafOperation> {
+    match operation {
+        LeafOperation::Slide { .. } | LeafOperation::Fold { .. } => Some(operation),
+        _ => None,
+    }
+}
+
+/// Adjacent cells of the same slide or fold kind, joined by a non-mullion edge.
+fn chain_runs(
+    resolved: &crate::modules::aec::engine::construction_grid::ResolvedGrid,
+    fallback: LeafOperation,
+) -> Vec<Vec<usize>> {
+    use crate::modules::aec::engine::construction_grid::TrackMeeting;
+    let mut order: Vec<usize> = (0..resolved.cells.len()).collect();
+    order.sort_by_key(|&index| (resolved.cells[index].row, resolved.cells[index].column));
+    let mut runs = Vec::new();
+    let mut current = Vec::new();
+    for index in order {
+        let cell = &resolved.cells[index];
+        let joins = current.last().is_some_and(|&previous| {
+            let left: &crate::modules::aec::engine::construction_grid::ResolvedCell =
+                &resolved.cells[previous];
+            left.row == cell.row
+                && cell.column == left.column + 1
+                && (cell.left - left.right).abs() < 1e-6
+                && slide_or_fold(cell_operation(left, fallback))
+                    == slide_or_fold(cell_operation(cell, fallback))
+                && resolved
+                    .columns
+                    .get(left.column)
+                    .is_some_and(|track| !matches!(track.meeting, TrackMeeting::Mullion))
+        });
+        if !joins && !current.is_empty() {
+            if current.len() >= 2 {
+                runs.push(current);
             }
-            SwingGlyph::Triangle => {
-                let hinge_x = match hinge {
-                    HingeSide::Left => cell.left,
-                    HingeSide::Right => cell.right,
+            current = Vec::new();
+        }
+        if slide_or_fold(cell_operation(cell, fallback)).is_some() {
+            current.push(index);
+        } else if !current.is_empty() {
+            if current.len() >= 2 {
+                runs.push(current);
+            }
+            current = Vec::new();
+        }
+    }
+    if current.len() >= 2 {
+        runs.push(current);
+    }
+    runs
+}
+
+fn chain_cells(
+    resolved: &crate::modules::aec::engine::construction_grid::ResolvedGrid,
+    fallback: LeafOperation,
+) -> std::collections::HashSet<(usize, usize)> {
+    chain_runs(resolved, fallback)
+        .into_iter()
+        .flat_map(|run| {
+            run.into_iter()
+                .map(|index| (resolved.cells[index].column, resolved.cells[index].row))
+        })
+        .collect()
+}
+
+fn chain_schema_paths(
+    resolved: &crate::modules::aec::engine::construction_grid::ResolvedGrid,
+    fallback: LeafOperation,
+    slot: OpeningComponentSlot,
+    plane: ChainPlane,
+) -> Vec<BakedPath> {
+    use crate::modules::aec::engine::construction_grid::TrackEnd;
+    let mut paths = Vec::new();
+    for run in chain_runs(resolved, fallback) {
+        let operation = cell_operation(&resolved.cells[run[0]], fallback);
+        let toward_end = match operation.bearing() {
+            TrackEnd::End => true,
+            TrackEnd::Start => false,
+        };
+        for (step, index) in run.iter().enumerate() {
+            let cell = &resolved.cells[*index];
+            let (low, high) = match plane {
+                ChainPlane::Plan { free_y } => (0.0, free_y),
+                ChainPlane::Elevation => (cell.bottom, cell.top),
+            };
+            let from_x = if toward_end { cell.left } else { cell.right };
+            let to_x = if toward_end { cell.right } else { cell.left };
+            let from_y = if step % 2 == 0 { low } else { high };
+            let to_y = if step % 2 == 0 { high } else { low };
+            paths.push(path(slot, vec![(from_x, from_y), (to_x, to_y)], false, false));
+        }
+    }
+    paths
+}
+
+fn plan_operation_schema(
+    cell: &crate::modules::aec::engine::opening_style::DivisionCellLayout,
+    hinge: LeafOperation,
+    params: OpeningBakeParams,
+    glyph: SwingGlyph,
+) -> Vec<BakedPath> {
+    use crate::modules::aec::engine::construction_grid::TrackEnd;
+    let width = cell.right - cell.left;
+    let center_x = (cell.left + cell.right) * 0.5;
+    let free_y = match params.swing_side {
+        SwingSide::Exterior => params.wall_y_max,
+        SwingSide::Interior => params.wall_y_min,
+    };
+    let slot = OpeningComponentSlot::Swing2D;
+    match hinge {
+        LeafOperation::Turn { .. } | LeafOperation::TiltTurn { .. } => {
+            if glyph == SwingGlyph::Triangle || matches!(hinge, LeafOperation::TiltTurn { .. }) {
+                let hinge_x = match hinge.bearing() {
+                    TrackEnd::Start => cell.left,
+                    TrackEnd::End => cell.right,
                 };
-                let strike_x = match hinge {
-                    HingeSide::Left => cell.right,
-                    HingeSide::Right => cell.left,
+                let strike_x = match hinge.bearing() {
+                    TrackEnd::Start => cell.right,
+                    TrackEnd::End => cell.left,
                 };
-                let free_y = match params.swing_side {
-                    SwingSide::Exterior => params.wall_y_max,
-                    SwingSide::Interior => params.wall_y_min,
-                };
-                paths.push(path(
-                    OpeningComponentSlot::Swing2D,
+                vec![path(
+                    slot,
                     vec![(hinge_x, 0.0), (strike_x, 0.0), (hinge_x, free_y)],
                     true,
                     false,
+                )]
+            } else {
+                let mut cell_params = params;
+                cell_params.width = width;
+                cell_params.hinge = hinge;
+                bake_swing_arc(slot, cell_params, width * 0.5, params.frame_thickness)
+                    .into_iter()
+                    .map(|mut baked| {
+                        for point in &mut baked.points {
+                            point.0 += center_x;
+                        }
+                        baked
+                    })
+                    .collect()
+            }
+        }
+        LeafOperation::Tilt => vec![path(
+            slot,
+            vec![(cell.left, 0.0), (center_x, free_y), (cell.right, 0.0)],
+            false,
+            false,
+        )],
+        LeafOperation::Pivot { .. } => vec![path(
+            slot,
+            vec![(center_x, params.wall_y_min), (center_x, params.wall_y_max)],
+            false,
+            false,
+        )],
+        LeafOperation::Slide { direction } | LeafOperation::Fold { stack: direction } => {
+            let (from, to) = match direction {
+                TrackEnd::Start => (cell.right, cell.left),
+                TrackEnd::End => (cell.left, cell.right),
+            };
+            vec![path(slot, vec![(from, 0.0), (to, 0.0)], false, false)]
+        }
+    }
+}
+
+fn bake_grid_elevation_schema(grid: &ConstructionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
+    let projected = project_division_sized(grid, params.width, params.height);
+    let Ok(cells) = projected.layout(params.width, params.height, params.kind) else {
+        return Vec::new();
+    };
+    let slot = OpeningComponentSlot::ElevationMuntins2D;
+    let resolved = resolve_grid(grid, params.width, params.height);
+    let chained = chain_cells(&resolved, params.hinge);
+    let mut paths = chain_schema_paths(&resolved, params.hinge, slot, ChainPlane::Elevation);
+    for cell in cells {
+        if chained.contains(&(cell.column, cell.row)) {
+            continue;
+        }
+        let hinge = cell.cell.hinge.unwrap_or(params.hinge);
+        let left = cell.left;
+        let right = cell.right;
+        let bottom = cell.bottom;
+        let top = cell.top;
+        let mid_x = (left + right) * 0.5;
+        let mid_z = (bottom + top) * 0.5;
+        use crate::modules::aec::engine::construction_grid::TrackEnd;
+        match hinge {
+            LeafOperation::Turn { side } | LeafOperation::TiltTurn { side } => {
+                let (hinge_x, strike_x) = match side {
+                    TrackEnd::Start => (left, right),
+                    TrackEnd::End => (right, left),
+                };
+                paths.push(path(
+                    slot,
+                    vec![(strike_x, bottom), (hinge_x, mid_z), (strike_x, top)],
+                    false,
+                    false,
                 ));
+                if matches!(hinge, LeafOperation::TiltTurn { .. }) {
+                    paths.push(path(
+                        slot,
+                        vec![(left, bottom), (mid_x, top), (right, bottom)],
+                        false,
+                        false,
+                    ));
+                }
+            }
+            LeafOperation::Tilt => {
+                paths.push(path(
+                    slot,
+                    vec![(left, bottom), (mid_x, top), (right, bottom)],
+                    false,
+                    false,
+                ));
+            }
+            LeafOperation::Pivot { .. } => {
+                paths.push(path(slot, vec![(mid_x, bottom), (mid_x, top)], false, false));
+                paths.push(path(slot, vec![(left, mid_z), (right, mid_z)], false, false));
+            }
+            LeafOperation::Slide { direction } | LeafOperation::Fold { stack: direction } => {
+                let (from, to) = match direction {
+                    TrackEnd::Start => (right, left),
+                    TrackEnd::End => (left, right),
+                };
+                paths.push(path(slot, vec![(from, mid_z), (to, mid_z)], false, false));
             }
         }
     }
@@ -793,13 +1122,14 @@ fn bake_elevation_frame_level(
     fixed_face_width: f64,
     leaf_face_width: f64,
     level: ElevationFrameLevel,
+    omit_threshold: bool,
 ) -> Vec<BakedPath> {
     let slot = OpeningComponentSlot::ElevationContour2D;
     let width_half = params.width * 0.5;
     match level {
         ElevationFrameLevel::Off => Vec::new(),
         ElevationFrameLevel::Outline => {
-            bake_elevation_contour(slot, params, width_half, params.height, 0.0)
+            bake_elevation_contour(slot, params, width_half, params.height, 0.0, omit_threshold)
                 .into_iter()
                 .take(1)
                 .collect()
@@ -810,6 +1140,7 @@ fn bake_elevation_frame_level(
             width_half,
             params.height,
             fixed_face_width,
+            omit_threshold,
         )
         .into_iter()
         .nth(1)
@@ -822,6 +1153,7 @@ fn bake_elevation_frame_level(
                 width_half,
                 params.height,
                 fixed_face_width,
+                omit_threshold,
             );
             let leaf = bake_elevation_contour(
                 slot,
@@ -829,6 +1161,7 @@ fn bake_elevation_frame_level(
                 width_half,
                 params.height,
                 fixed_face_width + leaf_face_width,
+                omit_threshold,
             );
             fixed
                 .into_iter()
@@ -865,74 +1198,217 @@ fn clipped_horizontal_span(params: OpeningBakeParams, y: f64, left: f64, right: 
 }
 
 fn bake_grid_elevation_divisions(
-    grid: &DivisionGrid,
+    grid: &ConstructionGrid,
     params: OpeningBakeParams,
     level: DivisionLevel,
-    profile: Option<&ResolvedSection>,
+    library: Option<&StyleLibrary>,
+    fallback: &ResolvedSection,
+    leaf: &ResolvedSection,
 ) -> Vec<BakedPath> {
     if level == DivisionLevel::Off {
         return Vec::new();
     }
-    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
-        return Vec::new();
-    };
-    let columns = grid.vertical.len().max(1);
-    let rows = grid.horizontal.len() + 1;
+    let resolved = resolve_grid(grid, params.width, params.height);
     let mut paths = Vec::new();
-    for row in 0..rows {
-        for column in 0..columns.saturating_sub(1) {
-            let left = &cells[row * columns + column];
-            let right = &cells[row * columns + column + 1];
-            let x = (left.right + right.left) * 0.5;
-            let bottom = left.bottom.max(right.bottom);
-            let top = left.top.min(right.top).min(arch_height_at_x(params, x));
+    collect_elevation_divisions(
+        &resolved,
+        0.0,
+        0.0,
+        params,
+        level,
+        library,
+        fallback,
+        leaf,
+        &mut paths,
+    );
+    paths
+}
+
+fn collect_elevation_divisions(
+    resolved: &ResolvedGrid,
+    offset_x: f64,
+    offset_z: f64,
+    params: OpeningBakeParams,
+    level: DivisionLevel,
+    library: Option<&StyleLibrary>,
+    fallback: &ResolvedSection,
+    leaf: &ResolvedSection,
+    paths: &mut Vec<BakedPath>,
+) {
+    let origin = params.width * 0.5;
+    for edge in &resolved.edges {
+        if edge.meeting != TrackMeeting::Mullion {
+            continue;
+        }
+        let section = section_for_profile(library, edge.profile_id.as_deref(), fallback);
+        push_elevation_bar(
+            edge.axis,
+            edge.position,
+            edge.start,
+            edge.end,
+            offset_x,
+            offset_z,
+            origin,
+            params,
+            Some(&section),
+            paths,
+        );
+    }
+    for edge in &resolved.edges {
+        let Some(shift) = stulp_shift(edge.meeting, leaf.face) else {
+            continue;
+        };
+        push_elevation_bar(
+            edge.axis,
+            edge.position + shift,
+            edge.start,
+            edge.end,
+            offset_x,
+            offset_z,
+            origin,
+            params,
+            Some(leaf),
+            paths,
+        );
+        if let Some(path) = paths.last_mut() {
+            path.look_role = Some(OpeningLookRole::Leaf);
+        }
+    }
+    for cell in &resolved.cells {
+        if level == DivisionLevel::PostsAndMuntins {
+            for bar in &cell.bars {
+                let Some(section) = muntin_bar_section(
+                    library,
+                    resolved.muntin_profile_id.as_deref(),
+                    bar.face_width,
+                    bar.depth,
+                    leaf,
+                ) else {
+                    continue;
+                };
+                push_elevation_bar(
+                    bar.axis,
+                    bar.position,
+                    bar.start,
+                    bar.end,
+                    offset_x,
+                    offset_z,
+                    origin,
+                    params,
+                    Some(&section),
+                    paths,
+                );
+            }
+        }
+        if let Some(nested) = &cell.nested {
+            collect_elevation_divisions(
+                nested,
+                offset_x + cell.left,
+                offset_z + cell.bottom,
+                params,
+                level,
+                library,
+                fallback,
+                leaf,
+                paths,
+            );
+        }
+    }
+}
+
+fn push_elevation_bar(
+    axis: BarAxis,
+    position: f64,
+    start: f64,
+    end: f64,
+    offset_x: f64,
+    offset_z: f64,
+    origin: f64,
+    params: OpeningBakeParams,
+    profile: Option<&ResolvedSection>,
+    paths: &mut Vec<BakedPath>,
+) {
+    match axis {
+        BarAxis::Vertical => {
+            let x = position + offset_x - origin;
+            let bottom = start + offset_z;
+            let top = (end + offset_z).min(arch_height_at_x(params, x));
             if top > bottom {
                 paths.push(bake_elevation_vertical_division_path(x, bottom, top, profile));
             }
         }
-    }
-    for row in 0..rows.saturating_sub(1) {
-        for column in 0..columns {
-            let lower = &cells[row * columns + column];
-            let upper = &cells[(row + 1) * columns + column];
-            let y = (lower.top + upper.bottom) * 0.5;
-            let (left, right) = clipped_horizontal_span(params, y, lower.left, lower.right);
+        BarAxis::Horizontal => {
+            let y = position + offset_z;
+            let (left, right) = clipped_horizontal_span(
+                params,
+                y,
+                start + offset_x - origin,
+                end + offset_x - origin,
+            );
             if right > left {
                 paths.push(bake_elevation_horizontal_division_path(left, right, y, profile));
             }
         }
     }
-    if level == DivisionLevel::PostsAndMuntins {
-        for cell in &cells {
-            if !matches!(
-                cell.cell.kind,
-                crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
-                    | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
-            ) {
-                continue;
-            }
-            for fraction in &grid.vertical_muntins {
-                let x = cell.left + (cell.right - cell.left) * fraction;
-                let top = cell.top.min(arch_height_at_x(params, x));
-                if top > cell.bottom {
-                    paths.push(bake_elevation_vertical_division_path(
-                        x,
-                        cell.bottom,
-                        top,
-                        profile,
-                    ));
-                }
-            }
-            for height in &grid.horizontal_muntins {
-                let y = cell.bottom + height;
-                let (left, right) = clipped_horizontal_span(params, y, cell.left, cell.right);
-                if y < cell.top && right > left {
-                    paths.push(bake_elevation_horizontal_division_path(left, right, y, profile));
-                }
-            }
-        }
+}
+
+fn section_for_profile(
+    library: Option<&StyleLibrary>,
+    profile_id: Option<&str>,
+    fallback: &ResolvedSection,
+) -> ResolvedSection {
+    if profile_id.is_some() {
+        resolve_component_section(library, profile_id, fallback.face, fallback.depth)
+    } else {
+        fallback.clone()
     }
-    paths
+}
+
+/// A valid muntin profile covers every bar of this grid. An unknown id keeps
+/// the stored bar sizes. Empty sizes fall back to the leaf envelope. A zero
+/// size without a resolvable profile draws no bar.
+pub(crate) fn muntin_bar_section(
+    library: Option<&StyleLibrary>,
+    profile_id: Option<&str>,
+    face_width: f64,
+    depth: f64,
+    leaf: &ResolvedSection,
+) -> Option<ResolvedSection> {
+    if let Some(profile) = profile_id
+        .and_then(|id| library?.find_section_profile(id))
+        .filter(|profile| profile.is_valid())
+    {
+        return Some(resolve_section(Some(profile), face_width, depth));
+    }
+    if face_width > 1e-9 && depth > 1e-9 {
+        return Some(resolve_section(None, face_width, depth));
+    }
+    if face_width <= 1e-9 && depth <= 1e-9 && leaf.face > 1e-9 && leaf.depth > 1e-9 {
+        return Some(leaf.clone());
+    }
+    None
+}
+
+/// A stulp sits on the bearer leaf only. `End` is the track after the meeting.
+fn stulp_shift(meeting: TrackMeeting, face: f64) -> Option<f64> {
+    let TrackMeeting::Stulp { bearer } = meeting else {
+        return None;
+    };
+    if face <= 1e-9 {
+        return None;
+    }
+    Some(match bearer {
+        TrackEnd::End => face * 0.5,
+        TrackEnd::Start => -face * 0.5,
+    })
+}
+
+/// Glass stops at the inner edge of the surrounding bar and bites `inset` into
+/// it, never past the bar.
+pub(crate) fn glass_edge_into_bar(edge: f64, inward: f64, bar: f64, inset: f64) -> f64 {
+    let bar = bar.max(0.0);
+    let bite = inset.max(0.0).min(bar);
+    edge + inward * (bar - bite)
 }
 
 fn bake_elevation_vertical_division_path(
@@ -1181,10 +1657,10 @@ fn bake_generator(
         OpeningGenerator::ThresholdLine => bake_threshold_line(slot, hw, ht),
         OpeningGenerator::OpeningLabel => bake_opening_label_preview(slot, hw),
         OpeningGenerator::ElevationFrameRect => {
-            bake_elevation_contour(slot, p, hw, p.height, ft)
+            bake_elevation_contour(slot, p, hw, p.height, ft, p.kind == OpeningKind::Door)
         }
         OpeningGenerator::ElevationFrameArch => {
-            bake_elevation_contour(slot, p, hw, p.height, ft)
+            bake_elevation_contour(slot, p, hw, p.height, ft, p.kind == OpeningKind::Door)
         }
         OpeningGenerator::ElevationMuntinsSingle => {
             bake_elevation_muntins_single(slot, hw, p.height, ft)
@@ -1315,7 +1791,7 @@ fn bake_leaf_line(
 }
 
 fn leaf_segment(
-    hinge: HingeSide,
+    hinge: LeafOperation,
     swing: SwingSide,
     hw: f64,
     angle_deg: f64,
@@ -1329,8 +1805,8 @@ fn leaf_segment(
         SwingSide::Exterior => 1.0,
         SwingSide::Interior => -1.0,
     };
-    match hinge {
-        HingeSide::Left => {
+    match hinge.bearing() {
+        crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
             let start = (-hw + rebate_w, 0.0);
             let end = (
                 -hw + rebate_w + clear_w * ang.cos(),
@@ -1338,7 +1814,7 @@ fn leaf_segment(
             );
             (start, end)
         }
-        HingeSide::Right => {
+        crate::modules::aec::engine::construction_grid::TrackEnd::End => {
             let start = (hw - rebate_w, 0.0);
             let end = (
                 hw - rebate_w - clear_w * ang.cos(),
@@ -1366,8 +1842,8 @@ fn bake_swing_arc(slot: OpeningComponentSlot, p: OpeningBakeParams, hw: f64, ft:
         SwingSide::Exterior => 1.0,
         SwingSide::Interior => -1.0,
     };
-    let pts = match p.hinge {
-        HingeSide::Left => {
+    let pts = match p.hinge.bearing() {
+        crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
             let cx = -hw + rebate_w;
             (0..=n)
                 .map(|i| {
@@ -1376,7 +1852,7 @@ fn bake_swing_arc(slot: OpeningComponentSlot, p: OpeningBakeParams, hw: f64, ft:
                 })
                 .collect()
         }
-        HingeSide::Right => {
+        crate::modules::aec::engine::construction_grid::TrackEnd::End => {
             let cx = hw - rebate_w;
             (0..=n)
                 .map(|i| {
@@ -1660,6 +2136,7 @@ fn bake_elevation_contour(
     hw: f64,
     h: f64,
     ft: f64,
+    omit_threshold: bool,
 ) -> Vec<BakedPath> {
     match p.shape {
         OpeningShape::Arch => {
@@ -1677,7 +2154,8 @@ fn bake_elevation_contour(
             if ft > 1e-4 && hw > ft && h > 2.0 * ft {
                 let inner_hw = hw - ft;
                 let inner_h = h - ft;
-                let mut inner = vec![(-inner_hw, ft), (inner_hw, ft), (inner_hw, spring)];
+                let bot = if omit_threshold { 0.0 } else { ft };
+                let mut inner = vec![(-inner_hw, bot), (inner_hw, bot), (inner_hw, spring)];
                 for i in 0..=n {
                     let angle = (i as f64) / (n as f64) * std::f64::consts::PI;
                     let x = inner_hw * angle.cos();
@@ -1693,9 +2171,10 @@ fn bake_elevation_contour(
             let outer = vec![(-hw, 0.0), (hw, 0.0), (hw, h), (-hw, h)];
             let mut res = vec![path(slot, outer, true, false)];
             if ft > 1e-4 && hw > ft && h > 2.0 * ft {
+                let bot = if omit_threshold { 0.0 } else { ft };
                 let inner = vec![
-                    (-hw + ft, ft),
-                    (hw - ft, ft),
+                    (-hw + ft, bot),
+                    (hw - ft, bot),
                     (hw - ft, h - ft),
                     (-hw + ft, h - ft),
                 ];
@@ -1775,8 +2254,8 @@ fn bake_elevation_swing_triangle(
     let inset_top = (h - ft).max(ft);
     let mid_h = (inset_bot + inset_top) * 0.5;
 
-    match p.hinge {
-        HingeSide::Left => {
+    match p.hinge.bearing() {
+        crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
             let pts = vec![
                 (inset_w, inset_bot),
                 (-inset_w, mid_h),
@@ -1784,7 +2263,7 @@ fn bake_elevation_swing_triangle(
             ];
             vec![path(slot, pts, false, false)]
         }
-        HingeSide::Right => {
+        crate::modules::aec::engine::construction_grid::TrackEnd::End => {
             let pts = vec![
                 (-inset_w, inset_bot),
                 (inset_w, mid_h),
@@ -2028,10 +2507,36 @@ pub fn build_opening_frame_3d(
     shape: OpeningShape,
     spring_height: f64,
 ) -> Option<cadkernel::brep::Body> {
-    let hw = width * 0.5;
+    build_opening_frame_3d_with_threshold(
+        width,
+        height,
+        frame_thickness,
+        depth,
+        shape,
+        spring_height,
+        true,
+    )
+}
+
+pub fn build_opening_frame_3d_with_threshold(
+    width: f64,
+    height: f64,
+    frame_thickness: f64,
+    depth: f64,
+    shape: OpeningShape,
+    spring_height: f64,
+    include_threshold: bool,
+) -> Option<cadkernel::brep::Body> {
     let hd = depth * 0.5;
-    let ft = frame_thickness.max(0.02).min(hw * 0.45);
-    let (outer, inner) = opening_elevation_loops(shape, width, height, spring_height, ft, false);
+    let ft = frame_thickness.max(0.02).min(width * 0.5 * 0.45);
+    let (outer, inner) = opening_elevation_loops(
+        shape,
+        width,
+        height,
+        spring_height,
+        ft,
+        !include_threshold,
+    );
     build_faceted_hollow_prism(&outer, &inner, -hd, hd)
 }
 
@@ -2040,7 +2545,7 @@ pub fn build_opening_leaf_3d(
     height: f64,
     frame_thickness: f64,
     opening_angle_deg: f64,
-    hinge: HingeSide,
+    hinge: LeafOperation,
     swing: SwingSide,
     is_door: bool,
     shape: OpeningShape,
@@ -2066,29 +2571,77 @@ pub fn build_opening_leaf_3d_with_depth(
     frame_thickness: f64,
     leaf_depth: f64,
     opening_angle_deg: f64,
-    hinge: HingeSide,
+    hinge: LeafOperation,
     swing: SwingSide,
     is_door: bool,
     shape: OpeningShape,
     spring_height: f64,
 ) -> Option<cadkernel::brep::Body> {
-    let hw = width * 0.5;
-    let ft = frame_thickness.max(0.02).min(hw * 0.45);
-    let (_outer, inner) = opening_elevation_loops(shape, width, height, spring_height, ft, is_door);
-    let leaf_ht = leaf_depth.max(0.001) * 0.5;
-    let cub = build_faceted_prism(&inner, -leaf_ht, leaf_ht)?;
+    build_opening_leaf_ring(
+        width,
+        height,
+        frame_thickness,
+        leaf_depth,
+        0.0,
+        0.0,
+        opening_angle_deg,
+        hinge,
+        swing,
+        is_door,
+        shape,
+        spring_height,
+    )
+}
 
-    let hinge_x = match hinge {
-        HingeSide::Left => -hw + ft,
-        HingeSide::Right => hw - ft,
+/// Leaf as a frame ring. `lateral_overlap` grows the ring past the cell on both
+/// sides; `depth_offset` shifts it along the wall normal. A ring that closes
+/// the cell falls back to the solid plate.
+pub fn build_opening_leaf_ring(
+    width: f64,
+    height: f64,
+    frame_thickness: f64,
+    leaf_depth: f64,
+    lateral_overlap: f64,
+    depth_offset: f64,
+    opening_angle_deg: f64,
+    hinge: LeafOperation,
+    swing: SwingSide,
+    is_door: bool,
+    shape: OpeningShape,
+    spring_height: f64,
+) -> Option<cadkernel::brep::Body> {
+    let grown = (width + lateral_overlap * 2.0).max(width);
+    let hw = grown * 0.5;
+    let ft = frame_thickness.max(0.02).min(hw * 0.45);
+    let (outer, inner) =
+        opening_elevation_loops(shape, grown, height, spring_height, ft, is_door);
+    let leaf_ht = leaf_depth.max(0.001) * 0.5;
+    let y0 = -leaf_ht + depth_offset;
+    let y1 = leaf_ht + depth_offset;
+    let closed = inner.len() < 3
+        || inner.iter().all(|(x, z)| {
+            outer
+                .first()
+                .map(|(ox, oz)| (x - ox).abs() < 1e-6 && (z - oz).abs() < 1e-6)
+                .unwrap_or(true)
+        });
+    let cub = if closed || is_door {
+        build_faceted_prism(&outer, y0, y1)?
+    } else {
+        build_faceted_hollow_prism(&outer, &inner, y0, y1)?
+    };
+
+    let hinge_x = match hinge.bearing() {
+        crate::modules::aec::engine::construction_grid::TrackEnd::Start => -hw + ft,
+        crate::modules::aec::engine::construction_grid::TrackEnd::End => hw - ft,
     };
     let swing_sign = match swing {
         SwingSide::Exterior => 1.0,
         SwingSide::Interior => -1.0,
     };
-    let ang = match hinge {
-        HingeSide::Left => swing_sign * opening_angle_deg.to_radians(),
-        HingeSide::Right => -swing_sign * opening_angle_deg.to_radians(),
+    let ang = match hinge.bearing() {
+        crate::modules::aec::engine::construction_grid::TrackEnd::Start => swing_sign * opening_angle_deg.to_radians(),
+        crate::modules::aec::engine::construction_grid::TrackEnd::End => -swing_sign * opening_angle_deg.to_radians(),
     };
     if ang.abs() > 1e-6 {
         crate::scene::model::solid_model::turned(&cub, 2, ang, [hinge_x, 0.0, 0.0])
@@ -2139,18 +2692,41 @@ fn build_opening_box_3d_with_bounds(
 }
 
 pub(crate) fn build_opening_grid_bars_3d(
-    grid: &DivisionGrid,
+    grid: &ConstructionGrid,
     params: OpeningBakeParams,
     post_width: f64,
-    muntin_width: f64,
     depth: f64,
+    library: Option<&StyleLibrary>,
+    leaf: &ResolvedSection,
 ) -> Vec<(cadkernel::brep::Body, f64, f64)> {
-    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
-        return Vec::new();
-    };
-    let columns = grid.vertical.len().max(1);
-    let rows = grid.horizontal.len() + 1;
+    let resolved = resolve_grid(grid, params.width, params.height);
     let mut bars = Vec::new();
+    collect_grid_bars_3d(
+        &resolved,
+        0.0,
+        0.0,
+        params,
+        post_width,
+        depth,
+        library,
+        leaf,
+        &mut bars,
+    );
+    bars
+}
+
+fn collect_grid_bars_3d(
+    resolved: &ResolvedGrid,
+    offset_x: f64,
+    offset_z: f64,
+    params: OpeningBakeParams,
+    post_width: f64,
+    depth: f64,
+    library: Option<&StyleLibrary>,
+    leaf: &ResolvedSection,
+    bars: &mut Vec<(cadkernel::brep::Body, f64, f64)>,
+) {
+    let origin = params.width * 0.5;
     let mut add_bar = |left: f64, right: f64, bottom: f64, top: f64| {
         if right <= left || top <= bottom || depth <= 0.0 {
             return;
@@ -2159,52 +2735,109 @@ pub(crate) fn build_opening_grid_bars_3d(
             bars.push((body, (left + right) * 0.5, (bottom + top) * 0.5));
         }
     };
-    for row in 0..rows {
-        for column in 0..columns.saturating_sub(1) {
-            let left = &cells[row * columns + column];
-            let right = &cells[row * columns + column + 1];
-            let x = (left.right + right.left) * 0.5;
-            let bottom = left.bottom.max(right.bottom);
-            let top = left.top.min(right.top).min(arch_height_at_x(params, x));
-            add_bar(x - post_width * 0.5, x + post_width * 0.5, bottom, top);
-        }
-    }
-    for row in 0..rows.saturating_sub(1) {
-        for column in 0..columns {
-            let lower = &cells[row * columns + column];
-            let upper = &cells[(row + 1) * columns + column];
-            let z = (lower.top + upper.bottom) * 0.5;
-            let (left, right) = clipped_horizontal_span(params, z, lower.left, lower.right);
-            add_bar(left, right, z - post_width * 0.5, z + post_width * 0.5);
-        }
-    }
-    for cell in &cells {
-        if !matches!(
-            cell.cell.kind,
-            crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
-                | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
-        ) {
+    for edge in &resolved.edges {
+        if edge.meeting != TrackMeeting::Mullion {
             continue;
         }
-        for fraction in &grid.vertical_muntins {
-            let x = cell.left + (cell.right - cell.left) * fraction;
-            let top = cell.top.min(arch_height_at_x(params, x));
-            add_bar(
-                x - muntin_width * 0.5,
-                x + muntin_width * 0.5,
-                cell.bottom,
-                top,
-            );
-        }
-        for height in &grid.horizontal_muntins {
-            let z = cell.bottom + height;
-            let (left, right) = clipped_horizontal_span(params, z, cell.left, cell.right);
-            if z < cell.top {
-                add_bar(left, right, z - muntin_width * 0.5, z + muntin_width * 0.5);
+        match edge.axis {
+            BarAxis::Vertical => {
+                let x = edge.position + offset_x - origin;
+                let bottom = edge.start + offset_z;
+                let top = (edge.end + offset_z).min(arch_height_at_x(params, x));
+                add_bar(x - post_width * 0.5, x + post_width * 0.5, bottom, top);
+            }
+            BarAxis::Horizontal => {
+                let z = edge.position + offset_z;
+                let (left, right) = clipped_horizontal_span(
+                    params,
+                    z,
+                    edge.start + offset_x - origin,
+                    edge.end + offset_x - origin,
+                );
+                add_bar(left, right, z - post_width * 0.5, z + post_width * 0.5);
             }
         }
     }
-    bars
+    for edge in &resolved.edges {
+        let Some(shift) = stulp_shift(edge.meeting, leaf.face) else {
+            continue;
+        };
+        if leaf.depth <= 0.0 {
+            continue;
+        }
+        match edge.axis {
+            BarAxis::Vertical => {
+                let x = edge.position + offset_x - origin + shift;
+                let bottom = edge.start + offset_z;
+                let top = (edge.end + offset_z).min(arch_height_at_x(params, x));
+                if let Some(body) = build_opening_box_3d(leaf.face, top - bottom, leaf.depth) {
+                    bars.push((body, x, (bottom + top) * 0.5));
+                }
+            }
+            BarAxis::Horizontal => {
+                let z = edge.position + offset_z + shift;
+                let (left, right) = clipped_horizontal_span(
+                    params,
+                    z,
+                    edge.start + offset_x - origin,
+                    edge.end + offset_x - origin,
+                );
+                if let Some(body) = build_opening_box_3d(right - left, leaf.face, leaf.depth) {
+                    bars.push((body, (left + right) * 0.5, z));
+                }
+            }
+        }
+    }
+    for cell in &resolved.cells {
+        for bar in &cell.bars {
+            let Some(section) = muntin_bar_section(
+                library,
+                resolved.muntin_profile_id.as_deref(),
+                bar.face_width,
+                bar.depth,
+                leaf,
+            ) else {
+                continue;
+            };
+            let face = section.face;
+            let bar_depth = section.depth;
+            match bar.axis {
+                BarAxis::Vertical => {
+                    let x = bar.position + offset_x - origin;
+                    let bottom = bar.start + offset_z;
+                    let top = (bar.end + offset_z).min(arch_height_at_x(params, x));
+                    if let Some(body) = build_opening_box_3d(face, top - bottom, bar_depth) {
+                        bars.push((body, x, (bottom + top) * 0.5));
+                    }
+                }
+                BarAxis::Horizontal => {
+                    let z = bar.position + offset_z;
+                    let (left, right) = clipped_horizontal_span(
+                        params,
+                        z,
+                        bar.start + offset_x - origin,
+                        bar.end + offset_x - origin,
+                    );
+                    if let Some(body) = build_opening_box_3d(right - left, face, bar_depth) {
+                        bars.push((body, (left + right) * 0.5, z));
+                    }
+                }
+            }
+        }
+        if let Some(nested) = &cell.nested {
+            collect_grid_bars_3d(
+                nested,
+                offset_x + cell.left,
+                offset_z + cell.bottom,
+                params,
+                post_width,
+                depth,
+                library,
+                leaf,
+                bars,
+            );
+        }
+    }
 }
 
 fn opening_look_line_style(
@@ -2516,6 +3149,7 @@ pub fn bake_opening_world_with_doc(
     let (slots, style) = resolved_slots_for_plan(opening, library, plan);
     let style = style.unwrap_or_else(|| default_style_for_kind(opening.kind));
     let grid = opening.division_override.as_ref().unwrap_or(&style.grid);
+    let projected = project_division_sized(grid, opening.width, opening.height);
     let params = OpeningBakeParams::from_opening(opening, thickness, Some(&style))
         .with_wall_bounds(wall_y_min, wall_y_max);
     let merged = rules_with_plan_visibility(opening, library, rules);
@@ -2527,7 +3161,7 @@ pub fn bake_opening_world_with_doc(
         grid,
         representation_levels(
             &slots,
-            grid,
+            &projected,
             merged
                 .as_ref()
                 .and_then(|rules| rules.opening_division_level),
@@ -2779,9 +3413,9 @@ pub fn opening_axis_grips(
         SwingSide::Exterior => 1.0,
         SwingSide::Interior => -1.0,
     };
-    let hinge_sign = match opening.hinge {
-        HingeSide::Left => -1.0,
-        HingeSide::Right => 1.0,
+    let hinge_sign = match opening.hinge.bearing() {
+        crate::modules::aec::engine::construction_grid::TrackEnd::Start => -1.0,
+        crate::modules::aec::engine::construction_grid::TrackEnd::End => 1.0,
     };
 
     let hinge_handle = DVec3::new(
@@ -2982,12 +3616,13 @@ pub fn regenerate_opening_display(
     let (slots, style) = resolved_slots_for_plan(&opening, library, plan);
     let style = style.unwrap_or_else(|| default_style_for_kind(opening.kind));
     let grid = opening.division_override.as_ref().unwrap_or(&style.grid);
+    let projected = project_division_sized(grid, opening.width, opening.height);
     let params = OpeningBakeParams::from_opening(&opening, thickness, Some(&style))
         .with_wall_bounds(wall_y_min, wall_y_max);
     let merged_rules = rules_with_plan_visibility(&opening, library, rules);
     let levels = representation_levels(
         &slots,
-        grid,
+        &projected,
         merged_rules
             .as_ref()
             .and_then(|rules| rules.opening_division_level),
@@ -2997,7 +3632,7 @@ pub fn regenerate_opening_display(
         params,
         &style.parts,
         library,
-        grid,
+        &grid,
         levels,
         merged_rules.as_ref(),
         Some(&scene.document),
@@ -3188,13 +3823,13 @@ pub fn regenerate_opening_display(
         style.parts.leaf_frame.depth,
     );
     let division_profile = grid
-        .profile_id
+        .muntin_profile_id
         .as_deref()
         .and_then(|id| library?.find_section_profile(id))
         .filter(|profile| profile.is_valid());
     let division_section = resolve_component_section(
         library,
-        grid.profile_id.as_deref(),
+        grid.muntin_profile_id.as_deref(),
         style.parts.fixed_frame.face_width,
         style.parts.fixed_frame.wall_depth,
     );
@@ -3229,7 +3864,6 @@ pub fn regenerate_opening_display(
         wall_y_max - wall_y_min,
     );
     let division_post_width = division_profile.map_or(fixed_frame_section.face, |_| division_section.face);
-    let division_muntin_width = division_profile.map_or(leaf_frame_section.face, |_| division_section.face);
     let division_depth = division_profile.map_or(fixed_frame_section.depth, |_| division_section.depth);
 
     if frame_3d_vis && opening.kind != OpeningKind::Breakthrough {
@@ -3239,13 +3873,15 @@ pub fn regenerate_opening_display(
             OpeningLookRole::FixedFrame,
             library,
         ) {
-            if let Some(body) = build_opening_frame_3d(
+            if let Some(body) = build_opening_frame_3d_with_threshold(
                 opening.width,
                 opening.height,
                 fixed_frame_section.face,
                 fixed_frame_section.depth,
                 params.shape,
                 params.spring_height,
+                !omits_threshold(&resolve_grid(grid, opening.width, opening.height), opening.width)
+                    && opening.kind != OpeningKind::Door,
             ) {
                 emit_opening_solid_3d(
                     scene,
@@ -3279,8 +3915,9 @@ pub fn regenerate_opening_display(
                 grid,
                 params,
                 division_post_width,
-                division_muntin_width,
                 division_depth,
+                library,
+                &leaf_frame_section,
             ) {
                 emit_opening_solid_3d(
                     scene,
@@ -3318,7 +3955,7 @@ pub fn regenerate_opening_display(
             library,
         )
     {
-        if let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) {
+        if let Ok(cells) = projected.layout(opening.width, opening.height, opening.kind) {
             for cell in cells {
                 if !matches!(
                     cell.cell.kind,
@@ -3338,11 +3975,13 @@ pub fn regenerate_opening_display(
                 }
                 let is_door =
                     cell.cell.kind == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf;
-                if let Some(body) = build_opening_leaf_3d_with_depth(
+                if let Some(body) = build_opening_leaf_ring(
                     width,
                     height,
                     leaf_frame_section.face,
                     leaf_frame_section.depth,
+                    style.parts.leaf_frame.lateral_overlap,
+                    style.parts.leaf_frame.depth_offset,
                     style.opening_angle_deg,
                     cell.cell.hinge.unwrap_or(opening.hinge),
                     opening.swing_side,
@@ -3382,7 +4021,7 @@ pub fn regenerate_opening_display(
     if glazing_3d_vis
         && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Glazing)
     {
-        if let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) {
+        if let Ok(cells) = projected.layout(opening.width, opening.height, opening.kind) {
             for cell in cells {
                 if !matches!(
                     cell.cell.kind,
@@ -3392,14 +4031,43 @@ pub fn regenerate_opening_display(
                     continue;
                 }
                 let inset = style.parts.glazing.inset.max(0.0);
-                let left = cell.left + inset;
-                let right = cell.right - inset;
-                let bottom = cell.bottom + inset;
-                let top = cell
-                    .top
-                    .min(arch_height_at_x(params, left))
-                    .min(arch_height_at_x(params, right))
-                    - inset;
+                let leaf_here = matches!(
+                    cell.cell.kind,
+                    crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                ) && opening_component_should_render(
+                    &style.parts,
+                    opening.kind,
+                    OpeningLookRole::Leaf,
+                );
+                let bar = if leaf_here {
+                    leaf_frame_section.face
+                } else {
+                    fixed_frame_section.face
+                };
+                let overlap = if leaf_here {
+                    style.parts.leaf_frame.lateral_overlap.max(0.0)
+                } else {
+                    0.0
+                };
+                let surround = (bar - overlap).max(0.0);
+                let left = glass_edge_into_bar(cell.left, 1.0, surround, inset);
+                let right = glass_edge_into_bar(cell.right, -1.0, surround, inset);
+                let bottom_bar = if cell.cell.kind
+                    == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
+                {
+                    0.0
+                } else {
+                    surround
+                };
+                let bottom = glass_edge_into_bar(cell.bottom, 1.0, bottom_bar, inset);
+                let top = glass_edge_into_bar(
+                    cell.top
+                        .min(arch_height_at_x(params, left))
+                        .min(arch_height_at_x(params, right)),
+                    -1.0,
+                    surround,
+                    inset,
+                );
                 let width = right - left;
                 let height = top - bottom;
                 if width <= 0.0 || height <= 0.0 {
@@ -3710,7 +4378,7 @@ mod tests {
     use crate::modules::aec::engine::xdata::wall_record_for_wall;
     use crate::scene::Scene;
 
-    fn params(width: f64, kind: OpeningKind, hinge: HingeSide) -> OpeningBakeParams {
+    fn params(width: f64, kind: OpeningKind, hinge: LeafOperation) -> OpeningBakeParams {
         OpeningBakeParams {
             width,
             height: 1.2,
@@ -3802,7 +4470,7 @@ mod tests {
             cells: vec![OpeningCell::default(), OpeningCell::default()],
             ..DivisionGrid::default()
         };
-        let params = params(1.2, OpeningKind::Window, HingeSide::Left);
+        let params = params(1.2, OpeningKind::Window, LeafOperation::left());
         let parts = OpeningParts::default();
         let plan = bake_opening_plan_paths(
             params,
@@ -3849,16 +4517,176 @@ mod tests {
             ..DivisionGrid::default()
         };
         let bars = build_opening_grid_bars_3d(
-            &grid,
-            params(2.0, OpeningKind::Window, HingeSide::Left),
+            &construction_from_division(&grid, 2.0, 1.2),
+            params(2.0, OpeningKind::Window, LeafOperation::left()),
             0.06,
-            0.04,
             0.06,
+            None,
+            &resolve_section(None, 0.04, 0.06),
         );
         assert_eq!(bars.len(), 3);
+
+        let stulp = OpeningStyle::window_double();
+        let stulp_paths = bake_opening_plan_from_grid(
+            params(stulp.default_width, OpeningKind::Window, LeafOperation::left()),
+            &stulp.parts,
+            None,
+            &stulp.grid,
+            PlanFrameLevel::Off,
+            SwingGlyph::Off,
+            DivisionLevel::Posts,
+        );
+        assert!(stulp_paths
+            .iter()
+            .all(|path| path.resolved_look_role() != Some(OpeningLookRole::Division)));
         assert!((bars[0].1 + 0.2).abs() < 1e-12);
         assert!((bars[1].1 + 0.6).abs() < 1e-12);
         assert!((bars[2].1 - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn muntin_profile_covers_every_bar_and_an_unknown_id_keeps_local_sizes() {
+        use crate::modules::aec::engine::construction_grid::{CellBar, CellFill, GridCell};
+        use crate::modules::aec::engine::section_profile::{SectionProfile, SectionShape};
+
+        let mut library = StyleLibrary::empty();
+        assert!(library.upsert_section_profile(SectionProfile::new(
+            "sash-bar",
+            "Sash bar",
+            SectionShape::Rectangle {
+                face: 0.018,
+                depth: 0.024,
+            },
+        )));
+        let grid = ConstructionGrid {
+            muntin_profile_id: Some("sash-bar".into()),
+            cells: vec![GridCell {
+                fill: CellFill::Glass,
+                bars: vec![CellBar {
+                    face_width: 0.9,
+                    depth: 0.9,
+                    ..CellBar::default()
+                }],
+                ..GridCell::default()
+            }],
+            ..ConstructionGrid::default()
+        };
+        let leaf = resolve_section(None, 0.05, 0.04);
+        let covered = muntin_bar_section(Some(&library), Some("sash-bar"), 0.9, 0.9, &leaf)
+            .expect("profile");
+        assert!((covered.face - 0.018).abs() < 1e-12);
+        let kept = muntin_bar_section(Some(&library), Some("missing"), 0.03, 0.02, &leaf)
+            .expect("local");
+        assert!((kept.face - 0.03).abs() < 1e-12);
+        let paths = bake_grid_plan_divisions(
+            &grid,
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
+            DivisionLevel::PostsAndMuntins,
+            Some(&library),
+            &leaf,
+            &leaf,
+        );
+        assert_eq!(paths.len(), 1);
+        let width = paths[0]
+            .points
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - paths[0]
+                .points
+                .iter()
+                .map(|point| point.0)
+                .fold(f64::INFINITY, f64::min);
+        assert!((width - 0.018).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stulp_bar_sits_on_the_bearer_and_the_neighbour_edge_stays_empty() {
+        use crate::modules::aec::engine::construction_grid::division_preset;
+
+        let grid = division_preset("double", crate::modules::aec::engine::construction_grid::CellFill::Glass)
+            .expect("preset");
+        let leaf = resolve_section(None, 0.04, 0.06);
+        let paths = bake_grid_elevation_divisions(
+            &grid,
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
+            DivisionLevel::Posts,
+            None,
+            &leaf,
+            &leaf,
+        );
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].look_role, Some(OpeningLookRole::Leaf));
+        let center = paths[0]
+            .points
+            .iter()
+            .map(|point| point.0)
+            .sum::<f64>()
+            / paths[0].points.len() as f64;
+        assert!((center - (0.6 - 0.6 + 0.02)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fold_chain_draws_one_schema_per_leaf_and_no_interior_post() {
+        use crate::modules::aec::engine::construction_grid::{
+            CellFill, ConstructionGrid, GridCell, GridTrack, LeafOperation, TrackEnd, TrackMeasure,
+            TrackMeeting,
+        };
+
+        let fold = LeafOperation::Fold { stack: TrackEnd::End };
+        let grid = ConstructionGrid {
+            columns: (0..4)
+                .map(|index| GridTrack {
+                    measure: TrackMeasure::Fraction(1.0),
+                    meeting: if index < 3 {
+                        TrackMeeting::Flush
+                    } else {
+                        TrackMeeting::Mullion
+                    },
+                    profile_id: None,
+                })
+                .collect(),
+            rows: vec![GridTrack::default()],
+            cells: (0..4)
+                .map(|column| GridCell {
+                    column,
+                    fill: CellFill::Glass,
+                    operation: Some(fold),
+                    ..GridCell::default()
+                })
+                .collect(),
+            muntin_profile_id: None,
+        };
+        let baked = params(2.0, OpeningKind::Window, fold);
+        let schemas = bake_grid_elevation_schema(&grid, baked);
+        assert_eq!(schemas.len(), 4);
+        for pair in schemas.windows(2) {
+            assert_eq!(pair[0].points[1], pair[1].points[0]);
+        }
+        let leaf = resolve_section(None, 0.04, 0.06);
+        let posts = bake_grid_elevation_divisions(
+            &grid,
+            baked,
+            DivisionLevel::Posts,
+            None,
+            &leaf,
+            &leaf,
+        );
+        assert!(posts.is_empty());
+
+        let mut mixed = grid.clone();
+        mixed.cells[3].operation = Some(LeafOperation::Slide {
+            direction: TrackEnd::End,
+        });
+        let mixed_schemas = bake_grid_elevation_schema(&mixed, baked);
+        assert_eq!(mixed_schemas.len(), 4);
+        assert_ne!(mixed_schemas[2].points[1], mixed_schemas[3].points[0]);
+    }
+
+    #[test]
+    fn glass_bites_into_the_surrounding_bar_and_stops_at_its_outer_edge() {
+        assert!((glass_edge_into_bar(0.08, 1.0, 0.08, 0.012) - 0.148).abs() < 1e-12);
+        assert!((glass_edge_into_bar(0.0, 1.0, 0.08, 0.2) - 0.0).abs() < 1e-12);
     }
 
     #[test]
@@ -3879,7 +4707,7 @@ mod tests {
         parts.fixed_frame.face_width = 0.0;
         parts.fixed_frame.wall_depth = 0.0;
         let paths = bake_opening_plan_paths(
-            params(1.2, OpeningKind::Window, HingeSide::Left),
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
             &parts,
             Some(&library),
             &DivisionGrid::default(),
@@ -3911,7 +4739,7 @@ mod tests {
             ..DivisionGrid::default()
         };
         let division_paths = bake_opening_plan_paths(
-            params(1.2, OpeningKind::Window, HingeSide::Left),
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
             &OpeningParts::default(),
             Some(&library),
             &grid,
@@ -3927,7 +4755,7 @@ mod tests {
         assert_eq!(division.points.len(), 3);
 
         let elevation_paths = bake_opening_elevation_paths(
-            params(1.2, OpeningKind::Window, HingeSide::Left),
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
             &OpeningParts::default(),
             Some(&library),
             &grid,
@@ -3946,7 +4774,7 @@ mod tests {
     fn plan_frame_levels_draw_line_double_line_and_absolute_profile() {
         let parts = OpeningParts::default();
         let grid = DivisionGrid::default();
-        let params = params(1.2, OpeningKind::Window, HingeSide::Left);
+        let params = params(1.2, OpeningKind::Window, LeafOperation::left());
         let frame_paths = |level| {
             bake_opening_plan_paths(
                 params,
@@ -3977,7 +4805,7 @@ mod tests {
     fn plan_triangle_ignores_opening_angle_but_arc_uses_it() {
         let parts = OpeningParts::default();
         let grid = DivisionGrid::default();
-        let mut first_params = params(1.0, OpeningKind::Door, HingeSide::Left);
+        let mut first_params = params(1.0, OpeningKind::Door, LeafOperation::left());
         first_params.opening_angle_deg = 35.0;
         let mut second_params = first_params;
         second_params.opening_angle_deg = 120.0;
@@ -4008,8 +4836,8 @@ mod tests {
     #[test]
     fn window_frame_thickness_does_not_scale_with_width() {
         let slots = default_slots_for_kind(OpeningKind::Window);
-        let a = bake_opening_generators(&slots, params(1.2, OpeningKind::Window, HingeSide::Left), None);
-        let b = bake_opening_generators(&slots, params(1.8, OpeningKind::Window, HingeSide::Left), None);
+        let a = bake_opening_generators(&slots, params(1.2, OpeningKind::Window, LeafOperation::left()), None);
+        let b = bake_opening_generators(&slots, params(1.8, OpeningKind::Window, LeafOperation::left()), None);
         let ia = inner_frame_half_width(&a).unwrap();
         let ib = inner_frame_half_width(&b).unwrap();
         assert!((ia - (1.2 * 0.5 - DEFAULT_FRAME_THICKNESS)).abs() < 1e-9);
@@ -4025,12 +4853,12 @@ mod tests {
         let slots = default_slots_for_kind(OpeningKind::Door);
         let left = bake_opening_generators(
             &slots,
-            params(0.9, OpeningKind::Door, HingeSide::Left),
+            params(0.9, OpeningKind::Door, LeafOperation::left()),
             None,
         );
         let right = bake_opening_generators(
             &slots,
-            params(0.9, OpeningKind::Door, HingeSide::Right),
+            params(0.9, OpeningKind::Door, LeafOperation::right()),
             None,
         );
         let leaf_l = left
@@ -4055,12 +4883,12 @@ mod tests {
         let slots = default_slots_for_kind(OpeningKind::Door);
 
         // Exterior swing (default): leaf deflects in +Y direction
-        let mut params_ext = params(0.9, OpeningKind::Door, HingeSide::Left);
+        let mut params_ext = params(0.9, OpeningKind::Door, LeafOperation::left());
         params_ext.swing_side = SwingSide::Exterior;
         let exterior = bake_opening_generators(&slots, params_ext, None);
 
         // Interior swing: leaf deflects in -Y direction
-        let mut params_int = params(0.9, OpeningKind::Door, HingeSide::Left);
+        let mut params_int = params(0.9, OpeningKind::Door, LeafOperation::left());
         params_int.swing_side = SwingSide::Interior;
         let interior = bake_opening_generators(&slots, params_int, None);
 
@@ -4143,7 +4971,7 @@ mod tests {
         let slots = default_slots_for_kind(OpeningKind::Breakthrough);
         let baked = bake_opening_generators(
             &slots,
-            params(1.0, OpeningKind::Breakthrough, HingeSide::Left),
+            params(1.0, OpeningKind::Breakthrough, LeafOperation::left()),
             None,
         );
         assert!(baked.iter().all(|p| {
@@ -4170,7 +4998,7 @@ mod tests {
             .insert(OpeningComponentSlot::Swing2D.key().to_string(), false);
         let baked = bake_opening_generators(
             &slots,
-            params(0.9, OpeningKind::Door, HingeSide::Left),
+            params(0.9, OpeningKind::Door, LeafOperation::left()),
             Some(&rules),
         );
         assert!(!baked
@@ -4189,7 +5017,7 @@ mod tests {
         parts.interior_board.thickness = 0.05;
 
         let paths = bake_opening_plan_paths(
-            params(1.2, OpeningKind::Window, HingeSide::Left),
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
             &parts,
             None,
             &DivisionGrid::default(),
@@ -4741,7 +5569,7 @@ mod tests {
         let slots = default_slots_for_kind(OpeningKind::Window);
         let baked = bake_opening_generators(
             &slots,
-            params(opening.width, OpeningKind::Window, HingeSide::Left),
+            params(opening.width, OpeningKind::Window, LeafOperation::left()),
             None,
         );
         let inner = inner_frame_half_width(&baked).unwrap();

@@ -15,9 +15,9 @@ use super::{
 };
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::library::StyleLibrary;
-use crate::modules::aec::engine::opening_style::HingeSide;
+use crate::modules::aec::engine::opening_style::project_division_sized;
 use crate::modules::aec::engine::opening_display::{
-    bake_opening_elevation_paths, OpeningBakeParams,
+    bake_opening_elevation_from_grid, OpeningBakeParams,
 };
 use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::plan_view::DisplayConfig;
@@ -928,8 +928,9 @@ fn project_opening_elevation(
     }
 
     let style = resolve_opening_style(ctx, op);
-    let grid = op.division_override.as_ref().unwrap_or(&style.grid);
-    let levels = resolve_opening_representation_levels(ctx, op, grid);
+    let construction = op.division_override.as_ref().unwrap_or(&style.grid);
+    let grid = project_division_sized(construction, op.width, op.height);
+    let levels = resolve_opening_representation_levels(ctx, op, &grid);
     let wall_half_depth = wall.total_thickness * 0.5;
     let bake_params = OpeningBakeParams {
         width: op.width,
@@ -947,11 +948,11 @@ fn project_opening_elevation(
         opening_angle_deg: style.opening_angle_deg,
         kind: op.kind,
     };
-    for baked in bake_opening_elevation_paths(
+    for baked in bake_opening_elevation_from_grid(
         bake_params,
         &style.parts,
         ctx.style_library,
-        grid,
+        construction,
         levels.elevation_frame,
         levels.divisions,
     ) {
@@ -1018,9 +1019,9 @@ fn project_opening_elevation(
             op.swing_side == SwingSide::Interior
         };
 
-        let (hinge_top, hinge_bot, strike_top, strike_bot) = match op.hinge {
-            HingeSide::Left => (uv_tl, uv_bl, uv_tr, uv_br),
-            HingeSide::Right => (uv_tr, uv_br, uv_tl, uv_bl),
+        let (hinge_top, hinge_bot, strike_top, strike_bot) = match op.hinge.bearing() {
+            crate::modules::aec::engine::construction_grid::TrackEnd::Start => (uv_tl, uv_bl, uv_tr, uv_br),
+            crate::modules::aec::engine::construction_grid::TrackEnd::End => (uv_tr, uv_br, uv_tl, uv_bl),
         };
 
         // The tip marks the hinge jamb. A tip on the strike reads as a mirrored leaf.

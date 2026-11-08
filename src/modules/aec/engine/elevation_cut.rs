@@ -10,10 +10,11 @@
 //! Overlapping openings that share an axis span are grouped into one zone; their
 //! holes are united (interval union on each scanline) and subtracted once.
 
+use super::construction_grid::ConstructionGrid;
 use super::geometry::{area, signed_area};
 use super::opening_shape::OpeningShape;
 use super::openings::{Opening, OpeningKind};
-use super::opening_style::DivisionGrid;
+use super::opening_style::{project_division, DivisionGrid};
 
 const EPS: f64 = 1e-9;
 const MIN_SPAN: f64 = 1e-6;
@@ -108,11 +109,13 @@ fn hole_in_zone(opening: &Opening, zone_s0: f64) -> Option<Vec<(f64, f64)>> {
 }
 
 fn holes_in_zone(opening: &Opening, zone_s0: f64) -> Vec<Vec<(f64, f64)>> {
-    let grid = opening
-        .division_override
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(DivisionGrid::default);
+    let fallback = ConstructionGrid::default();
+    let grid = project_division(
+        opening
+            .division_override
+            .as_ref()
+            .unwrap_or(&fallback),
+    );
     if grid.is_implicit_single_cell() {
         return hole_in_zone(opening, zone_s0).into_iter().collect();
     }
@@ -798,7 +801,7 @@ mod tests {
     use super::*;
     use crate::modules::aec::engine::opening_shape::{OpeningShape, TriangleVariant};
     use crate::modules::aec::engine::opening_style::{
-        DivisionGrid, OpeningCell, OpeningCellKind,
+        DivisionGrid, OpeningCell, OpeningCellKind, construction_from_division,
     };
     use crate::modules::aec::engine::openings::OpeningKind;
     use acadrust::Handle;
@@ -891,22 +894,26 @@ mod tests {
         let height = 2.2;
         let wall_h = 2.7;
         let mut opening = dummy(2.0, width, height, 0.0, OpeningShape::Rectangle, 0.0);
-        opening.division_override = Some(DivisionGrid {
-            vertical: vec![0.5, 0.5],
-            cells: vec![
-                OpeningCell {
-                    kind: OpeningCellKind::DoorLeaf,
-                    hinge: Some(crate::modules::aec::engine::opening_style::HingeSide::Left),
-                    sill: 0.0,
-                },
-                OpeningCell {
-                    kind: OpeningCellKind::Glass,
-                    hinge: None,
-                    sill: 1.0,
-                },
-            ],
-            ..DivisionGrid::default()
-        });
+        opening.division_override = Some(construction_from_division(
+            &DivisionGrid {
+                vertical: vec![0.5, 0.5],
+                cells: vec![
+                    OpeningCell {
+                        kind: OpeningCellKind::DoorLeaf,
+                        hinge: Some(crate::modules::aec::engine::opening_style::LeafOperation::left()),
+                        sill: 0.0,
+                    },
+                    OpeningCell {
+                        kind: OpeningCellKind::Glass,
+                        hinge: None,
+                        sill: 1.0,
+                    },
+                ],
+                ..DivisionGrid::default()
+            },
+            width,
+            height,
+        ));
         let zones = opening_zones(&[opening]);
         assert_eq!(zones.len(), 1);
         assert_eq!(zones[0].holes.len(), 2);

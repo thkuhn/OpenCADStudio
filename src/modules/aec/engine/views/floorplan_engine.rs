@@ -27,8 +27,9 @@ use super::{
 };
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::library::StyleLibrary;
+use crate::modules::aec::engine::opening_style::project_division_sized;
 use crate::modules::aec::engine::openings::OpeningKind;
-use crate::modules::aec::engine::opening_display::{bake_opening_plan_paths, OpeningBakeParams};
+use crate::modules::aec::engine::opening_display::{bake_opening_plan_from_grid, OpeningBakeParams};
 use crate::modules::aec::engine::plan_view::DisplayConfig;
 
 const EPS: f64 = 1e-6;
@@ -724,8 +725,9 @@ fn slice_wall_horizontal(
             let op_sources = SourceSet::new(vec![op_source.clone()])?;
 
             let style = resolve_opening_style(ctx, op);
-            let grid = op.division_override.as_ref().unwrap_or(&style.grid);
-            let mut levels = resolve_opening_representation_levels(ctx, op, grid);
+            let construction = op.division_override.as_ref().unwrap_or(&style.grid);
+            let grid = project_division_sized(construction, op.width, op.height);
+            let mut levels = resolve_opening_representation_levels(ctx, op, &grid);
             if !options.show_door_swings {
                 levels.swing = crate::modules::aec::engine::opening_style::SwingGlyph::Off;
             }
@@ -748,11 +750,11 @@ fn slice_wall_horizontal(
             };
             let opening_origin = axis_p0 + axis_dir * op.distance_along_axis
                 + normal * op.cross_axis_offset;
-            for baked in bake_opening_plan_paths(
+            for baked in bake_opening_plan_from_grid(
                 bake_params,
                 &style.parts,
                 ctx.style_library,
-                grid,
+                construction,
                 levels.plan_frame,
                 levels.swing,
                 levels.divisions,
@@ -822,9 +824,9 @@ fn slice_wall_horizontal(
                             continue;
                         }
                         let hinge = cell.cell.hinge.unwrap_or(op.hinge);
-                        let center_x = match hinge {
-                            crate::modules::aec::engine::opening_style::HingeSide::Left => cell.left,
-                            crate::modules::aec::engine::opening_style::HingeSide::Right => cell.right,
+                        let center_x = match hinge.bearing() {
+                            crate::modules::aec::engine::construction_grid::TrackEnd::Start => cell.left,
+                            crate::modules::aec::engine::construction_grid::TrackEnd::End => cell.right,
                         };
                         let radius = cell.right - cell.left;
                         let angle = style.opening_angle_deg.abs().to_radians();
@@ -833,11 +835,11 @@ fn slice_wall_horizontal(
                             crate::modules::aec::engine::openings::SwingSide::Interior => -1.0,
                         };
                         let local_arc_point = |theta: f64| {
-                            let x = match hinge {
-                                crate::modules::aec::engine::opening_style::HingeSide::Left => {
+                            let x = match hinge.bearing() {
+                                crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
                                     center_x + radius * theta.cos()
                                 }
-                                crate::modules::aec::engine::opening_style::HingeSide::Right => {
+                                crate::modules::aec::engine::construction_grid::TrackEnd::End => {
                                     center_x - radius * theta.cos()
                                 }
                             };
@@ -879,11 +881,11 @@ fn slice_wall_horizontal(
                             sweep -= std::f64::consts::TAU;
                         }
                         let mut source = op_source.clone();
-                        source.feature = Some(match hinge {
-                            crate::modules::aec::engine::opening_style::HingeSide::Left => {
+                        source.feature = Some(match hinge.bearing() {
+                            crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
                                 FeatureKey::OpeningLeftJamb
                             }
-                            crate::modules::aec::engine::opening_style::HingeSide::Right => {
+                            crate::modules::aec::engine::construction_grid::TrackEnd::End => {
                                 FeatureKey::OpeningRightJamb
                             }
                         });
@@ -1073,7 +1075,7 @@ fn slice_wall_horizontal(
 mod tests {
     use super::*;
     use crate::modules::aec::engine::opening_shape::OpeningShape;
-    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_style::LeafOperation;
     use crate::modules::aec::engine::openings::{OpeningKind, OpeningReferenceSide};
     use crate::modules::aec::engine::views::model_view::{DetailPolicy, ViewRevisions};
     use crate::modules::aec::engine::views::scene_collector::{
@@ -1781,7 +1783,7 @@ mod tests {
                     sill_height: 0.0,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -1945,7 +1947,7 @@ mod tests {
                 sill_height: 0.0,
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
-                hinge: HingeSide::Left,
+                hinge: LeafOperation::left(),
                 swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
@@ -2050,7 +2052,7 @@ mod tests {
                 sill_height: 0.0,
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
-                hinge: HingeSide::Left,
+                hinge: LeafOperation::left(),
                 swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
@@ -2150,7 +2152,7 @@ mod tests {
                 sill_height: 0.0,
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
-                hinge: HingeSide::Left,
+                hinge: LeafOperation::left(),
                 swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
@@ -2253,7 +2255,7 @@ mod tests {
                 sill_height: 1.5, // > z_cut (1.0)
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
-                hinge: HingeSide::Left,
+                hinge: LeafOperation::left(),
                 swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
@@ -2663,7 +2665,7 @@ mod tests {
                 sill_height: 0.0,
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
-                hinge: HingeSide::Left,
+                hinge: LeafOperation::left(),
                 swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
@@ -2779,7 +2781,7 @@ mod tests {
                     sill_height: 0.8,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -2802,7 +2804,7 @@ mod tests {
                     sill_height: 0.0,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -3038,7 +3040,7 @@ mod tests {
                     sill_height: 0.8,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -3060,7 +3062,7 @@ mod tests {
                     sill_height: 0.0,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -3267,7 +3269,7 @@ mod tests {
                     sill_height: 0.0,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -3290,7 +3292,7 @@ mod tests {
                     sill_height: 0.0,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -3429,7 +3431,7 @@ mod tests {
                     sill_height: 1.0,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -3545,7 +3547,7 @@ mod tests {
                     sill_height: 0.0,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
@@ -3679,7 +3681,7 @@ mod tests {
                     sill_height: 0.5,
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
-                    hinge: HingeSide::Left,
+                    hinge: LeafOperation::left(),
                     swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,

@@ -245,7 +245,7 @@ pub fn opening_from_values(
     };
 
     let mut style_id = None;
-    let mut hinge = engine::opening_style::HingeSide::Left;
+    let mut hinge = engine::opening_style::LeafOperation::left();
     let mut shape = engine::opening_shape::OpeningShape::Rectangle;
     let mut spring_height = 0.0;
     let mut reference_side = engine::openings::OpeningReferenceSide::Center;
@@ -268,7 +268,7 @@ pub fn opening_from_values(
     }
     if planes_pos > 8 {
         if let Some(XDataValue::String(h)) = v.get(8) {
-            hinge = engine::opening_style::HingeSide::from_str(h);
+            hinge = engine::opening_style::LeafOperation::from_str(h);
         }
     }
     if planes_pos > 9 {
@@ -570,7 +570,7 @@ mod tests {
     use super::*;
     use crate::modules::aec::engine::opening_shape::{OpeningShape, TriangleVariant};
     use crate::modules::aec::engine::opening_style::{
-        DivisionGrid, HingeSide, OpeningCell, OpeningCellKind,
+        DivisionGrid, LeafOperation, OpeningCell, OpeningCellKind, construction_from_division,
     };
     use crate::modules::aec::engine::openings::{Opening, OpeningKind};
 
@@ -582,7 +582,7 @@ mod tests {
             OpeningKind::Door,
         );
         o.style_id = Some("style_door_standard".into());
-        o.hinge = HingeSide::Right;
+        o.hinge = LeafOperation::right();
         o.shape = OpeningShape::Arch;
         o.spring_height = 1.65;
         o
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(o.kind, OpeningKind::Window);
         assert_eq!(o.style_id, None);
         assert_eq!(o.division_override, None);
-        assert_eq!(o.hinge, HingeSide::Left);
+        assert_eq!(o.hinge, LeafOperation::left());
         assert_eq!(o.shape, OpeningShape::Rectangle);
         assert_eq!(o.spring_height, 0.0);
         assert!((o.width - 1.2).abs() < 1e-12);
@@ -616,26 +616,30 @@ mod tests {
     #[test]
     fn new_record_roundtrips_style_hinge_shape_spring() {
         let mut o = sample_opening();
-        o.division_override = Some(DivisionGrid {
-            vertical: vec![0.4, 0.6],
-            cells: vec![
-                OpeningCell {
-                    kind: OpeningCellKind::DoorLeaf,
-                    hinge: Some(HingeSide::Right),
-                    sill: 0.0,
-                },
-                OpeningCell {
-                    kind: OpeningCellKind::Glass,
-                    hinge: None,
-                    sill: 0.8,
-                },
-            ],
-            ..DivisionGrid::default()
-        });
+        o.division_override = Some(construction_from_division(
+            &DivisionGrid {
+                vertical: vec![0.4, 0.6],
+                cells: vec![
+                    OpeningCell {
+                        kind: OpeningCellKind::DoorLeaf,
+                        hinge: Some(LeafOperation::right()),
+                        sill: 0.0,
+                    },
+                    OpeningCell {
+                        kind: OpeningCellKind::Glass,
+                        hinge: None,
+                        sill: 0.8,
+                    },
+                ],
+                ..DivisionGrid::default()
+            },
+            o.width,
+            o.height,
+        ));
         let rec = opening_record(&o);
         let back = opening_from_values(o.handle, &rec.values).expect("parse");
         assert_eq!(back.style_id.as_deref(), Some("style_door_standard"));
-        assert_eq!(back.hinge, HingeSide::Right);
+        assert_eq!(back.hinge, LeafOperation::right());
         assert_eq!(back.shape, OpeningShape::Arch);
         assert!((back.spring_height - 1.65).abs() < 1e-12);
         assert_eq!(back.kind, OpeningKind::Door);

@@ -10,15 +10,16 @@ use iced::Task;
 use crate::app::{AecModalKind, AecPendingCopy, Message, OpenCADStudio};
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::opening_display::{
-    bake_opening_elevation_paths, bake_opening_plan_paths, BakedPath, OpeningBakeParams,
+    bake_opening_elevation_from_grid, bake_opening_plan_from_grid, BakedPath, OpeningBakeParams,
 };
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::modules::aec::engine::opening_shape::{clamp_spring, OpeningShape};
 use crate::modules::aec::engine::opening_style::{
-    default_slots_for_kind, BlockPlacementMode, DivisionGrid, FamilyPlacement,
+    construction_from_division, default_slots_for_kind, project_division_sized,
+    BlockPlacementMode, DivisionGrid, FamilyPlacement,
     FamilySymbol, OpeningDisplayProfile, OpeningFamilySymbols, OpeningGenerator, OpeningParts,
     OpeningCell, OpeningEditorGroup, OpeningLookRole, OpeningLooks, OpeningStyle, SlotGeometry,
-    opening_component_should_render, HingeSide, DEFAULT_FRAME_THICKNESS,
+    opening_component_should_render, LeafOperation, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
 use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
@@ -176,6 +177,7 @@ fn symbol_from(name: &str, placement: FamilyPlacement) -> Option<FamilySymbol> {
 
 fn load_part_buffers(app: &mut OpenCADStudio, style: &OpeningStyle) {
     let parts = &style.parts;
+    let division = project_division_sized(&style.grid, style.default_width, style.default_height);
     use crate::modules::aec::engine::opening_style::OpeningProfilePart as Part;
     app.aec.styles.opening_frame = format_dim(parts.fixed_frame.face_width);
     app.aec.styles.opening_frame_depth = format_dim(parts.fixed_frame.wall_depth);
@@ -208,7 +210,7 @@ fn load_part_buffers(app: &mut OpenCADStudio, style: &OpeningStyle) {
         (Part::Threshold, parts.threshold.profile_id.as_ref()),
         (Part::ShutterBox, parts.shutter_box.profile_id.as_ref()),
         (Part::Lintel, parts.lintel.profile_id.as_ref()),
-        (Part::Division, style.grid.profile_id.as_ref()),
+        (Part::Division, division.profile_id.as_ref()),
     ]
     .into_iter()
     .filter_map(|(part, id)| id.map(|id| (part, id.clone())))
@@ -227,12 +229,17 @@ fn load_part_buffers(app: &mut OpenCADStudio, style: &OpeningStyle) {
     ]);
     app.aec.styles.opening_look_color_picker_role = None;
     app.aec.styles.opening_selected_look_role = None;
-    app.aec.styles.opening_vertical = format_vertical_weights(&style.grid.vertical);
-    app.aec.styles.opening_horizontal = format_list(&style.grid.horizontal);
-    app.aec.styles.opening_vertical_muntins = format_list(&style.grid.vertical_muntins);
-    app.aec.styles.opening_horizontal_muntins = format_list(&style.grid.horizontal_muntins);
-    app.aec.styles.opening_cells = style
-        .grid
+    app.aec.styles.opening_authored_grid = if style.grid.columns.is_empty() && style.grid.cells.is_empty()
+    {
+        None
+    } else {
+        Some(style.grid.clone())
+    };
+    app.aec.styles.opening_vertical = format_vertical_weights(&division.vertical);
+    app.aec.styles.opening_horizontal = format_list(&division.horizontal);
+    app.aec.styles.opening_vertical_muntins = format_list(&division.vertical_muntins);
+    app.aec.styles.opening_horizontal_muntins = format_list(&division.horizontal_muntins);
+    app.aec.styles.opening_cells = division
         .cells
         .iter()
         .map(|cell| AecOpeningCellBuffer {
@@ -241,9 +248,9 @@ fn load_part_buffers(app: &mut OpenCADStudio, style: &OpeningStyle) {
             sill: format_dim(cell.sill),
         })
         .collect();
-    if !style.grid.is_implicit_single_cell() {
-        let columns = style.grid.vertical.len().max(1);
-        let rows = style.grid.horizontal.len() + 1;
+    if !division.is_implicit_single_cell() {
+        let columns = division.vertical.len().max(1);
+        let rows = division.horizontal.len() + 1;
         if app.aec.styles.opening_cells.len() != columns * rows {
             resize_opening_cells(
                 &mut app.aec.styles.opening_cells,
@@ -519,6 +526,30 @@ fn horizontal_muntin_position_fields(values: &[f64], cell_bottom: f64) -> Vec<St
         .collect()
 }
 
+fn sync_authored_cell(app: &mut OpenCADStudio, index: usize) {
+    use crate::modules::aec::engine::construction_grid::CellFill;
+    let Some(buffer) = app.aec.styles.opening_cells.get(index).cloned() else {
+        return;
+    };
+    let Some(cell) = app
+        .aec
+        .styles
+        .opening_authored_grid
+        .as_mut()
+        .and_then(|grid| grid.cells.get_mut(index))
+    else {
+        return;
+    };
+    cell.fill = match buffer.kind {
+        crate::modules::aec::engine::opening_style::OpeningCellKind::Opaque => CellFill::Opaque,
+        crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf => CellFill::Door,
+        crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed => CellFill::Fixed,
+        crate::modules::aec::engine::opening_style::OpeningCellKind::Glass => CellFill::Glass,
+    };
+    cell.operation = buffer.hinge;
+    cell.sill = parse_dim(&buffer.sill).unwrap_or(0.0);
+}
+
 fn refresh_opening_division_measure_buffers(app: &mut OpenCADStudio) {
     let s = &app.aec.styles;
     let width = parse_dim(&s.opening_width).unwrap_or(1.2).max(0.08);
@@ -776,7 +807,7 @@ pub fn draft_opening_style(
     width: f64,
     height: f64,
     sill: f64,
-    hinge: HingeSide,
+    hinge: LeafOperation,
     frame_thickness: f64,
     opening_angle_deg: f64,
     shape: OpeningShape,
@@ -1012,22 +1043,22 @@ pub fn preview_baked_paths_for_mode_with_library(
         style.parts.leaf_frame.face_width,
         style.parts.leaf_frame.depth,
     );
-    let division_profile_valid = style
-        .grid
+    let division = project_division_sized(&style.grid, width, style.default_height);
+    let division_profile_valid = division
         .profile_id
         .as_deref()
         .and_then(|id| library?.find_section_profile(id))
         .is_some_and(|profile| profile.is_valid());
     let division_section = resolve_profile_section(
         library,
-        style.grid.profile_id.as_deref(),
+        division.profile_id.as_deref(),
         style.parts.fixed_frame.face_width,
         style.parts.fixed_frame.wall_depth,
     );
 
     match mode {
         AecOpeningPreviewMode::Plan2D => {
-            bake_opening_plan_paths(
+            bake_opening_plan_from_grid(
                 params,
                 &style.parts,
                 library,
@@ -1039,7 +1070,7 @@ pub fn preview_baked_paths_for_mode_with_library(
         }
         AecOpeningPreviewMode::Section => section_preview_paths(style, library),
         AecOpeningPreviewMode::Elevation2D => {
-            bake_opening_elevation_paths(
+            bake_opening_elevation_from_grid(
                 params,
                 &style.parts,
                 library,
@@ -1308,15 +1339,12 @@ pub fn preview_baked_paths_for_mode_with_library(
                         fixed_frame_section.face
                     },
                     if division_profile_valid {
-                        division_section.face
-                    } else {
-                        leaf_frame_section.face
-                    },
-                    if division_profile_valid {
                         division_section.depth
                     } else {
                         fixed_frame_section.depth
                     },
+                    library,
+                    &leaf_frame_section,
                 )
             {
                 push_preview_body_edges(
@@ -1359,6 +1387,9 @@ fn resolve_profile_section(
     )
 }
 
+/// Wall drawn above the rough head. Independent of lintel, shutter box and frame.
+const SECTION_PREVIEW_ABOVE: f64 = 0.3;
+
 fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -> Vec<BakedPath> {
     let wall_half = PREVIEW_WALL_THICKNESS * 0.5;
     let sill_z = style.default_sill.max(0.0);
@@ -1376,13 +1407,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
     let frame_x1 = (frame_center + frame_depth * 0.5).min(wall_half);
     let frame_face = frame_section.face.max(0.0);
     let shutter = &style.parts.shutter_box;
-    let top_z = head_z
-        + style
-            .parts
-            .lintel
-            .height
-            .max(shutter.seat_above_frame + shutter.height)
-        + 0.3;
+    let top_z = head_z + SECTION_PREVIEW_ABOVE;
 
     let mut paths = Vec::new();
     let mut profile_frame_paths = Vec::new();
@@ -1472,21 +1497,23 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         style.kind,
         OpeningLookRole::ExteriorSill,
     ) {
+        // The sill seats on the frame's exterior face, not the wall face.
+        let frame_outer = frame_x0.min(frame_x1);
         push_rect(
             OpeningLookRole::ExteriorSill,
             OpeningComponentSlot::Sill2D,
-            -wall_half - exterior_sill.overhang,
+            frame_outer - exterior_sill.overhang,
             sill_z - exterior_sill.thickness,
-            -wall_half + exterior_sill.thickness,
+            frame_outer + exterior_sill.thickness,
             sill_z,
         );
         if exterior_sill.upstand > 0.0 {
             push_rect(
                 OpeningLookRole::ExteriorSill,
                 OpeningComponentSlot::Sill2D,
-                -wall_half,
+                frame_outer,
                 sill_z,
-                -wall_half + exterior_sill.thickness,
+                frame_outer + exterior_sill.thickness,
                 sill_z + exterior_sill.upstand,
             );
         }
@@ -1533,13 +1560,20 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
     }
 
     if opening_component_should_render(&style.parts, style.kind, OpeningLookRole::Lintel) {
+        let lintel = &style.parts.lintel;
+        let lintel_depth = if lintel.depth > 1e-9 {
+            lintel.depth
+        } else {
+            PREVIEW_WALL_THICKNESS
+        };
+        let lintel_x0 = -wall_half;
         push_rect(
             OpeningLookRole::Lintel,
             OpeningComponentSlot::Frame2D,
-            -wall_half,
+            lintel_x0,
             head_z,
-            wall_half,
-            head_z + style.parts.lintel.height,
+            lintel_x0 + lintel_depth,
+            head_z + lintel.height,
         );
     }
 
@@ -1741,6 +1775,13 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_dim_changed(&mut self, key: &str, value: String) {
+        if matches!(
+            key,
+            "vertical" | "horizontal" | "vertical_muntins" | "horizontal_muntins"
+        ) || key.contains("position")
+        {
+            self.aec.styles.opening_authored_grid = None;
+        }
         for (prefix, axis) in [
             ("vertical_position", "vertical"),
             ("horizontal_position", "horizontal"),
@@ -1944,7 +1985,38 @@ impl OpenCADStudio {
         refresh_opening_division_measure_buffers(self);
     }
 
+    pub(crate) fn aec_opening_style_manager_division_preset(&mut self, name: &str) {
+        use crate::modules::aec::engine::construction_grid::{division_preset, CellFill};
+        let fill = match self.aec.styles.opening_kind {
+            OpeningKind::Door => CellFill::Door,
+            _ => CellFill::Glass,
+        };
+        let Some(grid) = division_preset(name, fill) else {
+            return;
+        };
+        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
+        let height = parse_dim(&self.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
+        let division = project_division_sized(&grid, width, height);
+        self.aec.styles.opening_authored_grid = Some(grid);
+        self.aec.styles.opening_vertical = format_vertical_weights(&division.vertical);
+        self.aec.styles.opening_horizontal = format_list(&division.horizontal);
+        self.aec.styles.opening_vertical_muntins = format_list(&division.vertical_muntins);
+        self.aec.styles.opening_horizontal_muntins = format_list(&division.horizontal_muntins);
+        self.aec.styles.opening_cells = division
+            .cells
+            .iter()
+            .map(|cell| AecOpeningCellBuffer {
+                kind: cell.kind,
+                hinge: cell.hinge,
+                sill: format_dim(cell.sill),
+            })
+            .collect();
+        self.aec.styles.opening_selected_cell = Some(0);
+        refresh_opening_division_measure_buffers(self);
+    }
+
     pub(crate) fn aec_opening_style_manager_division_add(&mut self, axis: &str) {
+        self.aec.styles.opening_authored_grid = None;
         let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
         let height = parse_dim(&self.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
         let old_columns = parse_list(&self.aec.styles.opening_vertical).len().max(1);
@@ -2054,6 +2126,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_division_remove(&mut self, axis: &str, index: usize) {
+        self.aec.styles.opening_authored_grid = None;
         let old_columns = parse_list(&self.aec.styles.opening_vertical).len().max(1);
         let old_rows = parse_list(&self.aec.styles.opening_horizontal).len() + 1;
         let s = &mut self.aec.styles;
@@ -2191,6 +2264,7 @@ impl OpenCADStudio {
             if !cell.kind.permits_hinge() {
                 cell.hinge = None;
             }
+            sync_authored_cell(self, index);
         }
         self.aec_opening_style_manager_cell_select(index);
         refresh_opening_division_measure_buffers(self);
@@ -2210,8 +2284,9 @@ impl OpenCADStudio {
             cell.hinge = if value.is_empty() || value == "-" {
                 None
             } else {
-                Some(HingeSide::from_str(value))
+                Some(LeafOperation::from_str(value))
             };
+            sync_authored_cell(self, index);
         }
         self.aec_opening_style_manager_cell_select(index);
     }
@@ -2219,6 +2294,7 @@ impl OpenCADStudio {
     pub(crate) fn aec_opening_style_manager_cell_sill(&mut self, index: usize, value: String) {
         if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
             cell.sill = value;
+            sync_authored_cell(self, index);
         }
         refresh_opening_division_measure_buffers(self);
     }
@@ -2336,7 +2412,13 @@ impl OpenCADStudio {
         let mut style = style;
         style.parts = parts_from_buffers(self);
         style.looks = opening_looks_from_buffers(&self.aec.styles.opening_look_buffers);
-        style.grid = grid_from_buffers(self, height)?;
+        let division = grid_from_buffers(self, height)?;
+        style.grid = self
+            .aec
+            .styles
+            .opening_authored_grid
+            .clone()
+            .unwrap_or_else(|| construction_from_division(&division, width, height));
         style.family_symbols = OpeningFamilySymbols {
             plan: symbol_from(
                 &self.aec.styles.opening_plan_block,
@@ -2742,12 +2824,13 @@ mod tests {
             .unwrap();
         assert!((stored.parts.fixed_frame.face_width - 0.08).abs() < 1e-9);
         assert!(!stored.parts.fixed_frame.enabled);
-        assert!((stored.grid.vertical[0] - 0.5833).abs() < 1e-4);
-        assert!((stored.grid.vertical.iter().sum::<f64>() - 1.0).abs() < 1e-6);
-        assert_eq!(stored.grid.cells.len(), 2);
-        assert_eq!(stored.grid.cells[0].kind, OpeningCellKind::DoorLeaf);
-        assert_eq!(stored.grid.cells[1].kind, OpeningCellKind::DoorLeaf);
-        assert_eq!(stored.grid.cells[1].hinge, Some(crate::modules::aec::engine::opening_style::HingeSide::Right));
+        let stored_grid = crate::modules::aec::engine::opening_style::project_division(&stored.grid);
+        assert!((stored_grid.vertical[0] - 0.5833).abs() < 1e-4);
+        assert!((stored_grid.vertical.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+        assert_eq!(stored_grid.cells.len(), 2);
+        assert_eq!(stored_grid.cells[0].kind, OpeningCellKind::DoorLeaf);
+        assert_eq!(stored_grid.cells[1].kind, OpeningCellKind::DoorLeaf);
+        assert_eq!(stored_grid.cells[1].hinge, Some(crate::modules::aec::engine::opening_style::LeafOperation::right()));
         let symbol = stored.family_symbols.plan.as_ref().unwrap();
         assert_eq!(symbol.block_name, "Fenster");
         assert_eq!(symbol.placement, FamilyPlacement::JambPair);
@@ -2795,7 +2878,7 @@ mod tests {
         style.parts.threshold.profile_id = Some("threshold-profile".into());
         style.parts.shutter_box.profile_id = Some("box-profile".into());
         style.parts.lintel.profile_id = Some("lintel-profile".into());
-        style.grid.profile_id = Some("division-profile".into());
+        style.grid.muntin_profile_id = Some("division-profile".into());
 
         load_part_buffers(&mut app, &style);
         let parts = parts_from_buffers(&app);
@@ -2901,6 +2984,41 @@ mod tests {
     }
 
     #[test]
+    fn section_preview_wall_stays_on_the_rough_opening() {
+        let mut short = OpeningStyle::standard_window();
+        short.parts.lintel.height = 0.12;
+        short.parts.fixed_frame.axis_offset = 0.04;
+        let mut tall = short.clone();
+        tall.parts.lintel.height = 0.8;
+        tall.parts.shutter_box.enabled = true;
+        tall.parts.shutter_box.height = 0.5;
+        tall.parts.shutter_box.seat_above_frame = 0.2;
+
+        let head = short.default_sill + short.default_height;
+        let wall_top = |style: &OpeningStyle| {
+            preview_baked_paths_for_mode(style, style.default_width, AecOpeningPreviewMode::Section)
+                .into_iter()
+                .filter(|path| path.slot == OpeningComponentSlot::HostCut2D)
+                .flat_map(|path| path.points)
+                .map(|(_, z)| z)
+                .fold(0.0_f64, f64::max)
+        };
+        assert!((wall_top(&short) - (head + 0.3)).abs() < 1e-9);
+        assert!((wall_top(&tall) - wall_top(&short)).abs() < 1e-9);
+
+        let lintel = preview_baked_paths_for_mode(
+            &short,
+            short.default_width,
+            AecOpeningPreviewMode::Section,
+        )
+        .into_iter()
+        .find(|path| path.resolved_look_role() == Some(OpeningLookRole::Lintel))
+        .expect("lintel");
+        let lintel_x0 = lintel.points.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
+        assert!((lintel_x0 + PREVIEW_WALL_THICKNESS * 0.5).abs() < 1e-9);
+    }
+
+    #[test]
     fn duplicate_and_new_do_not_inherit_plan_overrides() {
         use crate::app::{AecMessage, OpenCADStudio};
         use crate::modules::aec::engine::library::DisplayConfigLibrary;
@@ -2961,7 +3079,7 @@ mod tests {
             1.2,
             0.8,
             0.9,
-            HingeSide::Left,
+            LeafOperation::left(),
             0.06,
             90.0,
             OpeningShape::Circle,
@@ -2982,7 +3100,7 @@ mod tests {
             2.0,
             9.0,
             0.1,
-            HingeSide::Left,
+            LeafOperation::left(),
             0.06,
             90.0,
             OpeningShape::Triangle(
@@ -3027,7 +3145,7 @@ mod tests {
             1.0,
             1.0,
             0.1,
-            HingeSide::Left,
+            LeafOperation::left(),
             0.06,
             90.0,
             OpeningShape::Rectangle,
@@ -3065,14 +3183,15 @@ mod tests {
     #[test]
     fn preview_baked_paths_for_mode_plan_elevation_and_3d() {
         let mut style = OpeningStyle::standard_window();
-        style.grid.vertical = vec![0.5, 0.5];
-        style.grid.vertical_muntins = vec![0.5];
-        style.grid.cells = vec![OpeningCell::default(), OpeningCell::default()];
+        let mut legacy = DivisionGrid::default();
+        legacy.vertical = vec![0.5, 0.5];
+        legacy.vertical_muntins = vec![0.5];
+        legacy.cells = vec![OpeningCell::default(), OpeningCell::default()];
+        style.grid = construction_from_division(&legacy, 1.2, style.default_height);
         style.suggested_levels.divisions =
             crate::modules::aec::engine::opening_style::DivisionLevel::PostsAndMuntins;
         assert_eq!(
-            style
-                .grid
+            project_division_sized(&style.grid, 1.2, style.default_height)
                 .layout(1.2, style.default_height, style.kind)
                 .expect("valid grid")
                 .len(),
@@ -3141,7 +3260,7 @@ mod tests {
         assert!((cells[1].right - 0.6).abs() < 1e-12);
 
         let mut style = OpeningStyle::standard_window();
-        style.grid = grid;
+        style.grid = construction_from_division(&grid, 1.2, 1.4);
         style.suggested_levels.divisions =
             crate::modules::aec::engine::opening_style::DivisionLevel::PostsAndMuntins;
         let paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Plan2D);

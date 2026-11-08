@@ -207,6 +207,7 @@ fn aec_opening_parts(&self) -> Option<crate::modules::aec::ui::style_manager::St
             angle: &self.aec.styles.opening_angle,
             spring: &self.aec.styles.opening_spring,
             hinge: self.aec.styles.opening_hinge,
+            authored_grid: self.aec.styles.opening_authored_grid.as_ref(),
         },
     ))
 }

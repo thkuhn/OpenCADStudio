@@ -8,6 +8,7 @@ pub mod arc;
 pub mod annotative_label;
 pub mod contour;
 pub mod control_plane;
+pub mod construction_grid;
 pub mod display_apply;
 pub mod display_component;
 pub mod elevation_cut;

@@ -180,7 +180,7 @@ impl OpenCADStudio {
             }
             AecMessage::AecOpeningStyleManagerHingeChanged(value) => {
                 self.aec.styles.opening_hinge =
-                    crate::modules::aec::engine::opening_style::HingeSide::from_str(&value);
+                    crate::modules::aec::engine::opening_style::LeafOperation::from_str(&value);
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerSetPreviewMode(mode) => {
@@ -253,6 +253,10 @@ impl OpenCADStudio {
             }
             AecMessage::AecOpeningStyleManagerDivisionRemove(axis, index) => {
                 self.aec_opening_style_manager_division_remove(&axis, index);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerDivisionPreset(name) => {
+                self.aec_opening_style_manager_division_preset(&name);
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerFamilyBlockChanged(family, name) => {

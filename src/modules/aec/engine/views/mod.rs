@@ -471,7 +471,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
-    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_style::LeafOperation;
     use super::floorplan_engine::{derive_floorplan_view, FloorPlanEngineOptions};
 
     #[test]
@@ -1535,7 +1535,7 @@ mod tests {
             sill_height: 0.9,
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: Default::default(),
             reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,
@@ -1702,7 +1702,7 @@ mod tests {
             .find(|wall| wall.element_ref == background_wall_element)
             .unwrap();
         reversed_wall.axis_points.reverse();
-        reversed_wall.openings[0].hinge = HingeSide::Right;
+        reversed_wall.openings[0].hinge = LeafOperation::right();
         reversed_wall.openings[0].swing_side =
             crate::modules::aec::engine::openings::SwingSide::Interior;
         let reversed_primitives =
@@ -1849,7 +1849,7 @@ mod tests {
             sill_height: 0.9,
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: Default::default(),
             reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,
@@ -2543,7 +2543,7 @@ mod tests {
                 sill_height: 0.9,
                 spring_height: 0.0,
                 shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-                hinge: HingeSide::Left,
+                hinge: LeafOperation::left(),
                 swing_side: Default::default(),
                 reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
                 cross_axis_offset: 0.0,
@@ -3058,7 +3058,7 @@ mod tests {
                 sill_height: 0.9,
                 spring_height: 0.0,
                 shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-                hinge: HingeSide::Left,
+                hinge: LeafOperation::left(),
                 swing_side: SwingSide::Exterior,
                 reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
                 cross_axis_offset: 0.0,
@@ -3180,7 +3180,7 @@ mod tests {
             sill_height: 0.0,
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: SwingSide::Interior,
             reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,
@@ -3541,7 +3541,7 @@ mod tests {
             sill_height: 0.9,
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: SwingSide::Exterior,
             reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,
@@ -3590,7 +3590,7 @@ mod tests {
             sill_height: 0.9,
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: SwingSide::Exterior,
             reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,

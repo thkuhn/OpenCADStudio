@@ -11774,7 +11774,7 @@ fn test_opening_realistic_post_profiles() {
     use crate::modules::aec::engine::opening_display::{bake_opening_generators, OpeningBakeParams};
     use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
     use crate::modules::aec::engine::opening_style::{
-        HingeSide, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+        LeafOperation, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
     };
     use std::collections::HashMap;
 
@@ -11796,7 +11796,7 @@ fn test_opening_realistic_post_profiles() {
         cross_axis_offset: 0.0,
         wall_y_min: -thickness * 0.5,
         wall_y_max: thickness * 0.5,
-        hinge: HingeSide::Left,
+        hinge: LeafOperation::left(),
         swing_side: SwingSide::Exterior,
         shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
         spring_height: 0.0,
@@ -11842,7 +11842,7 @@ fn test_opening_dynamic_sill_lines_with_wall_thickness() {
     use crate::modules::aec::engine::display_component::OpeningComponentSlot;
     use crate::modules::aec::engine::opening_display::{bake_opening_generators, OpeningBakeParams};
     use crate::modules::aec::engine::opening_style::{
-        HingeSide, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+        LeafOperation, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
     };
     use crate::modules::aec::engine::openings::OpeningKind;
     use std::collections::HashMap;
@@ -11865,7 +11865,7 @@ fn test_opening_dynamic_sill_lines_with_wall_thickness() {
             cross_axis_offset: 0.0,
             wall_y_min: -ht,
             wall_y_max: ht,
-            hinge: HingeSide::Left,
+            hinge: LeafOperation::left(),
             swing_side: SwingSide::Exterior,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
             spring_height: 0.0,
@@ -11915,7 +11915,7 @@ fn test_opening_component_blocks_resolution_and_placement() {
         bake_opening_generators_with_doc, OpeningBakeParams,
     };
     use crate::modules::aec::engine::opening_style::{
-        BlockPlacementMode, HingeSide, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+        BlockPlacementMode, LeafOperation, SlotGeometry, DEFAULT_FRAME_THICKNESS,
     };
     use crate::modules::aec::engine::openings::OpeningKind;
     use acadrust::entities::Line;
@@ -11947,7 +11947,7 @@ fn test_opening_component_blocks_resolution_and_placement() {
         cross_axis_offset: 0.0,
         wall_y_min: -0.15,
         wall_y_max: 0.15,
-        hinge: HingeSide::Left,
+        hinge: LeafOperation::left(),
         swing_side: SwingSide::Exterior,
         shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
         spring_height: 0.0,
@@ -12034,14 +12034,14 @@ fn test_opening_din1356_label_formatting() {
 
 #[test]
 fn test_opening_reference_side_positioning_and_flip() {
-    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_style::LeafOperation;
     use crate::modules::aec::engine::openings::{Opening, OpeningReferenceSide};
     use acadrust::Handle;
 
     let mut win = Opening::window(Handle::new(10), Handle::new(20), 2.0);
     win.width = 1.2;
     win.reference_side = OpeningReferenceSide::Start;
-    win.hinge = HingeSide::Left;
+    win.hinge = LeafOperation::left();
 
     // Start reveal is at 2.0, so center is at 2.0 + 0.6 = 2.6, end reveal is at 3.2:
     assert!((win.center_along_axis() - 2.6).abs() < 1e-6);
@@ -12052,7 +12052,7 @@ fn test_opening_reference_side_positioning_and_flip() {
     // Flip: reference side switches from Start to End, hinge from Left to Right
     win.flip();
     assert_eq!(win.reference_side, OpeningReferenceSide::End);
-    assert_eq!(win.hinge, HingeSide::Right);
+    assert_eq!(win.hinge, LeafOperation::right());
 
     // If dimensioned from End reveal at 3.2, center and span remain unchanged:
     win.distance_along_axis = 3.2;
@@ -12133,7 +12133,7 @@ fn test_opening_cross_axis_offset_shifts_geometry_and_sills() {
 
 #[test]
 fn test_opening_xdata_roundtrip_reference_side_and_offset() {
-    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_style::LeafOperation;
     use crate::modules::aec::engine::opening_xdata::{opening_from_values, opening_record};
     use crate::modules::aec::engine::openings::{NicheSide, Opening, OpeningReferenceSide};
     use acadrust::Handle;
@@ -12143,7 +12143,7 @@ fn test_opening_xdata_roundtrip_reference_side_and_offset() {
     win.cross_axis_offset = 0.08;
     win.depth = Some(0.12);
     win.niche_side = NicheSide::Interior;
-    win.hinge = HingeSide::Right;
+    win.hinge = LeafOperation::right();
 
     let record = opening_record(&win);
     let parsed = opening_from_values(win.handle, &record.values).expect("parse opening record");
@@ -12155,7 +12155,7 @@ fn test_opening_xdata_roundtrip_reference_side_and_offset() {
     assert!((parsed.cross_axis_offset - 0.08).abs() < 1e-9);
     assert_eq!(parsed.depth, Some(0.12));
     assert_eq!(parsed.niche_side, NicheSide::Interior);
-    assert_eq!(parsed.hinge, HingeSide::Right);
+    assert_eq!(parsed.hinge, LeafOperation::right());
 
     // Test legacy record with only 11 entries (missing the 4 new fields)
     let legacy_values = record.values[..11].to_vec();
@@ -12171,7 +12171,7 @@ fn test_opening_grips_definition_and_flip_handle() {
     use crate::modules::aec::engine::opening_display::{
         apply_opening_axis_grip, opening_axis_grips,
     };
-    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_style::LeafOperation;
     use crate::modules::aec::engine::openings::{Opening, OpeningReferenceSide};
     use acadrust::Handle;
     use glam::DVec3;
@@ -12180,7 +12180,7 @@ fn test_opening_grips_definition_and_flip_handle() {
     let mut win = Opening::window(Handle::new(1), Handle::new(2), 4.0);
     win.width = 1.2;
     win.reference_side = OpeningReferenceSide::Start;
-    win.hinge = HingeSide::Left;
+    win.hinge = LeafOperation::left();
 
     let grips = opening_axis_grips(&axis, &win, 0.0);
     assert_eq!(grips.len(), 5, "Must have 5 grips: Center, Start, End, HingeFlip, SwingFlip");
@@ -12212,7 +12212,7 @@ fn test_opening_grips_definition_and_flip_handle() {
     // 3. Flip using Grip 3
     apply_opening_axis_grip(&axis, &mut win, 3, DVec3::ZERO);
     assert_eq!(win.reference_side, OpeningReferenceSide::End);
-    assert_eq!(win.hinge, HingeSide::Right);
+    assert_eq!(win.hinge, LeafOperation::right());
 }
 
 #[test]
@@ -12427,7 +12427,7 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
     use crate::modules::aec::engine::opening_display::{bake_opening_generators, OpeningBakeParams};
     use crate::modules::aec::engine::opening_shape::OpeningShape;
     use crate::modules::aec::engine::opening_style::{
-        HingeSide, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+        LeafOperation, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
     };
     use crate::modules::aec::engine::openings::OpeningKind;
     use std::collections::HashMap;
@@ -12459,7 +12459,7 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
         cross_axis_offset: 0.0,
         wall_y_min: -0.15,
         wall_y_max: 0.15,
-        hinge: HingeSide::Left,
+        hinge: LeafOperation::left(),
         swing_side: SwingSide::Exterior,
         shape: OpeningShape::Rectangle,
         spring_height: 0.0,
@@ -12497,7 +12497,7 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
 
     // Right-hinged test:
     let mut p_right = p_left;
-    p_right.hinge = HingeSide::Right;
+    p_right.hinge = LeafOperation::right();
     let baked_right = bake_opening_generators(&slots, p_right, None);
     let swing_right: Vec<_> = baked_right
         .iter()
@@ -12618,7 +12618,7 @@ fn test_parametric_3d_solids_for_openings() {
         build_opening_frame_3d, build_opening_glazing_3d, build_opening_leaf_3d,
     };
     use crate::modules::aec::engine::opening_shape::{OpeningShape, TriangleVariant};
-    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_style::LeafOperation;
 
     let width = 1.20;
     let height = 1.40;
@@ -12644,15 +12644,15 @@ fn test_parametric_3d_solids_for_openings() {
     assert!(tri_frame.validate().is_empty(), "Triangle Frame B-Rep body must be topologically valid");
 
     // 3. Leaf3D (Window left hinge, Window right hinge, Door left hinge)
-    let leaf_body = build_opening_leaf_3d(width, height, ft, 45.0, HingeSide::Left, SwingSide::Exterior, false, OpeningShape::Rectangle, 0.0)
+    let leaf_body = build_opening_leaf_3d(width, height, ft, 45.0, LeafOperation::left(), SwingSide::Exterior, false, OpeningShape::Rectangle, 0.0)
         .expect("build leaf 3d left");
     assert!(leaf_body.validate().is_empty(), "Leaf B-Rep body must be topologically valid");
 
-    let leaf_right = build_opening_leaf_3d(width, height, ft, 30.0, HingeSide::Right, SwingSide::Exterior, false, OpeningShape::Rectangle, 0.0)
+    let leaf_right = build_opening_leaf_3d(width, height, ft, 30.0, LeafOperation::right(), SwingSide::Exterior, false, OpeningShape::Rectangle, 0.0)
         .expect("build leaf 3d right");
     assert!(leaf_right.validate().is_empty(), "Right leaf B-Rep body must be topologically valid");
 
-    let door_leaf = build_opening_leaf_3d(0.90, 2.10, 0.05, 90.0, HingeSide::Left, SwingSide::Exterior, true, OpeningShape::Rectangle, 0.0)
+    let door_leaf = build_opening_leaf_3d(0.90, 2.10, 0.05, 90.0, LeafOperation::left(), SwingSide::Exterior, true, OpeningShape::Rectangle, 0.0)
         .expect("build door leaf 3d");
     assert!(door_leaf.validate().is_empty(), "Door leaf B-Rep body must be topologically valid");
 

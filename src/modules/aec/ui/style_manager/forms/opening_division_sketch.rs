@@ -99,7 +99,7 @@ impl OpeningDivisionCanvas {
     ) -> Option<(
         usize,
         OpeningCellKind,
-        Option<crate::modules::aec::engine::opening_style::HingeSide>,
+        Option<crate::modules::aec::engine::opening_style::LeafOperation>,
     )> {
         let layout = self.grid.layout(self.width, self.height, self.kind).ok()?;
         let columns = self.grid.vertical.len().max(1);
@@ -312,9 +312,9 @@ impl Program<Message> for OpeningDivisionCanvas {
         let message = if *button == mouse::Button::Left {
             AecMessage::AecOpeningStyleManagerCellSelect(index)
         } else if kind.permits_hinge() {
-            let next = match hinge {
-                Some(crate::modules::aec::engine::opening_style::HingeSide::Left) => "Right",
-                Some(crate::modules::aec::engine::opening_style::HingeSide::Right) | None => "Left",
+            let next = match hinge.map(|op| op.bearing()) {
+                Some(crate::modules::aec::engine::construction_grid::TrackEnd::Start) => "Right",
+                Some(crate::modules::aec::engine::construction_grid::TrackEnd::End) | None => "Left",
             };
             AecMessage::AecOpeningStyleManagerCellHingeChanged(index, next.to_string())
         } else {
@@ -374,9 +374,9 @@ impl Program<Message> for OpeningDivisionCanvas {
                     );
                 }
                 if let Some(hinge) = cell.cell.hinge {
-                    let marker_x = match hinge {
-                        crate::modules::aec::engine::opening_style::HingeSide::Left => x + 3.0,
-                        crate::modules::aec::engine::opening_style::HingeSide::Right => {
+                    let marker_x = match hinge.bearing() {
+                        crate::modules::aec::engine::construction_grid::TrackEnd::Start => x + 3.0,
+                        crate::modules::aec::engine::construction_grid::TrackEnd::End => {
                             x + size.width - 3.0
                         }
                     };
