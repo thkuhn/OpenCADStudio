@@ -2,8 +2,8 @@
 //! drawing object is listed under, and the properties (with their display
 //! names and categories) and formatted values it offers for it.
 
-use codec::types::Color;
-use codec::{Document, EntityType};
+use document::types::Color;
+use document::{Document, EntityType};
 
 /// One extractable property: its key, display name and category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,10 +32,18 @@ const MISC: &str = "Misc";
 const DRAWING_PROPERTIES: [Property; 15] = [
     p("AcDxDwgSummaryDwgAuthor", "Author", DRAWING),
     p("AcDxDwgSummaryDwgComments", "Comments", DRAWING),
-    p("AcDxDwgSummaryDwgRevisionNumber", "Drawing Revision Number", DRAWING),
+    p(
+        "AcDxDwgSummaryDwgRevisionNumber",
+        "Drawing Revision Number",
+        DRAWING,
+    ),
     p("AcDxDwgSummaryDwgAccessed", "File Accessed", DRAWING),
     p("AcDxDwgSummaryDwgCreated", "File Created", DRAWING),
-    p("AcDxDwgSummaryDwgLastSavedBy", "File Last Saved By", DRAWING),
+    p(
+        "AcDxDwgSummaryDwgLastSavedBy",
+        "File Last Saved By",
+        DRAWING,
+    ),
     p("AcDxDwgSummaryDwgLocation", "File Location", DRAWING),
     p("AcDxDwgSummaryDwgModified", "File Modified", DRAWING),
     p("AcDxDwgSummaryDwgName", "File Name", DRAWING),
@@ -44,7 +52,11 @@ const DRAWING_PROPERTIES: [Property; 15] = [
     p("AcDxDwgSummaryDwgKeywords", "Keywords", DRAWING),
     p("AcDxDwgSummaryDwgSubject", "Subject", DRAWING),
     p("AcDxDwgSummaryDwgTitle", "Title", DRAWING),
-    p("AcDxDwgSummaryDwgTotalEditingTime", "Total Editing Time", DRAWING),
+    p(
+        "AcDxDwgSummaryDwgTotalEditingTime",
+        "Total Editing Time",
+        DRAWING,
+    ),
 ];
 
 const ENTITY_PROPERTIES: [Property; 10] = [
@@ -277,10 +289,9 @@ fn local_date_time(time: std::time::SystemTime) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs_f64())
         .unwrap_or_default();
-    let julian =
-        seconds / 86_400.0 + 2_440_587.5 + crate::entities::field::utc_offset_days();
-    codec::fields::format_dt_in(
-        codec::fields::julian_parts(julian),
+    let julian = seconds / 86_400.0 + 2_440_587.5 + crate::entities::field::utc_offset_days();
+    document::fields::format_dt_in(
+        document::fields::julian_parts(julian),
         "%c",
         &crate::entities::field::os_date_locale(),
     )
@@ -305,8 +316,8 @@ fn color_text(color: &Color) -> String {
     }
 }
 
-fn lineweight_text(weight: &codec::types::LineWeight) -> String {
-    use codec::types::LineWeight;
+fn lineweight_text(weight: &document::types::LineWeight) -> String {
+    use document::types::LineWeight;
     match weight {
         LineWeight::ByLayer => "ByLayer".into(),
         LineWeight::ByBlock => "ByBlock".into(),
@@ -349,7 +360,7 @@ pub(crate) fn value(entity: &EntityType, key: &str, facts: &DrawingFacts) -> Str
                 .get_record("PE_URL")
                 .and_then(|record| {
                     record.values.iter().find_map(|value| match value {
-                        codec::xdata::XDataValue::String(text) => Some(text.clone()),
+                        document::xdata::XDataValue::String(text) => Some(text.clone()),
                         _ => None,
                     })
                 })
@@ -455,7 +466,11 @@ pub(crate) fn value(entity: &EntityType, key: &str, facts: &DrawingFacts) -> Str
             "Length" | "Area" => {
                 use crate::entities::traits::MassPropsCalc;
                 let props = polyline.mass_props();
-                lin(if key == "Area" { props.area } else { props.perimeter })
+                lin(if key == "Area" {
+                    props.area
+                } else {
+                    props.perimeter
+                })
             }
             _ => String::new(),
         },

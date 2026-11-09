@@ -8,10 +8,10 @@
 //! nothing for the model-space walk to read.
 #![cfg(not(target_arch = "wasm32"))]
 
-use codec::entities::hatch::{BoundaryEdge, BoundaryPath, LineEdge};
-use codec::entities::{Hatch, Line};
-use codec::types::{Vector2, Vector3};
-use codec::EntityType;
+use document::entities::hatch::{BoundaryEdge, BoundaryPath, LineEdge};
+use document::entities::{Hatch, Line};
+use document::types::{Vector2, Vector3};
+use document::EntityType;
 use OpenCADStudio::scene::Scene;
 
 fn add_line(scene: &mut Scene, x1: f64, y1: f64, x2: f64, y2: f64) {
@@ -75,7 +75,9 @@ fn fit_all_reaches_an_entity_parked_far_from_the_rest() {
 #[test]
 fn fit_all_frames_a_hatch_only_drawing() {
     let mut scene = Scene::new();
-    scene.add_entity(EntityType::Hatch(Box::new(square_hatch(100.0, 200.0, 40.0))));
+    scene.add_entity(EntityType::Hatch(Box::new(square_hatch(
+        100.0, 200.0, 40.0,
+    ))));
 
     scene.fit_all();
 
@@ -103,7 +105,9 @@ fn fit_all_keeps_a_hatch_outside_the_wires_in_view() {
     }
     // The fill is the outermost thing in the drawing; the wires alone would
     // frame a 12 x 10 strip and leave it off screen.
-    scene.add_entity(EntityType::Hatch(Box::new(square_hatch(500.0, 500.0, 50.0))));
+    scene.add_entity(EntityType::Hatch(Box::new(square_hatch(
+        500.0, 500.0, 50.0,
+    ))));
 
     scene.fit_all();
 

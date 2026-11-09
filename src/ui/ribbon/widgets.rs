@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
 use std::time::Duration;
 
-use codec::types::{Color as AcadColor, LineWeight};
+use document::types::{Color as AcadColor, LineWeight};
 use iced::advanced::{
     layout, mouse, overlay, renderer, text as advanced_text, widget, Layout, Shell, Widget,
 };
@@ -37,10 +37,13 @@ pub(super) struct ToggleState {
     pub ortho_mode: bool,
     pub show_viewcube: bool,
     pub show_ucs_icon: bool,
+    pub show_viewport_highlight: bool,
     pub show_properties: bool,
     pub show_count_palette: bool,
     pub show_graphic_attributes: bool,
+    pub show_tool_palettes: bool,
     pub show_authoring_palettes: bool,
+    pub show_parameters_manager: bool,
     pub show_block_palette: bool,
     pub show_sheet_set: bool,
     pub show_file_tabs: bool,
@@ -457,10 +460,15 @@ pub(super) fn is_active_tool(id: &str, active_tool: &Option<String>, state: &Tog
         "PERSP" => !state.ortho_mode,
         "NAVVCUBE" => state.show_viewcube,
         "UCSICON" => state.show_ucs_icon,
+        "VPHIGHLIGHT" => state.show_viewport_highlight,
         "PROPERTIES" => state.show_properties,
         "COUNTLIST" => state.show_count_palette,
         "GRAPHICATTRIBUTES" => state.show_graphic_attributes,
+        "TOOLPALETTES" => state.show_tool_palettes,
         "BAUTHORPALETTE" => state.show_authoring_palettes,
+        // The id is the command name, and the Parametric tab carries a tool with
+        // it too; the light follows the pane, which only exists in a session.
+        "PARAMETERS" => state.show_parameters_manager,
         "BLOCKPALETTE" => state.show_block_palette,
         "SHEETSET" => state.show_sheet_set,
         "FILETAB" => state.show_file_tabs,
@@ -541,6 +549,114 @@ pub(super) fn split_outline<'a>(content: Element<'a, Message>) -> Element<'a, Me
     iced::widget::hover(content, outline)
 }
 
+/// The closed current-layer combo `width` wide: the current layer's on,
+/// freeze and lock states, its colour and name, and the arrow that opens
+/// the layer list `id`. It reports its bounds under `id`, which the list
+/// opens under.
+/// Clicking the colour swatch opens the current layer's colour palette.
+pub(super) fn layer_combo_face<'a>(
+    id: &'static str,
+    layer_infos: &[LayerInfo],
+    active_layer: &str,
+    is_open: bool,
+    width: f32,
+    keytip_label: bool,
+) -> Element<'a, Message> {
+    let info = layer_infos.iter().find(|l| l.name == active_layer);
+    let lc = info.map(|l| l.color).unwrap_or(Color::WHITE);
+    let lv = info.map(|l| l.visible).unwrap_or(true);
+    let lf = info.map(|l| l.frozen).unwrap_or(false);
+    let ll = info.map(|l| l.locked).unwrap_or(false);
+
+    let vis_icon = icons::tool(icons::layer_visible(lv), SMALL_ICON);
+    let freeze_icon = icons::tool(icons::layer_freeze(lf), SMALL_ICON);
+    let lock_icon = icons::tool(icons::layer_lock(ll), SMALL_ICON);
+    let swatch = button(
+        container(text(""))
+            .style(move |theme: &Theme| container::Style {
+                background: Some(Background::Color(lc)),
+                border: Border {
+                    color: chrome::border(theme),
+                    width: crate::ui::icons::hairline(),
+                    radius: 1.0.into(),
+                },
+                ..Default::default()
+            })
+            .width(12)
+            .height(12),
+    )
+    .padding(0)
+    .on_press(Message::ToggleRibbonDropdown(format!("LAYER_COLOR:{id}")))
+    .style(button::text);
+
+    const FIXED_COMBO_W: f32 = 14.0 * 3.0 + 12.0 + 9.0 + 4.0 * 4.0 + 8.0 * 2.0;
+    let name_w = (width - FIXED_COMBO_W).max(24.0);
+    // About 6 px per glyph at 11 px. The dropdown itself keeps the
+    // complete layer name available; only its closed label is shortened
+    // to preserve the fixed row height.
+    let name_budget = ((name_w / 6.0) as usize).max(4);
+    let active_layer_label = crate::ui::text_util::elide(active_layer, name_budget);
+    let label: Element<'a, Message> = if keytip_label {
+        super::keytips::label_anchor(
+            || super::keytips::label_id(id),
+            text(active_layer_label).size(11),
+        )
+    } else {
+        text(active_layer_label).size(11).into()
+    };
+
+    let combo_btn = button(
+        row![
+            vis_icon,
+            freeze_icon,
+            lock_icon,
+            swatch,
+            container(label).width(name_w).clip(true),
+            icons::dropdown_arrow(),
+        ]
+        .spacing(4)
+        .align_y(iced::Center),
+    )
+    .on_press(Message::ToggleRibbonDropdown(id.to_string()))
+    .style(move |theme: &Theme, status| combo_btn_style(theme, is_open, status, 3.0))
+    .padding([0, 8])
+    .height(metrics::COMBO_H)
+    .width(Length::Fixed(width));
+    PosReport::new(id, combo_btn).into()
+}
+
+#[cfg(test)]
+mod layer_color_tests {
+    use super::*;
+
+    #[test]
+    fn ribbon_layer_color_swatch_click_does_not_open_layer_list() {
+        for id in [LAYER_COMBO_ID, "QAT_LAYER_COMBO"] {
+            let face = layer_combo_face(id, &[], "0", false, 250., false);
+            let mut ui = iced_test::simulator::Simulator::with_size(
+                iced::Settings::default(),
+                (260., 40.),
+                face,
+            );
+            ui.point_at(iced::Point::new(68., metrics::COMBO_H / 2.));
+            ui.simulate([
+                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )),
+            ]);
+            let ids: Vec<_> = ui
+                .into_messages()
+                .filter_map(|m| match m {
+                    Message::ToggleRibbonDropdown(id) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ids, vec![format!("LAYER_COLOR:{id}")]);
+        }
+    }
+}
+
 /// A combo box in a panel (layer, colour, linetype, lineweight, styles).
 pub(super) fn combo_btn_style(
     theme: &Theme,
@@ -612,28 +728,32 @@ pub(super) fn make_tip(tip: String) -> Element<'static, Message> {
     text(tip).size(11).into()
 }
 
-/// The sentence the reference shows under a tool's name, where known.
-fn tool_description(id: &str) -> Option<&'static str> {
-    Some(match id {
-        "DCLINEAR" => "Constrains the horizontal or vertical distance between points",
-        "DCHORIZONTAL" => "Constrains the X-distance between points on an object, or between two points on different objects",
-        "DCVERTICAL" => "Constrains the Y-distance between points on an object, or between two points on different objects",
-        "DCALIGNED" => "Constrains the distance between two points on an object or between two points on different objects",
-        "DCRADIUS" => "Constrains the radius of a circle or arc",
-        "DCDIAMETER" => "Constrains the diameter of a circle or arc",
-        "DCANGULAR" => "Constrains the angle between line or polyline segments, the angle swept out by an arc or a polyline arc segment, or the angle between three points on objects",
-        "DCCONVERT" => "Convert dimensions to dimensional constraints",
-        _ => return None,
-    })
-}
-
 /// A tool's tooltip: its name, its description when one is known, and the
 /// command it runs.
-fn tool_tip_text(label: &str, id: &str) -> String {
+pub(super) fn tool_tip_text(label: &str, id: &str) -> String {
     // A macro (`PDFIMPORT;FILE`) shows the command it starts.
     let id = id.split(';').next().unwrap_or(id);
-    match tool_description(id) {
-        Some(description) => format!("{label}\n{}\n{} {id}", t!(description), t!("Command:")),
+    // A ribbon token (`ARC_3P`) falls back to its command's summary.
+    let summary = crate::command::command_summary(id)
+        .or_else(|| crate::command::command_summary(id.split('_').next()?));
+    match summary {
+        Some(description) => {
+            // Broken at word ends so a long summary stays a narrow tip.
+            let mut wrapped = String::new();
+            let mut line = 0;
+            for word in description.split(' ') {
+                if line > 0 && line + word.len() > 56 {
+                    wrapped.push('\n');
+                    line = 0;
+                } else if line > 0 {
+                    wrapped.push(' ');
+                    line += 1;
+                }
+                wrapped.push_str(word);
+                line += word.len();
+            }
+            format!("{label}\n{wrapped}\n{} {id}", t!("Command:"))
+        }
         None => format!("{label}\n{} {id}", t!("Command:")),
     }
 }
@@ -708,13 +828,30 @@ pub(super) fn render_row_item<'a>(
     state: ToggleState,
 ) -> Element<'a, Message> {
     match item {
-        RibbonItem::LabeledTool(t) => labeled_tool(t, active_tool, state, Length::Shrink),
+        RibbonItem::LabeledTool(t) => super::ribbon_menu::tool_target(
+            super::ribbon_menu::tool_qat(t),
+            labeled_tool(t, active_tool, state, Length::Shrink),
+        ),
         _ => render_small(item, active_tool, open_dd, last_cmd, state),
     }
 }
 
-/// Render a 1-row small button (Tool or Dropdown).
+/// Render a 1-row small button (Tool or Dropdown). Right-clicked, it offers
+/// to go on the Quick Access Toolbar.
 pub(super) fn render_small<'a>(
+    item: &RibbonItem,
+    active_tool: &Option<String>,
+    open_dd: &Option<String>,
+    last_cmd: &HashMap<&'static str, &'static str>,
+    state: ToggleState,
+) -> Element<'a, Message> {
+    super::ribbon_menu::tool_target(
+        super::ribbon_menu::item_qat(item),
+        small_button(item, active_tool, open_dd, last_cmd, state),
+    )
+}
+
+fn small_button<'a>(
     item: &RibbonItem,
     active_tool: &Option<String>,
     open_dd: &Option<String>,
@@ -825,7 +962,7 @@ pub(super) fn render_small<'a>(
                 .style(tip_style);
 
             PosReport::new(
-                *id,
+                id,
                 split_outline(
                     row![icon_with_tip, arr_with_tip]
                         .spacing(0)
@@ -927,7 +1064,7 @@ pub(super) fn render_small<'a>(
             .spacing(0)
             .width(Fill)
             .height(ROW_H);
-            PosReport::new(*id, split_outline(parts.into())).into()
+            PosReport::new(id, split_outline(parts.into())).into()
         }
 
         _ => text("").into(),
@@ -1127,7 +1264,10 @@ fn tool_row<'a>(tools: &[ToolDef], active_tool: &Option<String>) -> Element<'a, 
             .gap(4.0)
             .delay(Duration::from_millis(400))
             .style(tip_style);
-            super::keytips::anchor(t.id, btn)
+            super::ribbon_menu::tool_target(
+                super::ribbon_menu::tool_qat(t),
+                super::keytips::anchor(t.id, btn),
+            )
         })
         .collect();
     row(btns).spacing(2).align_y(iced::Center).into()
@@ -1153,6 +1293,19 @@ pub(super) fn render_large<'a>(item: &RibbonItem, ctx: &RenderCtx<'_>) -> Elemen
 /// [`render_large`], with `below` (small labeled tools) as the bottom row of
 /// the Dimensions style/layer lists.
 pub(super) fn render_large_with<'a>(
+    item: &RibbonItem,
+    ctx: &RenderCtx<'_>,
+    below: Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    // A single button offers to go on the Quick Access Toolbar; a group's
+    // own buttons do so each.
+    super::ribbon_menu::tool_target(
+        super::ribbon_menu::item_qat(item),
+        large_item(item, ctx, below),
+    )
+}
+
+fn large_item<'a>(
     item: &RibbonItem,
     ctx: &RenderCtx<'_>,
     below: Vec<Element<'a, Message>>,
@@ -1221,7 +1374,7 @@ pub(super) fn render_large_with<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(*id, *icon, Some(*label), items, *default, ctx),
+        } => render_large_dropdown(id, *icon, Some(*label), items, default, ctx),
 
         RibbonItem::LabeledDropdown {
             id,
@@ -1229,7 +1382,7 @@ pub(super) fn render_large_with<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(*id, *icon, Some(*label), items, *default, ctx),
+        } => render_large_dropdown(id, *icon, Some(*label), items, default, ctx),
 
         RibbonItem::ToolGrid { columns } => columns
             .iter()
@@ -1260,7 +1413,7 @@ pub(super) fn render_large_with<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(*id, *icon, None, items, *default, ctx),
+        } => render_large_dropdown(id, *icon, None, items, default, ctx),
 
         RibbonItem::LayerComboGroup { row2, row3 } => {
             const TOOL_BUTTON_W: f32 = 26.0;
@@ -1274,66 +1427,22 @@ pub(super) fn render_large_with<'a>(
             // in the closed combo.
             let combo_w = (LARGE_W * 2.5).max(tools_w).max(250.0);
 
-            let info = layer_infos.iter().find(|l| l.name == active_layer);
-            let lc = info.map(|l| l.color).unwrap_or(Color::WHITE);
-            let lv = info.map(|l| l.visible).unwrap_or(true);
-            let lf = info.map(|l| l.frozen).unwrap_or(false);
-            let ll = info.map(|l| l.locked).unwrap_or(false);
             let is_open = open_dd.as_deref() == Some(LAYER_COMBO_ID);
-
-            let vis_icon = icons::tool(icons::layer_visible(lv), SMALL_ICON);
-            let freeze_icon = icons::tool(icons::layer_freeze(lf), SMALL_ICON);
-            let lock_icon = icons::tool(icons::layer_lock(ll), SMALL_ICON);
-            let swatch = container(text(""))
-                .style(move |theme: &Theme| container::Style {
-                    background: Some(Background::Color(lc)),
-                    border: Border {
-                        color: chrome::border(theme),
-                        width: crate::ui::icons::hairline(),
-                        radius: 1.0.into(),
-                    },
-                    ..Default::default()
-                })
-                .width(12)
-                .height(12);
-
-            const FIXED_COMBO_W: f32 = 14.0 * 3.0 + 12.0 + 9.0 + 4.0 * 4.0 + 8.0 * 2.0;
-            let name_w = (combo_w - FIXED_COMBO_W).max(24.0);
-            // About 6 px per glyph at 11 px. The dropdown itself keeps the
-            // complete layer name available; only its closed ribbon label is
-            // shortened to preserve the fixed row height.
-            let name_budget = ((name_w / 6.0) as usize).max(4);
-            let active_layer_label = crate::ui::text_util::elide(active_layer, name_budget);
-
-            let combo_btn = button(
-                row![
-                    vis_icon,
-                    freeze_icon,
-                    lock_icon,
-                    swatch,
-                    container(super::keytips::label_anchor(
-                        || super::keytips::label_id(LAYER_COMBO_ID),
-                        text(active_layer_label).size(11),
-                    ))
-                    .width(name_w)
-                    .clip(true),
-                    icons::dropdown_arrow(),
-                ]
-                .spacing(4)
-                .align_y(iced::Center),
-            )
-            .on_press(Message::ToggleRibbonDropdown(LAYER_COMBO_ID.to_string()))
-            .style(move |theme: &Theme, status| combo_btn_style(theme, is_open, status, 3.0))
-            .padding([0, 8])
-            .height(metrics::COMBO_H)
-            .width(Fill);
+            let combo_btn = layer_combo_face(
+                LAYER_COMBO_ID,
+                layer_infos,
+                active_layer,
+                is_open,
+                combo_w,
+                true,
+            );
+            // Right-clicked, it offers to go on the Quick Access Toolbar.
+            let combo_btn = super::qat::list_target(LAYER_COMBO_ID, combo_btn);
 
             combo_panel_col(
                 combo_w,
                 vec![
-                    container(PosReport::new(LAYER_COMBO_ID, combo_btn))
-                        .width(Fill)
-                        .into(),
+                    container(combo_btn).width(Fill).into(),
                     tool_row(row2, active_tool),
                     tool_row(row3, active_tool),
                 ],
@@ -1423,9 +1532,15 @@ pub(super) fn render_large_with<'a>(
             // the same baseline as the Layers / style selectors.
             let combos = container(
                 column![
-                    PosReport::new(PROP_COLOR_ID, color_row),
-                    PosReport::new(PROP_LINETYPE_ID, lt_row),
-                    PosReport::new(PROP_LW_ID, lw_row),
+                    super::qat::list_target(
+                        PROP_COLOR_ID,
+                        PosReport::new(PROP_COLOR_ID, color_row)
+                    ),
+                    super::qat::list_target(
+                        PROP_LINETYPE_ID,
+                        PosReport::new(PROP_LINETYPE_ID, lt_row)
+                    ),
+                    super::qat::list_target(PROP_LW_ID, PosReport::new(PROP_LW_ID, lw_row)),
                 ]
                 .spacing(2)
                 .align_x(iced::Left),
@@ -1482,12 +1597,15 @@ pub(super) fn render_large_with<'a>(
             let items_panel: Element<Message> =
                 iced::widget::Space::new().width(0).height(0).into();
 
-            let mut col_items: Vec<Element<Message>> =
-                vec![
-                    container(row![PosReport::new(*combo_id, combo_btn), items_panel].spacing(0))
-                        .width(Fill)
-                        .into(),
-                ];
+            let mut col_items: Vec<Element<Message>> = vec![container(
+                row![
+                    super::qat::list_target(combo_id, PosReport::new(combo_id, combo_btn)),
+                    items_panel
+                ]
+                .spacing(0),
+            )
+            .width(Fill)
+            .into()];
             // Dimensions: the style list and the dimension layer list each
             // lead a row of small tools.
             if *style_key == StyleKey::DimStyle && rows.len() == 2 {
@@ -1533,7 +1651,11 @@ pub(super) fn render_large_with<'a>(
                         style_ctx.mleader_layer,
                         style_ctx.mleader_layer_color,
                         open_dd.as_deref() == Some(MLEADER_LAYER_COMBO),
-                        format!("{}\n{} MLEADERLAYER", t!("Multileader Layer"), t!("Command:")),
+                        format!(
+                            "{}\n{} MLEADERLAYER",
+                            t!("Multileader Layer"),
+                            t!("Command:")
+                        ),
                     ))
                     .width(Fill)
                     .into(),
@@ -1641,7 +1763,7 @@ pub(super) fn layer_combo<'a>(
     let combo = tooltip(PosReport::new(id, combo), make_tip(tip), TipPos::Bottom)
         .delay(Duration::from_millis(400))
         .style(tip_style);
-    super::keytips::anchor(id, combo)
+    super::keytips::anchor(id, super::qat::list_target(id, combo))
 }
 
 /// Annotate > Text find box id, and its text height box.
@@ -1665,9 +1787,13 @@ fn text_find_box<'a>(value: &str) -> Element<'a, Message> {
     .on_press(Message::RibbonTextFindSubmit)
     .style(move |theme: &Theme, status| tool_btn_style(theme, false, status))
     .padding(3);
-    let search = tooltip(search, make_tip(t!("Find text").into_owned()), TipPos::Bottom)
-        .delay(Duration::from_millis(400))
-        .style(tip_style);
+    let search = tooltip(
+        search,
+        make_tip(t!("Find text").into_owned()),
+        TipPos::Bottom,
+    )
+    .delay(Duration::from_millis(400))
+    .style(tip_style);
     row![input, search]
         .spacing(2)
         .align_y(iced::Center)
@@ -1686,7 +1812,11 @@ fn text_height_box<'a>(value: &str) -> Element<'a, Message> {
         .width(Fill);
     let input = tooltip(
         input,
-        make_tip(format!("{}\n{} TEXTSIZE", t!("Text Height"), t!("Command:"))),
+        make_tip(format!(
+            "{}\n{} TEXTSIZE",
+            t!("Text Height"),
+            t!("Command:")
+        )),
         TipPos::Bottom,
     )
     .delay(Duration::from_millis(400))
@@ -1722,41 +1852,47 @@ pub fn module_event_to_message(event: ModuleEvent) -> Message {
 
 // ── History control ────────────────────────────────────────────────────────
 
-/// Quick-access chrome button (New / Open / Save / Save As / Print) in the top
-/// strip: an SVG icon that dispatches a command string, with a hover tooltip.
-/// A Quick Access button; greyed out and inert unless `enabled` (the Start
-/// tab has no drawing for it).
+/// A Quick Access command button: the command's icon (its name when it has
+/// none), running it as a ribbon button does. A command OCS does not have
+/// yet (`runs` false) is greyed out and inert, as the menu bar shows it.
 pub(super) fn quick_access_btn<'a>(
-    icon_bytes: &'static [u8],
-    label: &'static str,
-    cmd: &'static str,
-    enabled: bool,
+    face: super::qat::Face,
+    cmd: String,
+    runs: bool,
 ) -> Element<'a, Message> {
-    // The bundled UI SVGs are black-stroked; tint them to a light chrome grey so
-    // they read on the dark top strip (raw black is invisible there).
-    let icon = if enabled {
-        icons::chrome(icon_bytes, SMALL_ICON)
-    } else {
-        icons::chrome_disabled(icon_bytes, SMALL_ICON)
-    };
+    let icon = super::qat::face_icon(&face, SMALL_ICON, runs);
+    let text_face = matches!(face.icon, super::qat::FaceIcon::Text);
     let btn = button(
         container(icon)
-            .width(Fill)
+            .width(if text_face { Length::Shrink } else { Fill })
             .height(Fill)
             .align_x(iced::Center)
             .align_y(iced::Center),
     )
-    .on_press_maybe(enabled.then(|| Message::Command(cmd.to_string())))
-    .style(move |theme: &Theme, status| top_hist_btn_style(theme, enabled, false, status))
-    .width(Length::Fixed(TOP_HIST_W))
+    .on_press_maybe(runs.then(|| Message::MenuCommand(cmd.clone())))
+    .style(move |theme: &Theme, status| top_hist_btn_style(theme, runs, false, status))
+    .width(if text_face {
+        Length::Shrink
+    } else {
+        Length::Fixed(TOP_HIST_W)
+    })
     .height(TOP_BUTTON_H)
-    .padding([2, 0]);
+    .padding(if text_face {
+        Padding::from([0.0, metrics::QAT_TEXT_PAD])
+    } else {
+        Padding::from([2.0, 0.0])
+    });
+    let anchor = super::keytips::quick_access_anchor(&cmd);
     super::keytips::anchor_with(
-        || super::keytips::quick_access_anchor(cmd),
-        tooltip(btn, make_tip(t!(label).into_owned()), TipPos::Bottom)
-            .gap(6.0)
-            .delay(Duration::from_millis(400))
-            .style(tip_style),
+        move || anchor,
+        tooltip(
+            btn,
+            make_tip(super::qat::command_tip(&face.label, &cmd)),
+            TipPos::Bottom,
+        )
+        .gap(6.0)
+        .delay(Duration::from_millis(400))
+        .style(tip_style),
     )
 }
 

@@ -1,8 +1,8 @@
 // MLEADER: pick the arrow and elbow, then edit the text.
 
-use codec::entities::{LeaderContentType, MultiLeader, MultiLeaderPathType};
-use codec::types::Vector3;
-use codec::EntityType;
+use document::entities::{LeaderContentType, MultiLeader, MultiLeaderPathType};
+use document::types::Vector3;
+use document::EntityType;
 use glam::{DVec3, Mat4, Vec3};
 
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -35,7 +35,7 @@ pub struct MLeaderCommand {
     /// The Options prompt's default (the option chosen last).
     last_option: MlOption,
     plane: WorkingPlane,
-    style: Option<codec::objects::MultiLeaderStyle>,
+    style: Option<document::objects::MultiLeaderStyle>,
     display_scale: f64,
     order: CreationOrder,
     step: Step,
@@ -52,11 +52,11 @@ pub struct MLeaderCommand {
     layer_set: bool,
     text: String,
     picked_entity: Option<EntityType>,
-    selected_mtext: Option<codec::entities::MText>,
-    block_sources: Vec<(String, codec::Handle)>,
-    block_handle: Option<codec::Handle>,
+    selected_mtext: Option<document::entities::MText>,
+    block_sources: Vec<(String, document::Handle)>,
+    block_handle: Option<document::Handle>,
     layers: Vec<String>,
-    text_styles: Vec<(String, codec::Handle)>,
+    text_styles: Vec<(String, document::Handle)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -121,6 +121,12 @@ enum Step {
     BlockSource,
 }
 
+impl Default for MLeaderCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MLeaderCommand {
     pub fn new() -> Self {
         Self {
@@ -151,7 +157,10 @@ impl MLeaderCommand {
         }
     }
 
-    pub fn with_style(style: codec::objects::MultiLeaderStyle, annotation_multiplier: f64) -> Self {
+    pub fn with_style(
+        style: document::objects::MultiLeaderStyle,
+        annotation_multiplier: f64,
+    ) -> Self {
         let display_scale = if style.is_annotative {
             annotation_multiplier
         } else {
@@ -189,9 +198,9 @@ impl MLeaderCommand {
 
     pub fn with_drawing_resources(
         mut self,
-        block_sources: Vec<(String, codec::Handle)>,
+        block_sources: Vec<(String, document::Handle)>,
         layers: Vec<String>,
-        text_styles: Vec<(String, codec::Handle)>,
+        text_styles: Vec<(String, document::Handle)>,
     ) -> Self {
         self.block_sources = block_sources;
         self.layers = layers;
@@ -283,7 +292,7 @@ impl MLeaderCommand {
         ml.extend_leader_to_text = true;
         ml.context.text_width = self.box_width.unwrap_or(0.0);
         ml.context.text_flow_direction =
-            codec::entities::multileader::FlowDirectionType::ByStyle;
+            document::entities::multileader::FlowDirectionType::ByStyle;
         ml.enable_landing = self.enable_landing;
         ml.enable_dogleg = self.enable_landing;
         ml.dogleg_length = self.landing_length;
@@ -311,38 +320,40 @@ impl MLeaderCommand {
             ml.text_color = source.common.color;
             ml.context.text_color = source.common.color;
             ml.text_frame = source.background_fill_flags & 0x10 != 0;
-            ml.context.background_fill_enabled = source.background_fill_flags & 0x01 != 0;
-            ml.context.background_mask_fill_on = source.background_fill_flags & 0x02 != 0;
+            // MTEXT bit 1 fills, bit 2 fills with the background: an MLEADER
+            // keeps them in codes 292 and 291.
+            ml.context.background_mask_fill_on = source.background_fill_flags & 0x01 != 0;
+            ml.context.background_fill_enabled = source.background_fill_flags & 0x02 != 0;
             ml.context.background_scale_factor = source.background_scale;
             ml.context.background_fill_color = source.background_color;
             ml.context.background_transparency = source.background_transparency;
             ml.context.text_flow_direction = match source.drawing_direction {
-                codec::entities::mtext::DrawingDirection::LeftToRight => {
-                    codec::entities::multileader::FlowDirectionType::Horizontal
+                document::entities::mtext::DrawingDirection::LeftToRight => {
+                    document::entities::multileader::FlowDirectionType::Horizontal
                 }
-                codec::entities::mtext::DrawingDirection::TopToBottom => {
-                    codec::entities::multileader::FlowDirectionType::Vertical
+                document::entities::mtext::DrawingDirection::TopToBottom => {
+                    document::entities::multileader::FlowDirectionType::Vertical
                 }
-                codec::entities::mtext::DrawingDirection::ByStyle => {
-                    codec::entities::multileader::FlowDirectionType::ByStyle
+                document::entities::mtext::DrawingDirection::ByStyle => {
+                    document::entities::multileader::FlowDirectionType::ByStyle
                 }
             };
             let (attachment, alignment) = match source.attachment_point {
-                codec::entities::mtext::AttachmentPoint::TopCenter
-                | codec::entities::mtext::AttachmentPoint::MiddleCenter
-                | codec::entities::mtext::AttachmentPoint::BottomCenter => (
-                    codec::entities::multileader::TextAttachmentPointType::Center,
-                    codec::entities::TextAlignmentType::Center,
+                document::entities::mtext::AttachmentPoint::TopCenter
+                | document::entities::mtext::AttachmentPoint::MiddleCenter
+                | document::entities::mtext::AttachmentPoint::BottomCenter => (
+                    document::entities::multileader::TextAttachmentPointType::Center,
+                    document::entities::TextAlignmentType::Center,
                 ),
-                codec::entities::mtext::AttachmentPoint::TopRight
-                | codec::entities::mtext::AttachmentPoint::MiddleRight
-                | codec::entities::mtext::AttachmentPoint::BottomRight => (
-                    codec::entities::multileader::TextAttachmentPointType::Right,
-                    codec::entities::TextAlignmentType::Right,
+                document::entities::mtext::AttachmentPoint::TopRight
+                | document::entities::mtext::AttachmentPoint::MiddleRight
+                | document::entities::mtext::AttachmentPoint::BottomRight => (
+                    document::entities::multileader::TextAttachmentPointType::Right,
+                    document::entities::TextAlignmentType::Right,
                 ),
                 _ => (
-                    codec::entities::multileader::TextAttachmentPointType::Left,
-                    codec::entities::TextAlignmentType::Left,
+                    document::entities::multileader::TextAttachmentPointType::Left,
+                    document::entities::TextAlignmentType::Left,
                 ),
             };
             ml.context.text_attachment_point = attachment;
@@ -424,9 +435,8 @@ impl CadCommand for MLeaderCommand {
     fn prompt(&self) -> String {
         use crate::tr;
         let num = |v: f64| format!("{v:.4}");
-        let angle = |a: Option<f64>| {
-            a.map_or("0".to_string(), |r| format!("{}", r.to_degrees().round()))
-        };
+        let angle =
+            |a: Option<f64>| a.map_or("0".to_string(), |r| format!("{}", r.to_degrees().round()));
         match self.step {
             Step::Options => {
                 let default = match self.last_option {
@@ -458,7 +468,11 @@ impl CadCommand for MLeaderCommand {
                 tr!("mleader-prompt", "use-landing", current = current)
             }
             Step::LandingLength => {
-                tr!("mleader-prompt", "landing-distance", current = num(self.landing_length))
+                tr!(
+                    "mleader-prompt",
+                    "landing-distance",
+                    current = num(self.landing_length)
+                )
             }
             Step::ContentType => {
                 let current = match self.content_type {
@@ -469,13 +483,25 @@ impl CadCommand for MLeaderCommand {
                 tr!("mleader-prompt", "content-type", current = current)
             }
             Step::MaxPoints => {
-                tr!("mleader-prompt", "max-points", current = self.max_points.to_string())
+                tr!(
+                    "mleader-prompt",
+                    "max-points",
+                    current = self.max_points.to_string()
+                )
             }
             Step::FirstAngle => {
-                tr!("mleader-prompt", "first-angle", current = angle(self.first_angle))
+                tr!(
+                    "mleader-prompt",
+                    "first-angle",
+                    current = angle(self.first_angle)
+                )
             }
             Step::SecondAngle => {
-                tr!("mleader-prompt", "second-angle", current = angle(self.second_angle))
+                tr!(
+                    "mleader-prompt",
+                    "second-angle",
+                    current = angle(self.second_angle)
+                )
             }
             Step::Layer => {
                 let current = if self.layer.is_empty() {
@@ -738,9 +764,17 @@ impl CadCommand for MLeaderCommand {
         let text = input.trim();
         let upper = text.to_ascii_uppercase();
         let upper = upper.trim_start_matches('_');
-        let invalid_keyword = || Some(CmdResult::ReportError(t!("Invalid option keyword.").into_owned()));
-        let invalid_input =
-            || Some(CmdResult::ReportError(crate::tr!("mleader-prompt", "invalid-input")));
+        let invalid_keyword = || {
+            Some(CmdResult::ReportError(
+                t!("Invalid option keyword.").into_owned(),
+            ))
+        };
+        let invalid_input = || {
+            Some(CmdResult::ReportError(crate::tr!(
+                "mleader-prompt",
+                "invalid-input"
+            )))
+        };
         match self.step {
             Step::PickPoints if self.verts.is_empty() => {
                 let order = match (upper, self.order) {
@@ -835,8 +869,7 @@ impl CadCommand for MLeaderCommand {
             }
             Step::MaxPoints => {
                 // 0 leaves the count open (Enter ends the leader).
-                let Some(value) = text.parse::<usize>().ok().filter(|v| *v == 0 || *v >= 2)
-                else {
+                let Some(value) = text.parse::<usize>().ok().filter(|v| *v == 0 || *v >= 2) else {
                     return invalid_input();
                 };
                 self.max_points = value;
@@ -861,17 +894,15 @@ impl CadCommand for MLeaderCommand {
                 }
                 self.step = Step::Options;
             }
-            Step::Layer => {
-                match upper {
-                    "" => return None,
-                    "X" | "EXIT" => self.step = Step::Options,
-                    "?" => {
-                        return Some(CmdResult::ReportMeasurement(self.layers.join("\n")));
-                    }
-                    "." => self.set_layer(""),
-                    _ => self.set_layer(text.trim_matches('"')),
+            Step::Layer => match upper {
+                "" => return None,
+                "X" | "EXIT" => self.step = Step::Options,
+                "?" => {
+                    return Some(CmdResult::ReportMeasurement(self.layers.join("\n")));
                 }
-            }
+                "." => self.set_layer(""),
+                _ => self.set_layer(text.trim_matches('"')),
+            },
             Step::PreEnterText => {
                 self.text = input.to_string();
                 self.content_type = LeaderContentType::MText;
@@ -901,7 +932,11 @@ impl CadCommand for MLeaderCommand {
 
     fn drawing_variable_update(&self) -> Option<(&'static str, String)> {
         self.layer_set.then(|| {
-            let value = if self.layer.is_empty() { "." } else { &self.layer };
+            let value = if self.layer.is_empty() {
+                "."
+            } else {
+                &self.layer
+            };
             ("MLEADERLAYER", value.to_string())
         })
     }
@@ -914,7 +949,7 @@ impl CadCommand for MLeaderCommand {
         self.picked_entity = Some(entity);
     }
 
-    fn on_entity_pick(&mut self, _handle: codec::Handle, _point: DVec3) -> CmdResult {
+    fn on_entity_pick(&mut self, _handle: document::Handle, _point: DVec3) -> CmdResult {
         if self.step == Step::Layer {
             // A picked object lends its layer.
             if let Some(entity) = self.picked_entity.take() {
@@ -947,12 +982,12 @@ fn v3(p: DVec3) -> Vector3 {
     Vector3::new(p.x, p.y, p.z)
 }
 
-fn build_mleader(
+pub(crate) fn build_mleader(
     text: &str,
     verts: &[DVec3],
     content_point: Option<DVec3>,
     ucs: Mat4,
-    style: Option<&codec::objects::MultiLeaderStyle>,
+    style: Option<&document::objects::MultiLeaderStyle>,
     display_scale: f64,
 ) -> MultiLeader {
     // First point is the arrow, last point is the elbow. Intermediate points
@@ -1031,13 +1066,17 @@ fn build_mleader(
         text_location.y += top;
     }
     // The content base is the landing's end.
-    let base = ml.context.leader_roots.first().map_or(text_location, |root| {
-        Vector3::new(
-            root.connection_point.x + root.direction.x * landing_distance,
-            root.connection_point.y + root.direction.y * landing_distance,
-            root.connection_point.z,
-        )
-    });
+    let base = ml
+        .context
+        .leader_roots
+        .first()
+        .map_or(text_location, |root| {
+            Vector3::new(
+                root.connection_point.x + root.direction.x * landing_distance,
+                root.connection_point.y + root.direction.y * landing_distance,
+                root.connection_point.z,
+            )
+        });
 
     ml.context.text_location = text_location;
     ml.context.content_base_point = base;
@@ -1098,7 +1137,6 @@ fn preview_wire(pts: &[Vec3], arrow_size: f32) -> WireModel {
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
         dash_from_start: false,
-        dash_align_end: None,
         text_verts: Vec::new(),
         name: "mleader_preview".into(),
         points,

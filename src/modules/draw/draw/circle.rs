@@ -1,8 +1,8 @@
 // Circle creation commands.
 
 use crate::t;
-use codec::types::Vector3;
-use codec::{Circle, EntityType};
+use document::types::Vector3;
+use document::{Circle, EntityType};
 use kernel::geom2d::{
     fillets_between, Circle as KernelCircle, Curve as KernelCurve, Line as KernelLine, Tolerance,
 };
@@ -137,12 +137,38 @@ enum StepCR {
     Diameter(DVec3),
 }
 
+impl Default for CircleCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CircleCommand {
     pub fn new() -> Self {
         Self {
             step: StepCR::Center,
             default_r: defaults::get_circle_radius(),
             plane: WorkingPlane::default(),
+        }
+    }
+
+    /// The prompt of the current step as HATCH's Circle asks it.
+    pub(crate) fn hatch_prompt(&self) -> String {
+        let format = |value: f64| format!("{value:.4}");
+        match self.step {
+            StepCR::Center => crate::tr!("hatch-cmd", "circle-center"),
+            StepCR::Radius(_) => {
+                crate::tr!(
+                    "hatch-cmd",
+                    "circle-radius",
+                    radius = format(self.default_r)
+                )
+            }
+            StepCR::Diameter(_) => crate::tr!(
+                "hatch-cmd",
+                "circle-diameter",
+                diameter = format(self.default_r * 2.0)
+            ),
         }
     }
 }
@@ -319,6 +345,12 @@ pub struct CircleCDCommand {
     plane: WorkingPlane,
 }
 
+impl Default for CircleCDCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CircleCDCommand {
     pub fn new() -> Self {
         Self {
@@ -426,11 +458,26 @@ pub struct Circle2PCommand {
     plane: WorkingPlane,
 }
 
+impl Default for Circle2PCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Circle2PCommand {
     pub fn new() -> Self {
         Self {
             p1: None,
             plane: WorkingPlane::default(),
+        }
+    }
+
+    /// The prompt of the current step as HATCH's Circle asks it.
+    pub(crate) fn hatch_prompt(&self) -> String {
+        if self.p1.is_none() {
+            crate::tr!("hatch-cmd", "circle-2p-first")
+        } else {
+            crate::tr!("hatch-cmd", "circle-2p-second")
         }
     }
 }
@@ -488,11 +535,26 @@ pub struct Circle3PCommand {
     plane: WorkingPlane,
 }
 
+impl Default for Circle3PCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Circle3PCommand {
     pub fn new() -> Self {
         Self {
             pts: Vec::new(),
             plane: WorkingPlane::default(),
+        }
+    }
+
+    /// The prompt of the current step as HATCH's Circle asks it.
+    pub(crate) fn hatch_prompt(&self) -> String {
+        match self.pts.len() {
+            0 => crate::tr!("hatch-cmd", "circle-3p-first"),
+            1 => crate::tr!("hatch-cmd", "circle-3p-second"),
+            _ => crate::tr!("hatch-cmd", "circle-3p-third"),
         }
     }
 }
@@ -1275,6 +1337,12 @@ enum StepTTR {
     },
 }
 
+impl Default for CircleTTRCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CircleTTRCommand {
     pub fn new() -> Self {
         Self {
@@ -1304,6 +1372,19 @@ impl CircleTTRCommand {
         };
         defaults::set_circle_radius(radius);
         CmdResult::CommitAndExit(make_circle(self.plane.to_world(center), radius, self.plane))
+    }
+
+    /// The prompt of the current step as HATCH's Circle asks it.
+    pub(crate) fn hatch_prompt(&self) -> String {
+        match self.step {
+            StepTTR::First => crate::tr!("hatch-cmd", "circle-tan-first"),
+            StepTTR::Second { .. } => crate::tr!("hatch-cmd", "circle-tan-second"),
+            StepTTR::Radius { .. } => crate::tr!(
+                "hatch-cmd",
+                "circle-ttr-radius",
+                radius = format!("{:.4}", self.default_r)
+            ),
+        }
     }
 
     fn radius_from_point(&self, point: DVec3) -> Option<f64> {
@@ -1449,6 +1530,12 @@ pub struct CircleTTTCommand {
     objs: Vec<TangentObject>,
     hits: Vec<DVec3>,
     plane: WorkingPlane,
+}
+
+impl Default for CircleTTTCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CircleTTTCommand {

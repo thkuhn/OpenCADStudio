@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
-use crate::host::{BuiltinPlugin, CommandStep, InteractiveCommand};
+use crate::host::{BuiltinPlugin, CommandStep, HostNotification, InteractiveCommand};
 use crate::ipc::client::{InteractiveRegistry, IpcClient, PluginHostApi};
 use crate::ipc::protocol::{
     HostRequest, HostResponse, HostToPlugin, InteractiveEvent, PluginToHost, PLUGIN_TOKEN_ENV,
@@ -151,6 +151,39 @@ fn run_v4(
             if notification_api_version(&notification) > api_version {
                 continue;
             }
+            // API v15: a quad panel pick routes to the dedicated callback —
+            // the v11 custom-grip vtable gate applies (`BuiltinPlugin::
+            // on_quad_action` has no slot in an older cdylib's vtable), so an
+            // older plugin never sees the variant at all. The proxy context
+            // is the same shape `Dispatch` serves with (tab 0, requests are
+            // tab-agnostic unless the plugin scopes them itself).
+            if api_version >= 15 {
+                if let HostNotification::QuadAction {
+                    panel_id,
+                    control_id,
+                    handles,
+                    type_keys,
+                    pick_point,
+                } = &notification
+                {
+                    let mut proxy = client.plugin_host_api(0, interactive.clone());
+                    let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let type_keys: Vec<&str> = type_keys.iter().map(String::as_str).collect();
+                        plugin.on_quad_action(
+                            &mut proxy,
+                            panel_id,
+                            control_id,
+                            handles,
+                            &type_keys,
+                            *pick_point,
+                        );
+                    }));
+                    if delivered.is_err() {
+                        eprintln!("[plugin] on_quad_action panicked (ignored)");
+                    }
+                    continue;
+                }
+            }
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 plugin.on_notification(command_id, notification)
             }));
@@ -192,6 +225,7 @@ fn run_v4(
 fn notification_api_version(notification: &crate::host::HostNotification) -> u32 {
     use crate::host::HostNotification as N;
     match notification {
+        N::QuadAction { .. } => 15,
         N::DocumentChangedRegions { .. } => 13,
         N::DocumentOpened { .. } => 9,
         N::CommandStateChanged { .. } | N::DrawingChanged { .. } => 7,
@@ -329,7 +363,9 @@ fn handle_host_request(
             };
             match result {
                 Some(Ok(b)) => HostResponse::Bool(b),
-                Some(Err(_)) => HostResponse::Error("is_selection_gathering() panicked".to_string()),
+                Some(Err(_)) => {
+                    HostResponse::Error("is_selection_gathering() panicked".to_string())
+                }
                 None => HostResponse::Error(format!("unknown interactive command {command_id}")),
             }
         }
@@ -344,7 +380,9 @@ fn handle_host_request(
             };
             match result {
                 Some(Ok(b)) => HostResponse::Bool(b),
-                Some(Err(_)) => HostResponse::Error("accepts_drag_selection() panicked".to_string()),
+                Some(Err(_)) => {
+                    HostResponse::Error("accepts_drag_selection() panicked".to_string())
+                }
                 None => HostResponse::Error(format!("unknown interactive command {command_id}")),
             }
         }
@@ -359,7 +397,9 @@ fn handle_host_request(
             };
             match result {
                 Some(Ok(b)) => HostResponse::Bool(b),
-                Some(Err(_)) => HostResponse::Error("selection_rejects_locked_layers() panicked".to_string()),
+                Some(Err(_)) => {
+                    HostResponse::Error("selection_rejects_locked_layers() panicked".to_string())
+                }
                 None => HostResponse::Error(format!("unknown interactive command {command_id}")),
             }
         }
@@ -382,11 +422,9 @@ fn handle_host_request(
             let result = {
                 let registry = interactive.borrow();
                 registry.get(&command_id).and_then(|cmd| {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        cmd.modal_dialog()
-                    }))
-                    .ok()
-                    .flatten()
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cmd.modal_dialog()))
+                        .ok()
+                        .flatten()
                 })
             };
             HostResponse::ModalDialog(result)
@@ -633,11 +671,9 @@ fn handle_host_request_v4(
             let result = {
                 let registry = interactive.borrow();
                 registry.get(&command_id).and_then(|cmd| {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        cmd.modal_dialog()
-                    }))
-                    .ok()
-                    .flatten()
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cmd.modal_dialog()))
+                        .ok()
+                        .flatten()
                 })
             };
             Some(HostResponse::ModalDialog(result))

@@ -11,7 +11,7 @@ use crate::modules::aec::engine::project::StoreyRef;
 use crate::t;
 use super::aec_ui_util::*;
 
-static SHOW_ICON: &[u8] = include_bytes!("../../../../assets/icons/constrain/show.svg");
+static SHOW_ICON: &[u8] = include_bytes!("../../../../assets/icons/ui/eye.svg");
 
 pub struct StoreySettingsState<'a> {
     pub building_id: uuid::Uuid,

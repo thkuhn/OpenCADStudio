@@ -5,9 +5,9 @@ use crate::app::control::text_ops::decode_dxf_escapes;
 use crate::app::OpenCADStudio;
 use crate::scene::block_authoring::{definition_dictionary, DictionaryOwners};
 use crate::scene::model::object::PropValue;
-use codec::objects::{DynamicBlockData, ObjectType};
-use codec::xdata::XDataValue;
-use codec::{Document, EntityType, Handle};
+use document::objects::{DynamicBlockData, ObjectType};
+use document::xdata::XDataValue;
+use document::{Document, EntityType, Handle};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{json, Map, Value};
 
@@ -36,7 +36,9 @@ fn resolve_visibility_state(
     evaluated_def: Option<Handle>,
 ) -> Option<(String, String)> {
     if let Some(prop) = OpenCADStudio::visibility_property(doc, insert_handle) {
-        if let PropValue::Choice { selected, .. } | PropValue::ChoiceWithTooltip { selected, .. } = prop.value {
+        if let PropValue::Choice { selected, .. } | PropValue::ChoiceWithTooltip { selected, .. } =
+            prop.value
+        {
             if !selected.is_empty() {
                 return Some((prop.label, selected));
             }
@@ -163,7 +165,7 @@ pub(crate) fn build_block_members_map(doc: &Document) -> FxHashMap<Handle, Vec<H
 /// and evaluated representation `BlockRecord` handle (e.g. `*U12`).
 pub(crate) fn resolve_effective_block(
     doc: &Document,
-    insert: &codec::entities::Insert,
+    insert: &document::entities::Insert,
 ) -> (String, Option<Handle>, Option<Handle>) {
     let insert_handle = insert.common.handle;
     let raw_name = &insert.block_name;
@@ -283,6 +285,62 @@ pub(crate) fn resolve_effective_block(
     (raw_name.clone(), evaluated_handle, evaluated_handle)
 }
 
+/// Drop the evaluated-copy link an INSERT carries, so it resolves through the
+/// block record its name points at again. Both readers rebuild the link from
+/// the representation-data objects reachable through the insert's extension
+/// dictionary, so the link has to leave the drawing as well as the in-memory
+/// resolution map; the insert's own copy of the reference tag goes too. The
+/// rest of the extension data is left alone.
+pub(crate) fn detach_representation(doc: &mut Document, insert: Handle) {
+    let app = doc
+        .app_ids
+        .get(REPRESENTATION_TAG)
+        .map(|app| app.handle.value());
+    if let Some(EntityType::Insert(reference)) = doc.get_entity_mut(insert) {
+        reference
+            .common
+            .extended_data
+            .remove_record(REPRESENTATION_TAG);
+        if let Some(app) = app {
+            reference
+                .common
+                .extended_data
+                .raw_dwg_eed
+                .retain(|(owner, _)| *owner != app);
+        }
+    }
+    let Some(holder) = doc.extension_dictionary_handle(insert) else {
+        return;
+    };
+    let link = match doc.objects.get(&holder) {
+        Some(ObjectType::Dictionary(dictionary)) => dictionary
+            .entries
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("AcDbBlockRepresentation"))
+            .map(|(_, handle)| *handle),
+        _ => None,
+    };
+    if let Some(link) = link {
+        let owned: Vec<Handle> = doc
+            .objects
+            .keys()
+            .copied()
+            .filter(|handle| *handle != link && doc.owner_chain_reaches(*handle, link))
+            .collect();
+        for handle in owned {
+            doc.block_representations.remove(&handle);
+            doc.objects.remove(&handle);
+        }
+        doc.block_representations.remove(&link);
+        doc.objects.remove(&link);
+        if let Some(ObjectType::Dictionary(dictionary)) = doc.objects.get_mut(&holder) {
+            dictionary
+                .entries
+                .retain(|(key, _)| !key.eq_ignore_ascii_case("AcDbBlockRepresentation"));
+        }
+    }
+}
+
 /// Case-insensitive wildcard glob matcher supporting `*` and `?`.
 pub(crate) fn glob_match_ci(pattern: &str, text: &str) -> bool {
     if pattern == "*" {
@@ -321,7 +379,7 @@ pub(crate) fn glob_match_ci(pattern: &str, text: &str) -> bool {
 
 fn clean_text(raw: &str, is_mtext: bool) -> String {
     let base = if is_mtext {
-        codec::entities::mtext_format::parse_mtext(raw, true).to_plain_text()
+        document::entities::mtext_format::parse_mtext(raw, true).to_plain_text()
     } else {
         raw.replace("\\P", "\n").replace("\\p", "\n")
     };
@@ -381,7 +439,7 @@ fn is_dimension_text(s: &str) -> bool {
             current.push(ch);
         }
     }
-    if ! sep_found {
+    if !sep_found {
         return false;
     }
     parts.push(current.trim().to_string());
@@ -491,7 +549,7 @@ fn collect_definition_texts_and_nested_attrs(
 pub(crate) fn extract_block_attributes(
     doc: &Document,
     block_members: &FxHashMap<Handle, Vec<Handle>>,
-    insert: &codec::entities::Insert,
+    insert: &document::entities::Insert,
     effective_def: Option<Handle>,
     evaluated_def: Option<Handle>,
 ) -> Map<String, Value> {
@@ -631,7 +689,7 @@ fn clean_float(v: f64) -> f64 {
 fn insert_world_xy_bounds(
     doc: &Document,
     block_members: &FxHashMap<Handle, Vec<Handle>>,
-    insert: &codec::entities::Insert,
+    insert: &document::entities::Insert,
     active_def: Option<Handle>,
 ) -> ([f64; 2], [f64; 2]) {
     let mut min_x = insert.insert_point.x;
@@ -682,7 +740,7 @@ fn insert_world_xy_bounds(
             (emax[0], emin[1]),
             (emax[0], emax[1]),
         ] {
-            let wp = transform.apply(codec::types::Vector3::new(px, py, 0.0));
+            let wp = transform.apply(document::types::Vector3::new(px, py, 0.0));
             if wp.x.is_finite() && wp.y.is_finite() {
                 any_member = true;
                 b_min_x = b_min_x.min(wp.x);
@@ -725,8 +783,7 @@ impl OpenCADStudio {
         {
             match prop.value {
                 PropValue::BlockNumber { value, .. } => {
-                    if let Some(num) = crate::app::block_parameter_properties::parse_value(&value)
-                    {
+                    if let Some(num) = crate::app::block_parameter_properties::parse_value(&value) {
                         dyn_props.insert(prop.label, json!(clean_float(num)));
                     } else {
                         dyn_props.insert(prop.label, json!(value));
@@ -744,7 +801,8 @@ impl OpenCADStudio {
                         options.get(selected).map_or(Value::Null, |opt| json!(opt)),
                     );
                 }
-                PropValue::Choice { selected, .. } | PropValue::ChoiceWithTooltip { selected, .. } => {
+                PropValue::Choice { selected, .. }
+                | PropValue::ChoiceWithTooltip { selected, .. } => {
                     dyn_props.insert(prop.label, json!(selected));
                 }
                 PropValue::ReadOnly(val) | PropValue::PlainText(val) | PropValue::EditText(val) => {
@@ -848,9 +906,10 @@ impl OpenCADStudio {
         let layer_filter = req.get("layer").and_then(Value::as_str);
 
         let handles_filter: Option<FxHashSet<Handle>> = if let Some(h) = req["handle"].as_str() {
-            let parsed = u64::from_str_radix(h.trim_start_matches("0x").trim_start_matches("0X"), 16)
-                .map(Handle::new)
-                .map_err(|_| failure("invalid_handle", "handle must be hexadecimal"))?;
+            let parsed =
+                u64::from_str_radix(h.trim_start_matches("0x").trim_start_matches("0X"), 16)
+                    .map(Handle::new)
+                    .map_err(|_| failure("invalid_handle", "handle must be hexadecimal"))?;
             let mut set = FxHashSet::default();
             set.insert(parsed);
             Some(set)
@@ -891,7 +950,10 @@ impl OpenCADStudio {
                     ])
                 })
                 .ok_or_else(|| {
-                    failure("invalid_bounds", "bounds expects [min_x, min_y, max_x, max_y]")
+                    failure(
+                        "invalid_bounds",
+                        "bounds expects [min_x, min_y, max_x, max_y]",
+                    )
                 })?;
             if !b.iter().all(|x| x.is_finite()) || b[0] > b[2] || b[1] > b[3] {
                 return Err(failure(
@@ -954,10 +1016,10 @@ impl OpenCADStudio {
             }
 
             // Match against `names` glob patterns
-            if !patterns
-                .iter()
-                .any(|pat| glob_match_ci(pat, &effective_name) || (include_anonymous && glob_match_ci(pat, &ins.block_name)))
-            {
+            if !patterns.iter().any(|pat| {
+                glob_match_ci(pat, &effective_name)
+                    || (include_anonymous && glob_match_ci(pat, &ins.block_name))
+            }) {
                 continue;
             }
 
@@ -977,9 +1039,15 @@ impl OpenCADStudio {
             let mut record = Map::new();
             record.insert("name".into(), Value::String(effective_name.clone()));
             if ins.block_name != effective_name {
-                record.insert("anonymous_name".into(), Value::String(ins.block_name.clone()));
+                record.insert(
+                    "anonymous_name".into(),
+                    Value::String(ins.block_name.clone()),
+                );
             }
-            record.insert("handle".into(), Value::String(format!("{:X}", handle.value())));
+            record.insert(
+                "handle".into(),
+                Value::String(format!("{:X}", handle.value())),
+            );
             record.insert("layer".into(), Value::String(ins.common.layer.clone()));
             record.insert(
                 "position".into(),
@@ -1050,7 +1118,9 @@ impl OpenCADStudio {
                             ok = false;
                             break;
                         }
-                        Err(e) => return Err(failure("invalid_where", format!("where filter: {e}"))),
+                        Err(e) => {
+                            return Err(failure("invalid_where", format!("where filter: {e}")))
+                        }
                     }
                 }
                 if !ok {
@@ -1084,8 +1154,8 @@ impl OpenCADStudio {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::{AttributeDefinition, AttributeEntity, Circle, Insert, Line, Text};
-    use codec::types::Vector3;
+    use document::entities::{AttributeDefinition, AttributeEntity, Circle, Insert, Line, Text};
+    use document::types::Vector3;
 
     #[test]
     fn extracts_schedule_tags_attributes_dynamic_properties_and_filters_anonymous_blocks() {
@@ -1130,10 +1200,9 @@ mod tests {
             ],
         );
         let mut col_insert = Insert::new("COL_SCHED", Vector3::new(50.0, 60.0, 0.0));
-        col_insert.attributes.push(AttributeEntity::new(
-            "TAG".to_string(),
-            "P.12".to_string(),
-        ));
+        col_insert
+            .attributes
+            .push(AttributeEntity::new("TAG".to_string(), "P.12".to_string()));
         let col_handle = app.tabs[i].scene.add_entity(EntityType::Insert(col_insert));
 
         // 3. Unlinked internal anonymous block (*U99) — should be filtered out by default
@@ -1246,7 +1315,10 @@ mod tests {
             .expect("DOOR_DYN resolved from *U");
         assert_eq!(door["handle"], format!("{:X}", door_insert_h.value()));
         assert_eq!(door["anonymous_name"], anon_copy);
-        assert_eq!(door["dynamic_properties"]["Visibility1"], "VisibilityState0");
+        assert_eq!(
+            door["dynamic_properties"]["Visibility1"],
+            "VisibilityState0"
+        );
 
         // Test `where` filter on extracted attributes
         let (filtered, _) = app.control_request(json!({

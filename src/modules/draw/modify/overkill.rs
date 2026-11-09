@@ -1,5 +1,5 @@
 use crate::command::{CadCommand, CmdOption, CmdResult};
-use codec::{EntityType, Handle};
+use document::{EntityType, Handle};
 use glam::DVec3;
 
 #[derive(Clone, Copy, Debug)]
@@ -215,7 +215,7 @@ impl CadCommand for OverkillCommand {
 pub fn normalized(entity: &EntityType, ignore: u16) -> EntityType {
     let mut e = entity.clone();
     let common = e.common_mut();
-    let default = codec::entities::EntityCommon::new();
+    let default = document::entities::EntityCommon::new();
     common.handle = Handle::NULL;
     common.owner_handle = Handle::NULL;
     common.reactors.clear();
@@ -286,7 +286,7 @@ pub fn optimize(entity: &mut EntityType, tolerance: f64) {
             .collect();
         let indices = kernel::space::simplify_linear_chain(&points, tolerance);
         if indices.len() >= if p.is_closed { 3 } else { 2 } {
-            p.vertices = indices.into_iter().map(|i| p.vertices[i].clone()).collect();
+            p.vertices = indices.into_iter().map(|i| p.vertices[i]).collect();
         }
     }
 }
@@ -315,7 +315,7 @@ fn entry(entity: &EntityType, ignore: u16) -> Entry {
     let support = match entity {
         EntityType::Line(line) => {
             let mut line = line.clone();
-            line.start = codec::types::Vector3::new(0.0, 0.0, 0.0);
+            line.start = document::types::Vector3::new(0.0, 0.0, 0.0);
             line.end = line.start;
             Some(EntityType::Line(line))
         }
@@ -337,8 +337,8 @@ fn entry(entity: &EntityType, ignore: u16) -> Entry {
     }
 }
 
-fn circle_of(arc: &codec::entities::Arc) -> codec::entities::Circle {
-    let mut circle = codec::entities::Circle::new();
+fn circle_of(arc: &document::entities::Arc) -> document::entities::Circle {
+    let mut circle = document::entities::Circle::new();
     circle.common = arc.common.clone();
     circle.center = arc.center;
     circle.normal = arc.normal;
@@ -359,7 +359,8 @@ fn close(a: &serde_json::Value, b: &serde_json::Value, tolerance: f64) -> bool {
         }
         (V::Object(x), V::Object(y)) => {
             x.len() == y.len()
-                && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| close(v, w, tolerance)))
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| close(v, w, tolerance)))
         }
         _ => a == b,
     }
@@ -407,7 +408,7 @@ fn compare(
         (EntityType::Circle(_), EntityType::Arc(_)) => Some(Outcome::DropSecond),
         (EntityType::Arc(_), EntityType::Circle(_)) => Some(Outcome::DropFirst),
         (EntityType::Line(l), EntityType::Line(r)) => {
-            let point = |p: codec::types::Vector3| [p.x, p.y, p.z];
+            let point = |p: document::types::Vector3| [p.x, p.y, p.z];
             let union = kernel::space::line_union(
                 [point(l.start), point(l.end)],
                 [point(r.start), point(r.end)],
@@ -420,14 +421,15 @@ fn compare(
                 return None;
             }
             let mut line = l.clone();
-            line.start = codec::types::Vector3::new(union.start[0], union.start[1], union.start[2]);
-            line.end = codec::types::Vector3::new(union.end[0], union.end[1], union.end[2]);
+            line.start =
+                document::types::Vector3::new(union.start[0], union.start[1], union.start[2]);
+            line.end = document::types::Vector3::new(union.end[0], union.end[1], union.end[2]);
             Some(Outcome::Merge(EntityType::Line(line)))
         }
         (EntityType::Arc(l), EntityType::Arc(r)) => {
             // The supports already match within the tolerance; give both the
             // first arc's circle so the union sees one identical frame.
-            let arc = |v: &codec::entities::Arc| CircularArc {
+            let arc = |v: &document::entities::Arc| CircularArc {
                 center: [l.center.x, l.center.y, l.center.z],
                 normal: [l.normal.x, l.normal.y, l.normal.z],
                 radius: l.radius,
@@ -460,7 +462,10 @@ fn compare(
 pub fn run(
     items: &mut [(Handle, EntityType)],
     s: &Settings,
-) -> (std::collections::HashSet<Handle>, std::collections::HashSet<Handle>) {
+) -> (
+    std::collections::HashSet<Handle>,
+    std::collections::HashSet<Handle>,
+) {
     let mut changed = std::collections::HashSet::new();
     let mut removed = std::collections::HashSet::new();
     if s.optimize {
@@ -497,9 +502,13 @@ pub fn run(
                 } else {
                     (b, a)
                 };
-                let Some(outcome) =
-                    compare(&items[keep].1, &items[drop].1, &entries[keep], &entries[drop], s)
-                else {
+                let Some(outcome) = compare(
+                    &items[keep].1,
+                    &items[drop].1,
+                    &entries[keep],
+                    &entries[drop],
+                    s,
+                ) else {
                     continue;
                 };
                 progress = true;
@@ -527,8 +536,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::{Line, LwPolyline};
-    use codec::types::{Color, Vector2};
+    use document::entities::{Line, LwPolyline};
+    use document::types::{Color, Vector2};
 
     #[test]
     fn normalization_ignores_only_the_requested_properties() {
@@ -584,10 +593,10 @@ mod tests {
             let mut line = Line::from_coords(x0, 0.0, 0.0, x1, 0.0, 0.0);
             line.common.handle = Handle::new(handle);
             line.common.reactors = vec![Handle::new(100 + handle)];
-            line.common.raw_record = Some(std::sync::Arc::new(codec::entities::RawRecord {
+            line.common.raw_record = Some(std::sync::Arc::new(document::entities::RawRecord {
                 data: vec![raw],
                 handle_bits: 0,
-                version: codec::types::DxfVersion::Unknown,
+                version: document::types::DxfVersion::Unknown,
             }));
             (Handle::new(handle), EntityType::Line(line))
         };

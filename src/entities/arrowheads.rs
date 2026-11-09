@@ -6,9 +6,9 @@
 //! standard names itself; the block still needs its geometry so other
 //! programs draw the same arrow. It is created the first time it is picked.
 
-use codec::entities::{Circle, Line, LwPolyline, LwVertex, Solid};
-use codec::types::{Color, LineWeight, Vector3};
-use codec::{Document, EntityType, Handle};
+use document::entities::{Circle, Line, LwPolyline, LwVertex, Solid};
+use document::types::{Color, LineWeight, Vector3};
+use document::{Document, EntityType, Handle};
 
 /// Name shown, block name (empty: closed filled, the null handle).
 pub(crate) const STANDARD: &[(&str, &str)] = &[
@@ -73,7 +73,9 @@ pub(crate) fn label_for_block(name: &str) -> String {
     if name.is_empty() {
         return STANDARD[0].0.to_string();
     }
-    standard_by_block(name).map(str::to_string).unwrap_or_else(|| name.to_string())
+    standard_by_block(name)
+        .map(str::to_string)
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// What a picker shows for the arrowhead `handle`.
@@ -93,7 +95,10 @@ pub(crate) fn label(doc: &Document, handle: Handle) -> String {
 /// block in `current` (the values shown now), not every block of the
 /// drawing.
 pub(crate) fn options<'a>(current: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut out: Vec<String> = STANDARD.iter().map(|(label, _)| label.to_string()).collect();
+    let mut out: Vec<String> = STANDARD
+        .iter()
+        .map(|(label, _)| label.to_string())
+        .collect();
     for value in current {
         if !value.is_empty() && !out.iter().any(|known| known == value) {
             out.push(value.to_string());
@@ -117,12 +122,7 @@ pub(crate) fn resolve(doc: &mut Document, value: &str) -> Option<Handle> {
         return Some(record.handle);
     }
     let entities = standard_geometry(name)?;
-    crate::app::define_block_raw_doc(
-        doc,
-        name,
-        Vector3::ZERO,
-        &entities,
-    );
+    crate::app::define_block_raw_doc(doc, name, Vector3::ZERO, &entities);
     doc.block_records.get(name).map(|record| record.handle)
 }
 

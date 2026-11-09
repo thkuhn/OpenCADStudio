@@ -8,8 +8,8 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::OnceLock;
 
-use codec::tables::linetype::{LineType, LineTypeComplexContent, LineTypeElement};
-use codec::{Document, TableEntry};
+use document::tables::linetype::{LineType, LineTypeComplexContent, LineTypeElement};
+use document::{Document, TableEntry};
 
 // ── Complex linetype types ────────────────────────────────────────────────
 
@@ -28,7 +28,7 @@ pub enum LtRotation {
 }
 
 impl LtRotation {
-    fn of(data: &codec::tables::linetype::LineTypeComplexData) -> Self {
+    fn of(data: &document::tables::linetype::LineTypeComplexData) -> Self {
         if data.upright {
             Self::Upright
         } else if data.absolute_rotation {
@@ -232,23 +232,31 @@ pub fn document_complex_lt(document: &Document, name: &str) -> Option<ComplexLt>
         .line_types
         .iter()
         .find(|l| l.name.eq_ignore_ascii_case(name))?;
-    // Treat the linetype as complex only when an element carries *renderable*
-    // embedded content — a non-empty text string, or a shape backed by a shape
-    // file. Some DWGs store dash elements with a placeholder `complex` (shape
-    // #0, null style handle, zero scale) that draws nothing; routing those
-    // through the CPU complex-linetype path needlessly skips the normal dash
-    // shader — and with it the "A"-type endpoint alignment. Fall through to the
-    // ordinary `resolve_pattern` path for them.
-    let has_real_complex = lt.elements.iter().any(|e| {
+    if !has_real_complex(lt) {
+        return None;
+    }
+    document_lt_segments(document, name)
+}
+
+/// Treat a linetype as complex only when an element carries *renderable*
+/// embedded content — a non-empty text string, or a shape backed by a shape
+/// file. Some DWGs store dash elements with a placeholder `complex` (shape
+/// #0, null style handle, zero scale) that draws nothing; routing those
+/// through the CPU complex-linetype path needlessly skips the normal dash
+/// shader — and with it the "A"-type endpoint alignment. Fall through to the
+/// ordinary `resolve_pattern` path for them.
+fn has_real_complex(lt: &LineType) -> bool {
+    lt.elements.iter().any(|e| {
         e.complex.as_ref().is_some_and(|cx| match &cx.content {
             LineTypeComplexContent::Text { text } => !text.trim().is_empty(),
             LineTypeComplexContent::Shape { .. } => !cx.style_handle.is_null(),
         })
-    });
-    if !has_real_complex {
-        return None;
-    }
-    document_lt_segments(document, name)
+    })
+}
+
+/// Whether the drawing's linetype table holds a complex linetype.
+pub fn defines_complex_lt(document: &Document) -> bool {
+    document.line_types.iter().any(has_real_complex)
 }
 
 /// Resolve a complex linetype honouring "**document first, bundled catalog
@@ -473,7 +481,12 @@ fn find_shape_file(file: &str, lin_dir: Option<&std::path::Path>) -> Option<Stri
             std::fs::read_dir(dir)
                 .ok()?
                 .filter_map(Result::ok)
-                .find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(name)
+                })
                 .map(|entry| entry.path())
         })
         .or_else(|| crate::io::font_repo::local_font_file(name))
@@ -482,7 +495,7 @@ fn find_shape_file(file: &str, lin_dir: Option<&std::path::Path>) -> Option<Stri
 
 /// The drawing's shape-file STYLE for `file`, added when missing (an empty
 /// name, as shape files are stored).
-fn shape_file_style(doc: &mut Document, file: &str) -> codec::Handle {
+fn shape_file_style(doc: &mut Document, file: &str) -> document::Handle {
     if let Some(style) = doc
         .text_styles
         .iter()
@@ -490,7 +503,7 @@ fn shape_file_style(doc: &mut Document, file: &str) -> codec::Handle {
     {
         return style.handle;
     }
-    let mut style = codec::tables::TextStyle::new("");
+    let mut style = document::tables::TextStyle::new("");
     style.handle = doc.allocate_handle();
     style.is_shape_file = true;
     style.font_file = file.to_string();
@@ -514,7 +527,7 @@ fn complex_elements(
     plain: &[LineTypeElement],
     lin_dir: Option<&std::path::Path>,
 ) -> Option<Vec<LineTypeElement>> {
-    use codec::tables::linetype::LineTypeComplexData;
+    use document::tables::linetype::LineTypeComplexData;
     let mut out: Vec<LineTypeElement> = Vec::new();
     let mut lengths = plain.iter();
     for segment in &lt.segments {
@@ -927,7 +940,7 @@ fn push_lt_segment(token: &str, out: &mut Vec<LtSegment>) {
 #[cfg(test)]
 mod header_tests {
     use super::{parse, populate_document_from_source};
-    use codec::Document;
+    use document::Document;
 
     /// A `.lin` header's description is optional, and without one the comma
     /// goes too: `*PLAIN` followed by its `A,` line is a whole definition.
@@ -979,7 +992,7 @@ mod rotation_tests {
 #[cfg(test)]
 mod shape_file_tests {
     use super::{document_complex_lt, populate_document_from_source, LtSegment};
-    use codec::Document;
+    use document::Document;
 
     /// A `.lin` shape from its own shape file (not one of the bundled
     /// substitutes) loads with the shape it names, the file found next to
@@ -1002,7 +1015,9 @@ mod shape_file_tests {
         populate_document_from_source(&mut doc, source, Some(&dir));
         let lt = document_complex_lt(&doc, "TICKS").expect("the shape was dropped");
         let shape = lt.segments.iter().find_map(|s| match s {
-            LtSegment::Shape { number, shx_file, .. } => Some((*number, shx_file.clone())),
+            LtSegment::Shape {
+                number, shx_file, ..
+            } => Some((*number, shx_file.clone())),
             _ => None,
         });
         let _ = std::fs::remove_dir_all(&dir);

@@ -5,9 +5,9 @@
 //  XLINE — infinite construction line: same two-click pattern, yields XLine.
 
 use crate::t;
-use codec::entities::{Ray as RayEnt, XLine as XLineEnt};
-use codec::types::Vector3;
-use codec::EntityType;
+use document::entities::{Ray as RayEnt, XLine as XLineEnt};
+use document::types::Vector3;
+use document::EntityType;
 
 use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::scene::model::wire_model::WireModel;
@@ -19,6 +19,12 @@ const DISPLAY_EXTENT: f32 = 1_000_000.0;
 
 pub struct RayCommand {
     base: Option<DVec3>,
+}
+
+impl Default for RayCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RayCommand {
@@ -101,7 +107,6 @@ impl CadCommand for RayCommand {
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,
-            dash_align_end: None,
             text_verts: Vec::new(),
             name: "ray_preview".into(),
             points: vec![[base.x, base.y, base.z], [far.x, far.y, far.z]],
@@ -147,6 +152,12 @@ enum XLineMode {
     OffsetDistance,
     OffsetPick,
     OffsetSide,
+}
+
+impl Default for XLineCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl XLineCommand {
@@ -343,7 +354,7 @@ impl CadCommand for XLineCommand {
     fn inject_picked_entity(&mut self, entity: EntityType) {
         self.picked = Some(entity);
     }
-    fn on_entity_pick(&mut self, _handle: codec::Handle, _pt: DVec3) -> CmdResult {
+    fn on_entity_pick(&mut self, _handle: document::Handle, _pt: DVec3) -> CmdResult {
         let xyz = |v: Vector3| DVec3::new(v.x, v.y, v.z);
         let reference = match self.picked.take() {
             Some(EntityType::Line(line)) => {
@@ -439,7 +450,6 @@ impl CadCommand for XLineCommand {
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,
-            dash_align_end: None,
             text_verts: Vec::new(),
             name: "xline_preview".into(),
             points: vec![
@@ -610,13 +620,13 @@ mod tests {
         ));
         assert!(command.needs_entity_pick());
 
-        let line = codec::entities::Line::from_points(
+        let line = document::entities::Line::from_points(
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(1.0, 0.0, 0.0),
         );
         command.inject_picked_entity(EntityType::Line(line));
         assert!(matches!(
-            command.on_entity_pick(codec::Handle::new(1), DVec3::ZERO),
+            command.on_entity_pick(document::Handle::new(1), DVec3::ZERO),
             CmdResult::NeedPoint
         ));
         let CmdResult::CommitEntity(EntityType::XLine(entity)) = command.on_point(DVec3::Y) else {

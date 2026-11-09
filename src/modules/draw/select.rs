@@ -9,7 +9,7 @@
 // completed selection action fires straight away, no Enter required.
 
 use crate::t;
-use codec::Handle;
+use document::Handle;
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdOption, CmdResult};
@@ -43,7 +43,7 @@ pub struct SelectObjectsCommand {
     associative_dimensions_only: bool,
     /// The kinds of object the command takes; the host drops the rest of
     /// each completed selection silently, and Enter on nothing ends quietly.
-    keep: Option<fn(&codec::EntityType) -> bool>,
+    keep: Option<fn(&document::EntityType) -> bool>,
     /// A SEttings keyword at the prompt, and what it does.
     settings: Option<fn() -> CmdResult>,
     /// A command's own keyword at the prompt (its label, the keyword and
@@ -156,7 +156,7 @@ impl SelectObjectsCommand {
         prompt_cmd: &str,
         pending_cmd: &str,
         prompt_text: &'static str,
-        keep: fn(&codec::EntityType) -> bool,
+        keep: fn(&document::EntityType) -> bool,
     ) -> Self {
         let mut command = Self::with_prompt(prompt_cmd, pending_cmd, prompt_text);
         command.keep = Some(keep);
@@ -198,6 +198,16 @@ impl SelectObjectsCommand {
     }
 }
 
+thread_local! {
+    /// Remove mode of the selection being gathered (R / A at the prompt):
+    /// the prompt then reads "Remove objects:".
+    static REMOVE_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn set_remove_mode(on: bool) {
+    REMOVE_MODE.with(|mode| mode.set(on));
+}
+
 impl CadCommand for SelectObjectsCommand {
     fn reveals_hidden_block_objects(&self) -> bool {
         self.pending_cmd == "_BVSHOW"
@@ -228,31 +238,19 @@ impl CadCommand for SelectObjectsCommand {
             )
             .into_owned();
         }
-        if self.commit_on_enter && !self.handles.is_empty() {
-            if self.auto_constrain_settings {
-                return t!(
-                    "%{cmd}  Select objects or [Settings] (%{count} selected, Enter to apply):",
-                    cmd = self.prompt_cmd,
-                    count = self.handles.len()
-                )
-                .into_owned();
-            }
-            t!(
-                "%{cmd}  Select objects (%{count} selected, Enter to apply):",
-                cmd = self.prompt_cmd,
-                count = self.handles.len()
-            )
-            .into_owned()
-        } else {
-            if self.auto_constrain_settings {
-                return t!(
-                    "%{cmd}  Select objects or [Settings]:",
-                    cmd = self.prompt_cmd
-                )
-                .into_owned();
-            }
-            t!("%{cmd}  Select objects:", cmd = self.prompt_cmd).into_owned()
+        if REMOVE_MODE.with(|mode| mode.get()) {
+            return t!("%{cmd}  Remove objects:", cmd = self.prompt_cmd).into_owned();
         }
+        // The reference asks the same "Select objects:" however many are
+        // picked; each pick's count is its own "N found" line.
+        if self.auto_constrain_settings {
+            return t!(
+                "%{cmd}  Select objects or [Settings]:",
+                cmd = self.prompt_cmd
+            )
+            .into_owned();
+        }
+        t!("%{cmd}  Select objects:", cmd = self.prompt_cmd).into_owned()
     }
 
     // Opt into the selection-gathering path; host routes clicks through
@@ -271,7 +269,7 @@ impl CadCommand for SelectObjectsCommand {
         self.associative_dimensions_only
     }
 
-    fn selection_entity_filter(&self) -> Option<fn(&codec::EntityType) -> bool> {
+    fn selection_entity_filter(&self) -> Option<fn(&document::EntityType) -> bool> {
         self.keep
     }
 
@@ -379,6 +377,11 @@ impl CadCommand for SelectObjectsCommand {
             }
         }
         match text.trim().to_uppercase().as_str() {
+            // SIngle: the next selection ends the prompt.
+            "SI" | "SINGLE" => {
+                self.commit_on_enter = false;
+                Some(CmdResult::NeedPoint)
+            }
             "S" | "SETTINGS" if self.auto_constrain_settings => {
                 Some(CmdResult::OpenAutoConstrainSettings)
             }

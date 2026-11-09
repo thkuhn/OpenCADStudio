@@ -225,7 +225,7 @@ impl MeshInstanceGpu {
         }
     }
 
-    fn from_transform(transform: codec::types::Transform) -> Self {
+    fn from_transform(transform: document::types::Transform) -> Self {
         let m = transform.matrix.m;
         let translation = [m[0][3], m[1][3], m[2][3]];
         let translation_high = [
@@ -353,7 +353,7 @@ pub struct MeshBatchChunk {
     pub instance_buffer: wgpu::Buffer,
     pub instance_count: u32,
     pub highlight_ranges: Vec<MeshBatchRange>,
-    pub handles: rustc_hash::FxHashSet<codec::Handle>,
+    pub handles: rustc_hash::FxHashSet<document::Handle>,
     pub material: Option<crate::scene::model::material_model::MeshMaterial>,
     pub face_color: [f32; 4],
     pub material_bind_group: Option<wgpu::BindGroup>,
@@ -361,7 +361,7 @@ pub struct MeshBatchChunk {
 
 #[derive(Clone, Copy)]
 pub struct MeshBatchRange {
-    pub handle: codec::Handle,
+    pub handle: document::Handle,
     pub index_start: u32,
     pub index_count: u32,
     pub transparent: bool,
@@ -405,7 +405,7 @@ fn make_chunk(
     edge_verts: &[MeshEdgeVertex],
     highlight_ranges: &[MeshBatchRange],
     instances: &[MeshInstanceGpu],
-    handles: &rustc_hash::FxHashSet<codec::Handle>,
+    handles: &rustc_hash::FxHashSet<document::Handle>,
     _bounds_override: Option<[f32; 6]>,
     material: Option<&crate::scene::model::material_model::MeshMaterial>,
     face_color: [f32; 4],
@@ -1038,7 +1038,10 @@ pub fn upload_chunk_material_bind_groups(
                 Some(handle) => (Some(handle.value()), Vec::new()),
                 None if !material_has_images(material) => {
                     let params = material_map_params(Some(material));
-                    (None, bytemuck::cast_slice(std::slice::from_ref(&params)).to_vec())
+                    (
+                        None,
+                        bytemuck::cast_slice(std::slice::from_ref(&params)).to_vec(),
+                    )
                 }
                 // Images but no handle to identify them by: keep it private.
                 None => {
@@ -1181,7 +1184,7 @@ struct MeshBatchPart<'a> {
     set: &'a MeshLodSet,
     mesh: &'a MeshModel,
     uv_mesh: &'a MeshModel,
-    entity_handle: Option<codec::Handle>,
+    entity_handle: Option<document::Handle>,
     display_color: [f32; 4],
     material: Option<&'a crate::scene::model::material_model::MeshMaterial>,
     color: [f32; 4],
@@ -1233,7 +1236,7 @@ fn index_hash(indices: &[u32]) -> u64 {
 fn optimize_triangle_indices(indices: &[u32], vertex_count: usize) -> std::sync::Arc<[u32]> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return meshopt::optimize::optimize_vertex_cache(indices, vertex_count).into();
+        meshopt::optimize::optimize_vertex_cache(indices, vertex_count).into()
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -1970,7 +1973,7 @@ pub fn build_mesh_batch_filtered(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     sets: &[MeshLodSet],
-    handles: Option<&rustc_hash::FxHashSet<codec::Handle>>,
+    handles: Option<&rustc_hash::FxHashSet<document::Handle>>,
 ) -> (Vec<MeshBatchChunk>, u64) {
     let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
     // Derive the caps from the real device limit and vertex size. The previous
@@ -1990,7 +1993,8 @@ pub fn build_mesh_batch_filtered(
     let mut wire_indices: Vec<u32> = Vec::new();
     let mut edge_verts: Vec<MeshEdgeVertex> = Vec::new();
     let mut highlight_ranges: Vec<MeshBatchRange> = Vec::new();
-    let mut chunk_handles: rustc_hash::FxHashSet<codec::Handle> = rustc_hash::FxHashSet::default();
+    let mut chunk_handles: rustc_hash::FxHashSet<document::Handle> =
+        rustc_hash::FxHashSet::default();
     let mut total_tris = 0u64;
     let mut ordered: Vec<MeshBatchPart<'_>> = Vec::new();
     let mut source_indices: rustc_hash::FxHashMap<(bool, u64), (std::sync::Arc<[u32]>, u64)> =
@@ -2024,11 +2028,11 @@ pub fn build_mesh_batch_filtered(
         let include_faces = set
             .visual_style
             .as_ref()
-            .map_or(true, |style| style.face_visible());
+            .is_none_or(|style| style.face_visible());
         let include_edges = set
             .visual_style
             .as_ref()
-            .map_or(true, |style| style.edges_visible());
+            .is_none_or(|style| style.edges_visible());
         if !has_face_materials && !has_face_colors {
             let base_color = set
                 .material

@@ -1,8 +1,8 @@
-use codec::entities::attribute_definition::{
+use document::entities::attribute_definition::{
     HorizontalAlignment as AHA, MTextFlag, VerticalAlignment as AVA,
 };
-use codec::entities::{AttributeDefinition, AttributeEntity};
-use codec::types::Vector3;
+use document::entities::{AttributeDefinition, AttributeEntity};
+use document::types::Vector3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
@@ -108,7 +108,7 @@ fn mtext_flag_str(f: MTextFlag) -> &'static str {
 /// glyph boxes, the point they are relative to and the layout rotation.
 pub(crate) type AttrCells = (Vec<crate::entities::text_support::GlyphBox>, [f64; 2], f32);
 
-fn build_attr_render(input: AttrTextInputs<'_>, document: &codec::Document) -> RenderEntity {
+fn build_attr_render(input: AttrTextInputs<'_>, document: &document::Document) -> RenderEntity {
     build_attr_layout(input, document, None)
 }
 
@@ -116,8 +116,8 @@ fn build_attr_render(input: AttrTextInputs<'_>, document: &codec::Document) -> R
 /// character cells in `cells` (left `None` for a single-line one).
 fn build_attr_layout(
     mut input: AttrTextInputs<'_>,
-    document: &codec::Document,
-    mut cells: Option<&mut Option<AttrCells>>,
+    document: &document::Document,
+    cells: Option<&mut Option<AttrCells>>,
 ) -> RenderEntity {
     let normal = (input.normal.x, input.normal.y, input.normal.z);
     let (wsx, wsy, wsz) = transform::ocs_point_to_wcs(
@@ -251,6 +251,7 @@ fn build_attr_layout(
             is_vertical: false,
         };
         let layout = layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             // Not an MTEXT: text in a fixed box, never columnar.
             columns: Default::default(),
             value: &display_value,
@@ -266,8 +267,9 @@ fn build_attr_layout(
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: cells.is_some(),
+            break_long_words: false,
         });
-        if let Some(out) = cells.as_deref_mut() {
+        if let Some(out) = cells {
             *out = Some((
                 layout.glyph_boxes.clone(),
                 [anchor_pt.x, anchor_pt.y],
@@ -352,7 +354,7 @@ fn build_attr_layout(
             anchor_f64[0] - (anchor_local_x as f64 * cos_r - local_y_for_line as f64 * sin_r),
             anchor_f64[1] - (anchor_local_x as f64 * sin_r + local_y_for_line as f64 * cos_r),
         ];
-        // Parse `%%` codes through opencadcodec (same as TEXT), re-encoded for the
+        // Parse `%%` codes through document (same as TEXT), re-encoded for the
         // stroke tessellator, so attribute text shares the one parser.
         let encoded = crate::entities::text::acad_text_encode(line);
         let (strokes, fill_tris) = lff::tessellate_text_ex(
@@ -407,7 +409,7 @@ fn build_attr_layout(
 // ── AttributeDefinition ───────────────────────────────────────────────────────
 
 impl RenderConvertible for AttributeDefinition {
-    fn to_render(&self, document: &codec::Document) -> Option<RenderEntity> {
+    fn to_render(&self, document: &document::Document) -> Option<RenderEntity> {
         // A definition shows its tag; the value appears only on the block
         // references (block content renders a constant one's value itself).
         Some(build_attr_render(
@@ -476,10 +478,8 @@ impl Grippable for AttributeDefinition {
             self.insertion_point
         };
         let d = match apply {
-            GripApply::Translate(d) => glam::DVec3::new(d.x as f64, d.y as f64, d.z as f64),
-            GripApply::Absolute(p) => {
-                glam::DVec3::new(p.x as f64, p.y as f64, p.z as f64) - dv(current)
-            }
+            GripApply::Translate(d) => glam::DVec3::new(d.x, d.y, d.z),
+            GripApply::Absolute(p) => glam::DVec3::new(p.x, p.y, p.z) - dv(current),
         };
         // A two-point definition stretches the moved endpoint; any other
         // grip moves the whole text.
@@ -558,12 +558,26 @@ fn parse_justify(s: &str) -> Option<(AHA, AVA)> {
     })
 }
 
+/// The text and frame of a single-line attribute, a definition (its tag)
+/// or a value, as its justification is worked out from.
+struct AttrRun<'a> {
+    text: &'a str,
+    text_style: &'a str,
+    height: f64,
+    width_factor: f64,
+    oblique_angle: f64,
+    rotation: f64,
+    horizontal_alignment: AHA,
+    vertical_alignment: AVA,
+}
+
 /// Offset of the justification anchor from the baseline start, in the
-/// text's own frame (the shown tag measured with its style's font).
-fn justify_offset(a: &AttributeDefinition) -> Option<(f64, f64)> {
+/// text's own frame (the shown text measured with its style's font).
+fn justify_offset(a: &AttrRun<'_>) -> Option<(f64, f64)> {
+    let font = crate::entities::common::style_font(a.text_style);
     let b = text_local_bounds(
-        &crate::entities::common::style_font(&a.text_style),
-        &a.tag,
+        &font,
+        a.text,
         a.height as f32,
         a.width_factor as f32,
         a.oblique_angle as f32,
@@ -578,16 +592,42 @@ fn justify_offset(a: &AttributeDefinition) -> Option<(f64, f64)> {
             (b.ink_min[1] + b.ink_max[1]) as f64 * 0.5
         }
         AVA::Baseline => 0.0,
-        AVA::Bottom => {
-            -a.height
-                * crate::entities::text_support::descent_ratio(
-                    &crate::entities::common::style_font(&a.text_style),
-                ) as f64
-        }
+        AVA::Bottom => -a.height * crate::entities::text_support::descent_ratio(&font) as f64,
         AVA::Middle => a.height * 0.5,
         AVA::Top => a.height,
     };
     Some((ax, ay))
+}
+
+/// The baseline start a justified attribute stores as its insertion point:
+/// the alignment point minus the justification offset.
+fn text_start(a: &AttrRun<'_>, alignment_point: Vector3) -> Vector3 {
+    let Some((x, y)) = justify_offset(a) else {
+        return alignment_point;
+    };
+    let (sin, cos) = a.rotation.sin_cos();
+    let (dx, dy) = (x * cos - y * sin, x * sin + y * cos);
+    let p = alignment_point;
+    Vector3::new(p.x - dx, p.y - dy, p.z)
+}
+
+/// The baseline start a justified definition stores as its insertion point
+/// (the alignment point minus the justification offset).
+pub fn definition_text_start(a: &AttributeDefinition) -> Vector3 {
+    text_start(&definition_run(a), a.alignment_point)
+}
+
+fn definition_run(a: &AttributeDefinition) -> AttrRun<'_> {
+    AttrRun {
+        text: &a.tag,
+        text_style: &a.text_style,
+        height: a.height,
+        width_factor: a.width_factor,
+        oblique_angle: a.oblique_angle,
+        rotation: a.rotation,
+        horizontal_alignment: a.horizontal_alignment,
+        vertical_alignment: a.vertical_alignment,
+    }
 }
 
 fn rotate(a: &AttributeDefinition, (x, y): (f64, f64)) -> (f64, f64) {
@@ -595,15 +635,28 @@ fn rotate(a: &AttributeDefinition, (x, y): (f64, f64)) -> (f64, f64) {
     (x * cos - y * sin, x * sin + y * cos)
 }
 
-/// The baseline start a justified definition stores as its insertion point
-/// (the alignment point minus the justification offset).
-pub fn definition_text_start(a: &AttributeDefinition) -> Vector3 {
-    let Some(offset) = justify_offset(a) else {
-        return a.alignment_point;
+/// [`definition_text_start`] for an attribute, measured on its value.
+pub fn attribute_text_start(a: &AttributeEntity) -> Vector3 {
+    let run = AttrRun {
+        text: &a.value,
+        text_style: &a.text_style,
+        height: a.height,
+        width_factor: a.width_factor,
+        oblique_angle: a.oblique_angle,
+        rotation: a.rotation,
+        horizontal_alignment: a.horizontal_alignment,
+        vertical_alignment: a.vertical_alignment,
     };
-    let (dx, dy) = rotate(a, offset);
-    let p = a.alignment_point;
-    Vector3::new(p.x - dx, p.y - dy, p.z)
+    text_start(&run, a.alignment_point)
+}
+
+/// Whether a single-line attribute's insertion point is derived from its
+/// alignment point: justified, but not Left-baseline (no alignment point)
+/// and not Align/Fit (both points are given).
+pub fn insertion_is_derived(h: AHA, v: AVA, multiline: bool) -> bool {
+    !multiline
+        && !matches!(h, AHA::Aligned | AHA::Fit)
+        && !(matches!(h, AHA::Left) && matches!(v, AVA::Baseline))
 }
 
 fn yes_no(flag: bool) -> PropValue {
@@ -658,7 +711,7 @@ fn set_multiline(a: &mut AttributeDefinition, on: bool) {
         a.vertical_alignment = AVA::Top;
         a.alignment_point = a.insertion_point;
         a.line_count = a.default_value.split("\\P").count().max(1) as i16;
-        let mut mtext = codec::entities::MText::new();
+        let mut mtext = document::entities::MText::new();
         mtext.value = a.default_value.clone();
         mtext.insertion_point = a.insertion_point;
         mtext.height = a.height;
@@ -883,7 +936,8 @@ impl PropertyEditable for AttributeDefinition {
                 // The text stays where it is: the baseline start is kept and
                 // the alignment point moves to the new anchor.
                 if !is_two_point(self) {
-                    let (dx, dy) = justify_offset(self).map_or((0.0, 0.0), |o| rotate(self, o));
+                    let (dx, dy) = justify_offset(&definition_run(self))
+                        .map_or((0.0, 0.0), |o| rotate(self, o));
                     let s = self.insertion_point;
                     self.alignment_point = Vector3::new(s.x + dx, s.y + dy, s.z);
                     return;
@@ -892,7 +946,8 @@ impl PropertyEditable for AttributeDefinition {
                     .hypot(self.alignment_point.y - self.insertion_point.y);
                 if !was_two_point || span < 1.0e-9 {
                     // A baseline as long as the tag.
-                    let length = justify_offset(self).map_or(self.height, |(advance, _)| advance);
+                    let length = justify_offset(&definition_run(self))
+                        .map_or(self.height, |(advance, _)| advance);
                     let (sin, cos) = self.rotation.sin_cos();
                     self.alignment_point = Vector3::new(
                         self.insertion_point.x + cos * length,
@@ -966,7 +1021,7 @@ impl Transformable for AttributeDefinition {
 /// single-line attribute.
 pub(crate) fn attribute_cells(
     a: &AttributeEntity,
-    document: &codec::Document,
+    document: &document::Document,
 ) -> Option<AttrCells> {
     let mut out = None;
     build_attr_layout(attr_inputs(a), document, Some(&mut out));
@@ -995,7 +1050,7 @@ fn attr_inputs(a: &AttributeEntity) -> AttrTextInputs<'_> {
 }
 
 impl RenderConvertible for AttributeEntity {
-    fn to_render(&self, document: &codec::Document) -> Option<RenderEntity> {
+    fn to_render(&self, document: &document::Document) -> Option<RenderEntity> {
         Some(build_attr_render(
             AttrTextInputs {
                 value: &self.value,
@@ -1045,20 +1100,20 @@ impl Grippable for AttributeEntity {
         if grip_id == 0 {
             match apply {
                 GripApply::Translate(d) => {
-                    self.insertion_point.x += d.x as f64;
-                    self.insertion_point.y += d.y as f64;
-                    self.insertion_point.z += d.z as f64;
-                    self.alignment_point.x += d.x as f64;
-                    self.alignment_point.y += d.y as f64;
-                    self.alignment_point.z += d.z as f64;
+                    self.insertion_point.x += d.x;
+                    self.insertion_point.y += d.y;
+                    self.insertion_point.z += d.z;
+                    self.alignment_point.x += d.x;
+                    self.alignment_point.y += d.y;
+                    self.alignment_point.z += d.z;
                 }
                 GripApply::Absolute(p) => {
-                    self.insertion_point.x = p.x as f64;
-                    self.insertion_point.y = p.y as f64;
-                    self.insertion_point.z = p.z as f64;
-                    self.alignment_point.x = p.x as f64;
-                    self.alignment_point.y = p.y as f64;
-                    self.alignment_point.z = p.z as f64;
+                    self.insertion_point.x = p.x;
+                    self.insertion_point.y = p.y;
+                    self.insertion_point.z = p.z;
+                    self.alignment_point.x = p.x;
+                    self.alignment_point.y = p.y;
+                    self.alignment_point.z = p.z;
                 }
             }
         }
@@ -1282,7 +1337,7 @@ impl Transformable for AttributeEntity {
     }
 }
 
-impl crate::entities::traits::TextContent for codec::entities::AttributeDefinition {
+impl crate::entities::traits::TextContent for document::entities::AttributeDefinition {
     fn text_content(&self) -> Option<String> {
         Some(self.default_value.clone())
     }
@@ -1294,7 +1349,7 @@ impl crate::entities::traits::TextContent for codec::entities::AttributeDefiniti
     }
 }
 
-impl crate::entities::traits::TextContent for codec::entities::AttributeEntity {
+impl crate::entities::traits::TextContent for document::entities::AttributeEntity {
     fn text_content(&self) -> Option<String> {
         Some(self.get_value().to_string())
     }
@@ -1313,11 +1368,11 @@ mod wrapping_tests {
 
     #[test]
     fn multiline_attribute_uses_embedded_boundary_width() {
-        let document = codec::Document::new();
+        let document = document::Document::new();
         let mut attribute = AttributeEntity::new("TITLE".into(), "Alpha Beta Gamma Delta".into());
         attribute.mtext_flag = MTextFlag::MultiLine;
         attribute.is_multiline = true;
-        let mut mtext = codec::entities::MText::new();
+        let mut mtext = document::entities::MText::new();
         mtext.rectangle_width = 15.0;
         attribute.embedded_mtext = Some(Box::new(mtext));
         let rendered = attribute.to_render(&document).expect("attribute render");

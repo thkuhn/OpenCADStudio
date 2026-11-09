@@ -9,11 +9,11 @@
 //! starts a paragraph; unless line spacing is forced uniform, each paragraph
 //! keeps its own pitch (`\pxsm` / `\psm`). A height change starts `\H<h>;`.
 
-use codec::entities::{
+use document::entities::{
     AttachmentPoint, DrawingDirection, LineSpacingStyle, MText, TextHorizontalAlignment as HA,
 };
-use codec::types::Vector3;
-use codec::{Document, EntityType, Handle};
+use document::types::Vector3;
+use document::{Document, EntityType, Handle};
 
 use crate::app::settings::Txt2MtxtSettings;
 use crate::entities::text_support::{resolve_dxf_special_chars, text_local_bounds};
@@ -187,7 +187,13 @@ fn piece<'a>(handle: Handle, entity: &'a EntityType, doc: &Document) -> Option<P
 }
 
 /// A new MTEXT with `source`'s layer, colour and style.
-fn mtext_from(source: &EntityType, value: String, at: [f64; 2], height: f64, rotation: f64) -> MText {
+fn mtext_from(
+    source: &EntityType,
+    value: String,
+    at: [f64; 2],
+    height: f64,
+    rotation: f64,
+) -> MText {
     let mut m = MText::new();
     let (common, style, z, normal) = match source {
         EntityType::Text(t) => (&t.common, &t.style, t.insertion_point.z, t.normal),
@@ -231,7 +237,7 @@ fn separate(p: &Piece, doc: &Document) -> Vec<EntityType> {
             // The drawn words, grouped into lines by their baseline.
             // ponytail: a line keeps only its words, not inline formatting.
             let words = crate::entities::mtext::explode_mtext(m, doc);
-            let mut lines: Vec<(f64, Vec<(f64, &codec::entities::Text)>)> = Vec::new();
+            let mut lines: Vec<(f64, Vec<(f64, &document::entities::Text)>)> = Vec::new();
             for word in &words {
                 let EntityType::Text(t) = word else { continue };
                 let at = [t.insertion_point.x, t.insertion_point.y];
@@ -265,7 +271,9 @@ fn separate(p: &Piece, doc: &Document) -> Vec<EntityType> {
                         .join(" ");
                     let at = p.point(line[0].0 - origin_along, p.rect[3] - k as f64 * step);
                     let height = line[0].1.height;
-                    EntityType::MText(Box::new(mtext_from(p.entity, value, at, height, m.rotation)))
+                    EntityType::MText(Box::new(mtext_from(
+                        p.entity, value, at, height, m.rotation,
+                    )))
                 })
                 .collect()
         }
@@ -293,7 +301,12 @@ pub fn plan(
     }
     if !settings.select_order {
         // Top-down; a tie keeps the selection order.
-        let top = |p: &Piece| p.corners().map(|c| up(c, frame)).into_iter().fold(f64::MIN, f64::max);
+        let top = |p: &Piece| {
+            p.corners()
+                .map(|c| up(c, frame))
+                .into_iter()
+                .fold(f64::MIN, f64::max)
+        };
         pieces.sort_by(|a, b| top(b).total_cmp(&top(a)));
     }
     let first = &pieces[0];

@@ -1,6 +1,6 @@
-use codec::entities::Solid3D;
-use codec::objects::SolidHistoryOperation;
-use codec::EntityType;
+use document::entities::Solid3D;
+use document::objects::SolidHistoryOperation;
+use document::EntityType;
 use glam::DVec3;
 use kernel::brep::Body;
 
@@ -74,6 +74,12 @@ pub struct CylinderCommand {
     minor_radius: f64,
     remembered: Defaults,
     plane: WorkingPlane,
+}
+
+impl Default for CylinderCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CylinderCommand {

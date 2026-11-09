@@ -33,7 +33,7 @@ fn choices(values: &[(&str, &str)]) -> Vec<EnumChoice> {
 pub struct MLeaderStyleView<'a> {
     pub styles: Vec<String>,
     pub selected: &'a str,
-    pub style: Option<&'a codec::objects::MultiLeaderStyle>,
+    pub style: Option<&'a document::objects::MultiLeaderStyle>,
     pub current: String,
     pub tab: u8,
     pub compare_name: String,
@@ -141,7 +141,7 @@ fn enum_row<'a>(
         .unwrap_or_else(|| crate::i18n::translate(&selected));
     row![
         text(label).size(11).style(muted_style).width(165),
-        iced::widget::pick_list(
+        crate::ui::dropdown_list::pick_list(
             Some(EnumChoice {
                 code: selected,
                 label: selected_label
@@ -186,7 +186,7 @@ fn handle_row<'a>(
         .collect();
     row![
         text(label).size(11).style(muted_style).width(165),
-        iced::widget::pick_list(Some(selected), options, |value| value.to_string())
+        crate::ui::dropdown_list::pick_list(Some(selected), options, |value| value.to_string())
             .on_select(move |value| Message::MLeaderStyleSetHandle {
                 field,
                 value: value.code
@@ -394,7 +394,7 @@ impl canvas::Program<Message> for LeaderPreviewCanvas {
                         builder.line_to(Point::new(x, y));
                     }
                 });
-                frame.stroke(&path, stroke.clone());
+                frame.stroke(&path, stroke);
             } else {
                 let path = canvas::Path::new(|builder| {
                     builder.move_to(head);
@@ -411,7 +411,7 @@ impl canvas::Program<Message> for LeaderPreviewCanvas {
                         ));
                     }
                 });
-                frame.stroke(&path, stroke.clone());
+                frame.stroke(&path, stroke);
             }
             if self.landing && self.dogleg {
                 let gap = self
@@ -423,11 +423,11 @@ impl canvas::Program<Message> for LeaderPreviewCanvas {
                     .clamp(0.0, 8.0);
                 frame.stroke(
                     &canvas::Path::line(elbow, Point::new((elbow.x + tail.x) * 0.5 - gap, elbow.y)),
-                    stroke.clone(),
+                    stroke,
                 );
                 frame.stroke(
                     &canvas::Path::line(Point::new((elbow.x + tail.x) * 0.5 + gap, elbow.y), tail),
-                    stroke.clone(),
+                    stroke,
                 );
             }
         }
@@ -700,7 +700,7 @@ pub fn view_window<'a>(
                     .size(11)
                     .style(muted_style)
                     .width(165),
-                iced::widget::pick_list(
+                crate::ui::dropdown_list::pick_list(
                     Some(crate::ui::properties::LwItem(style.line_weight)),
                     crate::ui::properties::lw_options(),
                     |value| value.to_string(),
@@ -1037,6 +1037,9 @@ pub fn view_window<'a>(
         on_apply: Message::MLeaderStyleApply,
         read_only: false,
         in_use_filter: None,
+        apply_blocked: None,
+        rows: None,
+        compact: false,
         editor,
     })
 }

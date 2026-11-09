@@ -1,6 +1,6 @@
 use super::*;
-use codec::entities::{CenterMarkAssociation, CenterMarkSource, CenterMarkSourceKind};
-use codec::types::Vector3;
+use document::entities::{CenterMarkAssociation, CenterMarkSource, CenterMarkSourceKind};
+use document::types::Vector3;
 use glam::DVec3;
 use kernel::geom2d::{closest_point, Arc as KernelArc, BulgeArc, Curve};
 
@@ -170,7 +170,7 @@ pub(crate) fn picked_mark_source(
 }
 
 fn resolve_source(
-    document: &codec::Document,
+    document: &document::Document,
     source: &CenterMarkSource,
 ) -> Option<(DVec3, f64, DVec3, DVec3)> {
     let entity = document.get_entity(source.handle)?;
@@ -336,7 +336,7 @@ fn apply_source_geometry(
     }
 }
 
-pub(crate) fn update_carrier(line: &mut codec::Line, association: &CenterMarkAssociation) {
+pub(crate) fn update_carrier(line: &mut document::Line, association: &CenterMarkAssociation) {
     let segments = mark_segments(association);
     let horizontal = segments
         .first()
@@ -381,9 +381,7 @@ impl Scene {
         };
         update_carrier(line, &association);
         // The mark now points at `source_handle`; drop the indexed edge.
-        self.associative_centermark_source_cache
-            .borrow_mut()
-            .take();
+        self.associative_centermark_source_cache.borrow_mut().take();
         self.bump_entities(&[(target, ChangeKind::Modified)]);
         true
     }
@@ -396,11 +394,7 @@ impl Scene {
         &self,
         changed: &rustc_hash::FxHashSet<Handle>,
     ) -> Vec<Handle> {
-        if self
-            .associative_centermark_source_cache
-            .borrow()
-            .is_none()
-        {
+        if self.associative_centermark_source_cache.borrow().is_none() {
             let mut index: HashMap<Handle, Vec<Handle>> = HashMap::default();
             for entity in self.document.entities() {
                 let EntityType::Line(line) = entity else {
@@ -550,9 +544,7 @@ impl Scene {
             // The association flags just changed. Drop the index; the bump
             // below re-indexes from the new xdata (an all-disassociated bump
             // rebuilds an empty index and refreshes nothing).
-            self.associative_centermark_source_cache
-                .borrow_mut()
-                .take();
+            self.associative_centermark_source_cache.borrow_mut().take();
             let changes: Vec<_> = candidates
                 .iter()
                 .map(|(handle, _)| (*handle, ChangeKind::Modified))
@@ -578,7 +570,7 @@ pub(crate) fn entity_has_center_association(entity: &EntityType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::{Circle, Line};
+    use document::entities::{Circle, Line};
 
     fn source_circle() -> EntityType {
         EntityType::Circle(Circle::from_center_radius(
@@ -610,10 +602,8 @@ mod tests {
             show_extensions: false,
             associated: true,
         };
-        let mut line = Line::from_points(
-            Vector3::new(9.5, 10.0, 0.0),
-            Vector3::new(10.5, 10.0, 0.0),
-        );
+        let mut line =
+            Line::from_points(Vector3::new(9.5, 10.0, 0.0), Vector3::new(10.5, 10.0, 0.0));
         association.write(&mut line.common.extended_data);
         EntityType::Line(line)
     }
@@ -622,7 +612,10 @@ mod tests {
         let Some(EntityType::Line(line)) = scene.document.get_entity(handle) else {
             panic!("carrier is not a line");
         };
-        assert!((line.start.y - line.end.y).abs() < 1e-9, "carrier not horizontal");
+        assert!(
+            (line.start.y - line.end.y).abs() < 1e-9,
+            "carrier not horizontal"
+        );
         line.start.y
     }
 

@@ -444,7 +444,7 @@ impl SpatialGrid {
             }
             cell_entries
         };
-        let oversized = SpatialBvh2::build(&entries, oversized);
+        let oversized = SpatialBvh2::build(entries, oversized);
 
         Self {
             min,
@@ -1895,6 +1895,23 @@ impl InteractionCandidates {
         }
     }
 
+    /// Like [`Self::all`], but records the region the caller is about to
+    /// hit-test so the stub expansion can skip leaves outside it.
+    ///
+    /// The unindexed fallback used to drop the query region, and a pick on a
+    /// large un-indexed set then expanded every stub in the drawing — 47 352
+    /// wires into 202 830, ~190 ms — to hit-test an aperture a few pixels
+    /// wide. Every indexed path already carries `query_aabb`, so this makes
+    /// the fallback answer the same question they do instead of a larger one:
+    /// a leaf the filter drops cannot intersect the aperture, so it could not
+    /// have been hit.
+    pub fn all_near(wires: Arc<Vec<WireModel>>, query_aabb: [f64; 4]) -> Self {
+        Self {
+            query_aabb: Some(query_aabb),
+            ..Self::all(wires)
+        }
+    }
+
     /// Empty but explicitly indexed candidate set. Used while a large source
     /// is still being prepared off-thread so UI input never falls back to a
     /// full-scene scan.
@@ -1942,7 +1959,10 @@ impl InteractionCandidates {
 
     pub fn get(&self, index: usize) -> Option<&WireModel> {
         match &self.wire_indices {
-            Some(indices) => indices.get(index).copied().and_then(|wire| self.wires.slot(wire)),
+            Some(indices) => indices
+                .get(index)
+                .copied()
+                .and_then(|wire| self.wires.slot(wire)),
             None => self.wires.slot(index as u32),
         }
     }
@@ -1989,6 +2009,41 @@ impl InteractionCandidates {
             .map(|(rect, (view, eye, bounds))| (rect, view, eye, bounds))
     }
 
+    /// The wire set behind these candidates, when it is a plain snapshot, so
+    /// a caller can key a cache on its identity. `None` for a shared-run
+    /// source.
+    pub(crate) fn snapshot_arc(&self) -> Option<Arc<Vec<WireModel>>> {
+        match &self.wires {
+            CandidateWires::Snapshot(wires) => Some(Arc::clone(wires)),
+            CandidateWires::Shared(_) => None,
+        }
+    }
+
+    /// Whether this is an unrestricted expansion — no XY query to clip the
+    /// block copies against, so the result depends only on the source wires.
+    pub(crate) fn expansion_is_unrestricted(&self) -> bool {
+        self.query_aabb.is_none() && self.wire_indices.is_none()
+    }
+
+    /// True when there is a stub to expand at all; `materialize_stubs`
+    /// returns `self` untouched otherwise.
+    pub(crate) fn has_stubs(&self) -> bool {
+        self.iter().any(|wire| wire.stub.is_some())
+    }
+
+    /// Adopt an already-expanded wire set as this query's candidates, as
+    /// `materialize_stubs` would have produced it. Paired with
+    /// `snapshot_source_id` + `expansion_is_unrestricted` so a caller can
+    /// reuse one expansion across repeated identical queries.
+    pub(crate) fn with_materialized(self, wires: Arc<Vec<WireModel>>) -> Self {
+        Self {
+            query_aabb: self.query_aabb,
+            screen_rect: self.screen_rect,
+            screen_view: self.screen_view,
+            ..Self::all(wires)
+        }
+    }
+
     /// The candidates with every block-copy stub among them expanded into
     /// the wires it stands for, so snapping and picking see each copy. Only
     /// the copies' wires near an XY query are kept.
@@ -1996,12 +2051,24 @@ impl InteractionCandidates {
         if !self.iter().any(|wire| wire.stub.is_some()) {
             return self;
         }
+        let started = crate::perf::enabled().then(iced::time::Instant::now);
+        let source_candidates = self.len();
         let mut wires = Vec::new();
         for wire in self.iter() {
             crate::scene::model::instance_model::expand_stub_near_into(
                 wire,
                 self.query_aabb,
                 &mut wires,
+            );
+        }
+        let elapsed_ms = crate::perf::elapsed_ms(started);
+        if elapsed_ms >= 3.0 {
+            crate::perf_record!(
+                "[perf] stub-materialize {:.2}ms candidates={} expanded={} local_query={}",
+                elapsed_ms,
+                source_candidates,
+                wires.len(),
+                self.query_aabb.is_some(),
             );
         }
         Self {
@@ -2811,6 +2878,146 @@ mod area_query_tests {
             merged.segments,
             Some(vec![seg(2), seg(0), seg(1), seg(0)]),
             "the other categories are appended as they come",
+        );
+    }
+
+    /// `Scene::materialize_stubs_cached` serves a repeated unrestricted query
+    /// by handing a stored expansion to `with_materialized` instead of
+    /// expanding again. That substitution is only sound if it produces the
+    /// same candidates `materialize_stubs` would have, and if the two guards
+    /// it relies on hold: the query is unrestricted, and the source is a
+    /// plain snapshot whose identity can be compared.
+    #[test]
+    fn a_stored_expansion_stands_in_for_re_expanding_the_same_wires() {
+        // Three leaves, so expanding the one stub genuinely grows the set —
+        // a single-leaf prototype expands one-for-one and would let the
+        // "did it expand at all" check below pass on nothing.
+        let proto: Vec<WireModel> = (0..3)
+            .map(|i| {
+                let f = i as f32;
+                wire(
+                    &format!("leaf{i}"),
+                    vec![[f, f, 0.0], [f + 1.0, f + 1.0, 0.0]],
+                    [f, f, f + 1.0, f + 1.0],
+                )
+            })
+            .collect();
+        let stub = crate::scene::model::instance_model::stub_wire(
+            Arc::new(proto),
+            [0.0, 0.0, 4.0, 4.0],
+            [10.0, 20.0, 0.0],
+            1.0,
+        );
+        let mut wires = sample();
+        wires.push(stub);
+        let arc = Arc::new(wires);
+
+        let fresh = InteractionCandidates::all(Arc::clone(&arc));
+        assert!(
+            fresh.expansion_is_unrestricted(),
+            "a whole-set query is what the cache is allowed to reuse"
+        );
+        assert!(
+            fresh.has_stubs(),
+            "the fixture must have something to expand"
+        );
+        assert!(
+            fresh.snapshot_arc().is_some_and(|a| Arc::ptr_eq(&a, &arc)),
+            "the source identity is what the cache keys on"
+        );
+
+        let expanded = InteractionCandidates::all(Arc::clone(&arc)).materialize_stubs();
+        let stored = expanded
+            .snapshot_arc()
+            .expect("an expansion is a plain snapshot");
+
+        // The cache's path: same source, expansion handed over rather than redone.
+        let reused = InteractionCandidates::all(Arc::clone(&arc)).with_materialized(stored);
+
+        let names = |c: &InteractionCandidates| {
+            let mut n: Vec<String> = c.iter().map(|w| w.name.clone()).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(&reused), names(&expanded));
+        assert_eq!(reused.len(), expanded.len());
+        assert!(
+            expanded.len() > arc.len(),
+            "the stub must actually have added a copy, or this proves nothing"
+        );
+    }
+
+    #[test]
+    fn a_local_expansion_keeps_every_leaf_the_aperture_could_hit() {
+        // Leaves 100 units apart, so a few-unit aperture excludes most of
+        // them and the restriction has something to skip.
+        let proto: Vec<WireModel> = [0.0f32, 100.0, 200.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &o)| {
+                wire(
+                    &format!("leaf{i}"),
+                    vec![[o, o, 0.0], [o + 1.0, o + 1.0, 0.0]],
+                    [o, o, o + 1.0, o + 1.0],
+                )
+            })
+            .collect();
+        let stub = crate::scene::model::instance_model::stub_wire(
+            Arc::new(proto),
+            [0.0, 0.0, 201.0, 201.0],
+            [0.0, 0.0, 0.0],
+            0.0,
+        );
+        let mut wires = sample();
+        wires.push(stub);
+        let arc = Arc::new(wires);
+
+        let aperture = [-5.0, -5.0, 5.0, 5.0];
+        assert!(
+            !InteractionCandidates::all_near(Arc::clone(&arc), aperture)
+                .expansion_is_unrestricted(),
+            "a region-bearing fallback must never be stored as a whole-set expansion"
+        );
+
+        let full = InteractionCandidates::all(Arc::clone(&arc)).materialize_stubs();
+        let local = InteractionCandidates::all_near(Arc::clone(&arc), aperture).materialize_stubs();
+
+        // Everything the aperture could actually hit, from either expansion.
+        let reachable = |c: &InteractionCandidates| {
+            let mut names: Vec<String> = c
+                .iter()
+                .filter(|w| {
+                    let [x0, y0, x1, y1] = w.aabb.map(f64::from);
+                    !(x1 < aperture[0] || x0 > aperture[2] || y1 < aperture[1] || y0 > aperture[3])
+                })
+                .map(|w| w.name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+
+        assert_eq!(
+            reachable(&local),
+            reachable(&full),
+            "restricting the expansion must not cost a candidate the caller could hit"
+        );
+        assert!(
+            local.iter().count() < full.iter().count(),
+            "the far leaves must actually have been skipped, or this proves nothing"
+        );
+    }
+
+    /// An index-restricted result depends on the query, not just the wires, so
+    /// it must never be served from the whole-set cache.
+    #[test]
+    fn a_restricted_query_is_not_offered_to_the_expansion_cache() {
+        let wires = sample();
+        let index = InteractionIndex::build(&wires);
+        let arc = Arc::new(wires);
+        let restricted = index.query_xy(Arc::clone(&arc), [-2.0, -2.0, 2.0, 2.0]);
+        assert!(
+            !restricted.expansion_is_unrestricted(),
+            "a query-limited candidate set must bypass the cache"
         );
     }
 

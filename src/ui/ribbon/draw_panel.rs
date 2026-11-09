@@ -44,14 +44,21 @@ const LIST_MIN_W: f32 = 180.0;
 /// panel, so the pointer can cross the gap between them.
 const CLOSE_DELAY: Duration = Duration::from_millis(300);
 
-/// Command, label and icon of every slide-out tool.
+/// Command, label and icon of every slide-out tool and its submenu options.
 pub(crate) fn tools() -> impl Iterator<Item = (&'static str, &'static str, &'static [u8])> {
-    extras::all()
-        .flat_map(PanelExtras::tools)
-        .filter_map(|tool| match tool.tool.icon {
-            IconKind::Svg(icon) => Some((tool.command(), tool.tool.label, icon)),
+    extras::all().flat_map(PanelExtras::tools).flat_map(|tool| {
+        let icon = match tool.tool.icon {
+            IconKind::Svg(icon) => Some(icon),
             IconKind::Glyph(_) => None,
+        };
+        icon.into_iter().flat_map(move |icon| {
+            std::iter::once((tool.command(), tool.tool.label, icon)).chain(
+                tool.options
+                    .iter()
+                    .map(move |(cmd, label)| (*cmd, *label, icon)),
+            )
         })
+    })
 }
 
 pub(super) fn panel_for_dropdown(id: &str) -> Option<&'static PanelExtras> {
@@ -429,10 +436,9 @@ fn launcher_of_height<'a>(panel: &PanelExtras, height: f32) -> Option<Element<'a
         .width(LAUNCHER_W)
         .height(height)
         .padding(0),
-        make_tip(format!(
-            "{}\n{} {dialog}",
-            t!(panel.dialog_label),
-            t!("Command:")
+        make_tip(super::widgets::tool_tip_text(
+            &t!(panel.dialog_label),
+            dialog,
         )),
         tooltip::Position::Bottom,
     )
@@ -545,26 +551,40 @@ pub(super) fn extra_tools<'a>(
         }
         groups = groups.push(tool_rows(&group.tools, panel.id, active, inner));
     }
-    match panel.layout {
-        Layout::Grid => {}
-        Layout::Reference => groups = groups.push(fade_row(ribbon.xref_fade, panel.id)),
-        Layout::TextLayer => groups = groups.push(text_layers(ribbon)),
-        Layout::CenterLayer => {
-            groups = groups.push(super::widgets::layer_combo(
-                super::widgets::CENTER_LAYER_COMBO,
-                &ribbon.center_layer,
-                ribbon.center_layer_color(),
-                false,
-                format!("{}\n{} CENTERLAYER", t!("Center Layer"), t!("Command:")),
-            ))
-        }
+    if let Some(special) = extra_special(ribbon, panel) {
+        groups = groups.push(special);
     }
     container(groups).padding(PAD).width(Fill).into()
+}
+
+/// What `panel`'s extra tools show after their buttons: the xref fading
+/// row on Reference, the text layer list on Text or the center layer list
+/// on Centerlines.
+pub(super) fn extra_special<'a>(
+    ribbon: &Ribbon,
+    panel: &'static PanelExtras,
+) -> Option<Element<'a, Message>> {
+    match panel.layout {
+        Layout::Grid => None,
+        Layout::Reference => Some(fade_row(ribbon.xref_fade, panel.id)),
+        Layout::TextLayer => Some(text_layers(ribbon)),
+        Layout::CenterLayer => Some(super::widgets::layer_combo(
+            super::widgets::CENTER_LAYER_COMBO,
+            &ribbon.center_layer,
+            ribbon.center_layer_color(),
+            false,
+            super::widgets::tool_tip_text(
+                &crate::tr!("ribbon-menu", "center-layer"),
+                "CENTERLAYER",
+            ),
+        )),
+    }
 }
 
 /// The layer new text goes on (TEXTLAYER): Use Current, or a layer of the
 /// drawing, each with its colour.
 fn text_layers<'a>(ribbon: &Ribbon) -> Element<'a, Message> {
+    use crate::ui::dropdown_list::{DropdownList, DropdownRow};
     const SWATCH: f32 = 10.0;
     const ROW: f32 = 24.0;
     const MAX_H: f32 = 220.0;
@@ -587,14 +607,15 @@ fn text_layers<'a>(ribbon: &Ribbon) -> Element<'a, Message> {
                 .into(),
             None => Space::new().width(SWATCH).height(SWATCH).into(),
         };
+        let msg = Message::RibbonTextLayer(value);
         let item: Element<'a, Message> = button(
-            row![swatch, text(label).size(11)]
+            row![swatch, text(label.clone()).size(11)]
                 .spacing(6)
                 .align_y(iced::Center),
         )
-        .on_press(Message::RibbonTextLayer(value))
+        .on_press(msg.clone())
         .style(move |theme: &Theme, status| {
-            if on {
+            if on && !matches!(status, button::Status::Hovered) {
                 tool_btn_style(theme, true, status)
             } else {
                 popup_row_style(theme, status)
@@ -603,16 +624,23 @@ fn text_layers<'a>(ribbon: &Ribbon) -> Element<'a, Message> {
         .width(Fill)
         .padding([3, 6])
         .into();
-        item
+        (on, DropdownRow::item(item, label, msg))
     };
-    let mut layers: Vec<Element<'a, Message>> =
-        vec![entry(String::new(), t!("Use Current").into_owned(), None)];
-    layers.extend(
-        ribbon
-            .layer_infos
-            .iter()
-            .map(|info| entry(info.name.clone(), info.name.clone(), Some(info.color))),
-    );
+    let mut initial_selected: Option<usize> = None;
+    let mut layers: Vec<DropdownRow<'a, Message>> =
+        Vec::with_capacity(ribbon.layer_infos.len() + 1);
+    let (on_cur, first) = entry(String::new(), t!("Use Current").into_owned(), None);
+    if on_cur {
+        initial_selected = Some(0);
+    }
+    layers.push(first);
+    for info in &ribbon.layer_infos {
+        let (on, row) = entry(info.name.clone(), info.name.clone(), Some(info.color));
+        if on && initial_selected.is_none() {
+            initial_selected = Some(layers.len());
+        }
+        layers.push(row);
+    }
     let list_height = ((ribbon.layer_infos.len() + 1) as f32 * ROW).min(MAX_H);
     let title = row![
         make_icon(
@@ -627,12 +655,11 @@ fn text_layers<'a>(ribbon: &Ribbon) -> Element<'a, Message> {
     ]
     .spacing(6)
     .align_y(iced::Center);
-    column![
-        title,
-        iced::widget::scrollable(column(layers).spacing(1)).height(Length::Fixed(list_height)),
-    ]
-    .spacing(4)
-    .into()
+    let list =
+        DropdownList::with_options(layers, Length::Fixed(list_height), Length::Fill, 1.0, 0.0)
+            .selected(initial_selected)
+            .on_escape(Message::CloseRibbonDropdown);
+    column![title, list].spacing(4).into()
 }
 
 /// The name of a tool group, upper case, with a hairline after it.
@@ -693,7 +720,32 @@ fn tool_rows<'a>(
     column(rows).spacing(GAP).into()
 }
 
+/// A slide-out tool; right-clicked, it offers to go on the Quick Access
+/// Toolbar.
 fn tool_button(tool: &MoreTool, active: bool, panel_id: &'static str) -> Element<'static, Message> {
+    sized_tool_button(tool, active, panel_id, CELL)
+}
+
+/// [`tool_button`] `cell` px square, as a floating panel's band of extra
+/// tools has them.
+pub(super) fn sized_tool_button(
+    tool: &MoreTool,
+    active: bool,
+    panel_id: &'static str,
+    cell: f32,
+) -> Element<'static, Message> {
+    super::ribbon_menu::tool_target(
+        Some(super::layout::QatItem::Command(tool.command().to_string())),
+        slide_out_button(tool, active, panel_id, cell),
+    )
+}
+
+fn slide_out_button(
+    tool: &MoreTool,
+    active: bool,
+    panel_id: &'static str,
+    cell: f32,
+) -> Element<'static, Message> {
     let command = tool.command();
     let face = button(make_icon(tool.tool.icon, CELL_ICON))
         .on_press(Message::DropdownSelectItem {
@@ -701,10 +753,10 @@ fn tool_button(tool: &MoreTool, active: bool, panel_id: &'static str) -> Element
             cmd: command,
         })
         .style(move |theme: &Theme, status| tool_btn_style(theme, active, status))
-        .width(CELL)
-        .height(CELL)
-        .padding((CELL - CELL_ICON) / 2.0);
-    let tip = format!("{}\n{} {}", t!(tool.tool.label), t!("Command:"), command);
+        .width(cell)
+        .height(cell)
+        .padding((cell - CELL_ICON) / 2.0);
+    let tip = super::widgets::tool_tip_text(&t!(tool.tool.label), command);
     let face: Element<'static, Message> = tooltip(face, make_tip(tip), tooltip::Position::Bottom)
         .delay(Duration::from_millis(400))
         .style(tip_style)
@@ -718,7 +770,7 @@ fn tool_button(tool: &MoreTool, active: bool, panel_id: &'static str) -> Element
         .on_press(Message::ToggleRibbonDropdown(command.to_string()))
         .style(move |theme: &Theme, status| tool_btn_style(theme, false, status))
         .width(SPLIT_W)
-        .height(CELL)
+        .height(cell)
         .padding(2);
     row![face, PosReport::new(command, arrow)].into()
 }
@@ -737,10 +789,9 @@ fn fade_row<'a>(fade: i32, panel_id: &'static str) -> Element<'a, Message> {
     let amount = fade.unsigned_abs().min(90) as u8;
     let switch = tooltip(
         switch,
-        make_tip(format!(
-            "{}\n{} XDWGFADECTL",
-            t!("Xref fading"),
-            t!("Command:")
+        make_tip(super::widgets::tool_tip_text(
+            &t!("Xref fading"),
+            "XDWGFADECTL",
         )),
         tooltip::Position::Bottom,
     )
@@ -858,26 +909,29 @@ fn options_list<'a>(
     tool: &'static MoreTool,
     win: (f32, f32),
 ) -> Element<'a, Message> {
+    use crate::ui::dropdown_list::{DropdownList, DropdownRow};
     let command = tool.command();
-    let rows: Vec<Element<'a, Message>> = tool
+    let rows: Vec<DropdownRow<'a, Message>> = tool
         .options
         .iter()
         .map(|&(cmd, label)| {
-            let item = button(text(t!(label)).size(11))
-                .on_press(Message::DropdownSelectItem {
-                    dropdown_id: command,
-                    cmd,
-                })
+            let translated = t!(label).into_owned();
+            let msg = Message::DropdownSelectItem {
+                dropdown_id: command,
+                cmd,
+            };
+            let item = button(text(translated.clone()).size(11))
+                .on_press(msg.clone())
                 .style(popup_row_style)
                 .width(Fill)
                 .height(OPTION_HEIGHT)
                 .padding([3, 7]);
-            keytips::anchor_with(|| keytips::item_anchor(command, cmd), item)
+            let anchored = keytips::anchor_with(|| keytips::item_anchor(command, cmd), item);
+            DropdownRow::item(anchored, translated, msg)
         })
         .collect();
-    let list = container(column(rows))
-        .style(popup_panel_style)
-        .width(OPTIONS_W);
+    let dd_list = DropdownList::new(rows).on_escape(Message::CloseRibbonDropdown);
+    let list = container(dd_list).style(popup_panel_style).width(OPTIONS_W);
     let list = opaque(
         mouse_area(list)
             .on_enter(Message::RibbonSlideOut(SlideOutMsg::OverSubmenu(true)))

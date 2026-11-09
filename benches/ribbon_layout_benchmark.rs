@@ -6,9 +6,9 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use OpenCADStudio::ui::ribbon::{LayerInfo, Ribbon};
 use iced::{Color, Size};
 use iced_test::runtime::user_interface::{Cache, UserInterface};
+use OpenCADStudio::ui::ribbon::{LayerInfo, Ribbon};
 
 fn main() {
     let mut ribbon = Ribbon::new();
@@ -28,6 +28,7 @@ fn main() {
             .map(|name| LayerInfo {
                 name: name.into(),
                 color: Color::TRANSPARENT,
+                stored_color: document::types::Color::Index(7),
                 visible: true,
                 frozen: false,
                 locked: false,

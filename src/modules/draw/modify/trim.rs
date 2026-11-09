@@ -20,12 +20,12 @@ use super::geom::{
 
 use crate::modules::draw::fence::{crossing_box_preview, FencePick};
 
-use codec::entities::{
+use document::entities::{
     Arc as ArcEnt, Circle as CircleEnt, Ellipse as EllipseEnt, Line as LineEnt, LwPolyline,
     LwVertex, Ray as RayEnt, Spline as SplineEnt, XLine as XLineEnt,
 };
-use codec::types::Vector3;
-use codec::{EntityType, Handle};
+use document::types::Vector3;
+use document::{EntityType, Handle};
 use glam::DVec3;
 use kernel::geom2d::nurbs::clamped_uniform_knots;
 use kernel::geom2d::{
@@ -44,8 +44,8 @@ use crate::modules::draw::modify::spline_ops::{
     spline_cut, spline_nearest_t, spline_pts_wire, spline_range, spline_to_nurbs, t_to_rel,
 };
 use crate::modules::IconKind;
-use crate::scene::model::wire_model::WireModel;
 use crate::scene::convert::tess::entity_world_aabb_f64;
+use crate::scene::model::wire_model::WireModel;
 use crate::t;
 
 use super::entity_index::ModifyEntityIndex;
@@ -198,19 +198,6 @@ impl Geo {
 
 fn geo_overlaps_aabb(geo: &Geo, target: [f64; 4]) -> bool {
     let bounds = match geo {
-        Geo::Line { p1, p2, .. } => [
-            p1[0].min(p2[0]),
-            p1[1].min(p2[1]),
-            p1[0].max(p2[0]),
-            p1[1].max(p2[1]),
-        ],
-        Geo::Arc { cx, cy, r, .. } | Geo::Circle { cx, cy, r, .. } => {
-            [cx - r, cy - r, cx + r, cy + r]
-        }
-        Geo::Ellipse { cx, cy, a, b, .. } => {
-            let radius = a.abs() + b.abs();
-            [cx - radius, cy - radius, cx + radius, cy + radius]
-        }
         Geo::Spline { curve, .. } => {
             let samples = (0..=32).map(|i| curve.point_at(i as f64 / 32.0));
             let mut bounds = [
@@ -228,12 +215,127 @@ fn geo_overlaps_aabb(geo: &Geo, target: [f64; 4]) -> bool {
             bounds
         }
         // Unbounded boundaries are always retained in the nearby set.
-        Geo::Ray { .. } | Geo::InfLine { .. } => return true,
+        _ => match trim_geo_aabb(geo) {
+            Some(bounds) => bounds,
+            None => return true,
+        },
     };
     bounds[0] <= target[2]
         && bounds[2] >= target[0]
         && bounds[1] <= target[3]
         && bounds[3] >= target[1]
+}
+
+/// A conservative XY envelope for bounded cutter targets. Arc and ellipse
+/// sweeps use their entire supporting circle, deliberately over-including
+/// candidates so tangent and near-endpoint contacts are never lost.
+fn trim_target_bounds(curve: &Curve) -> Option<[f64; 4]> {
+    let bounds = match curve {
+        Curve::Line(line) => [
+            line.start[0].min(line.end[0]),
+            line.start[1].min(line.end[1]),
+            line.start[0].max(line.end[0]),
+            line.start[1].max(line.end[1]),
+        ],
+        Curve::Arc(arc) => square_around(arc.centre, arc.radius.abs()),
+        Curve::Circle(circle) => square_around(circle.centre, circle.radius.abs()),
+        Curve::Ellipse(arc) => {
+            let ellipse = &arc.ellipse;
+            let r = ellipse.major_radius.abs().max(ellipse.minor_radius.abs());
+            square_around(ellipse.centre, r)
+        }
+        // Rays/XLines must find distant intersections. NURBS do not have
+        // a cheap guaranteed conservative envelope at this call site.
+        _ => return None,
+    };
+    if !bounds.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let slack = CUT_TOLERANCE * 8.0;
+    Some([
+        bounds[0] - slack,
+        bounds[1] - slack,
+        bounds[2] + slack,
+        bounds[3] + slack,
+    ])
+}
+
+/// The XY box of a circle around `centre`.
+fn square_around(centre: [f64; 2], r: f64) -> [f64; 4] {
+    [centre[0] - r, centre[1] - r, centre[0] + r, centre[1] + r]
+}
+
+/// A static interval broad phase for the geometry of one TRIM operation.
+/// Sort by minimum X once; the prefix maximum X permits binary-searching
+/// *past* boundaries that finish before the target, not just those that start
+/// after it. Unlike a per-segment full scan, typical queries cost O(log N + K)
+/// when thousands of low-poly segments are spread across the drawing.
+///
+/// Entries without a safe finite box (splines, rays, infinite lines) are
+/// unconditionally retained to preserve exact kernel semantics.
+struct TrimAabbIndex {
+    entries: Vec<(usize, [f64; 4])>,
+    prefix_max_x: Vec<f64>,
+    always: Vec<usize>,
+}
+
+impl TrimAabbIndex {
+    fn new(bounds: impl IntoIterator<Item = Option<[f64; 4]>>) -> Self {
+        let mut entries = Vec::new();
+        let mut always = Vec::new();
+        for (index, bounds) in bounds.into_iter().enumerate() {
+            match bounds.filter(|box_| box_.iter().all(|value| value.is_finite())) {
+                Some(bounds) => entries.push((index, bounds)),
+                None => always.push(index),
+            }
+        }
+        entries.sort_unstable_by(|a, b| a.1[0].total_cmp(&b.1[0]));
+        let mut prefix_max_x = Vec::with_capacity(entries.len());
+        let mut max_x = f64::NEG_INFINITY;
+        for (_, bounds) in &entries {
+            max_x = max_x.max(bounds[2]);
+            prefix_max_x.push(max_x);
+        }
+        Self {
+            entries,
+            prefix_max_x,
+            always,
+        }
+    }
+
+    fn overlapping(&self, target: [f64; 4]) -> Vec<usize> {
+        let end = self
+            .entries
+            .partition_point(|(_, aabb)| aabb[0] <= target[2]);
+        let start = self.prefix_max_x[..end].partition_point(|x| *x < target[0]);
+        let mut indices = self.always.clone();
+        for &(index, aabb) in &self.entries[start..end] {
+            if aabb[2] >= target[0] && aabb[1] <= target[3] && aabb[3] >= target[1] {
+                indices.push(index);
+            }
+        }
+        // The kernel/contact logic previously saw entities in document order.
+        // Maintain that ordering for coincident cuts and endpoint priority.
+        indices.sort_unstable();
+        indices
+    }
+}
+
+fn trim_geo_aabb(geo: &Geo) -> Option<[f64; 4]> {
+    Some(match geo {
+        Geo::Line { p1, p2, .. } => [
+            p1[0].min(p2[0]),
+            p1[1].min(p2[1]),
+            p1[0].max(p2[0]),
+            p1[1].max(p2[1]),
+        ],
+        Geo::Arc { cx, cy, r, .. } | Geo::Circle { cx, cy, r, .. } => {
+            square_around([*cx, *cy], r.abs())
+        }
+        // Deliberately overestimate rotated ellipse bounds.
+        Geo::Ellipse { cx, cy, a, b, .. } => square_around([*cx, *cy], a.abs() + b.abs()),
+        Geo::Spline { .. } | Geo::Ray { .. } | Geo::InfLine { .. } => return None,
+    })
 }
 
 pub fn is_trim_boundary_entity(entity: &EntityType) -> bool {
@@ -467,9 +569,39 @@ fn cut_params(target: &Curve, handle: Handle, geos: &[Geo]) -> Vec<f64> {
     // nearest boundary — has to keep whatever it comes back with, since the
     // whole point is how far away the crossing is.
     let bounded = matches!(target.extent(), KernelExtent::Bounded);
-    let mut ts: Vec<f64> = geos
+    let target_bounds = bounded.then(|| trim_target_bounds(target)).flatten();
+    // In imported CAD drawings several LINE entities can coincide exactly.
+    // Intersecting every duplicate has no geometric benefit, and repeated
+    // intersection allocations become especially costly during TRIM hover.
+    // Exclude the picked entity before deduplicating: a coincident *other*
+    // entity must still count as a valid cutting boundary.
+    let mut seen_lines = std::collections::HashSet::new();
+    let candidates: Vec<&Geo> = geos
         .iter()
         .filter(|geo| geo_handle(geo) != handle)
+        .filter(|geo| {
+            // The input may contain tens of thousands of low-poly INSERT
+            // segments. Do the cheap conservative broad phase before kernel
+            // intersection and endpoint-contact tests, for every LWPOLY
+            // segment as well as LINE/ARC/CIRCLE hover paths.
+            // Do not cull splines using their sampled AABB: a NURBS can
+            // leave a sparse sample envelope between knot values.
+            target_bounds.is_none_or(|bbox| {
+                matches!(geo, Geo::Spline { .. }) || geo_overlaps_aabb(geo, bbox)
+            })
+        })
+        .filter(|geo| match geo {
+            Geo::Line { p1, p2, .. } => {
+                let a = (p1[0].to_bits(), p1[1].to_bits());
+                let b = (p2[0].to_bits(), p2[1].to_bits());
+                seen_lines.insert(if a <= b { (a, b) } else { (b, a) })
+            }
+            _ => true,
+        })
+        .collect();
+    let mut ts: Vec<f64> = candidates
+        .iter()
+        .copied()
         .filter_map(geo_to_curve)
         .flat_map(|boundary| {
             kernel_intersect(target, &boundary, tolerance)
@@ -491,7 +623,7 @@ fn cut_params(target: &Curve, handle: Handle, geos: &[Geo]) -> Vec<f64> {
     const ENDPOINT_TOLERANCE: f64 = CUT_TOLERANCE;
     let mut contacts = Vec::new();
 
-    for geo in geos.iter().filter(|g| geo_handle(g) != handle) {
+    for &geo in &candidates {
         // 1. Boundary endpoints touching target
         for pt in geo.endpoints() {
             let t = target.parameter_at(pt);
@@ -921,11 +1053,11 @@ fn extend_spline(spl: &SplineEnt, t_click: f64, geos: &[Geo]) -> Option<EntityTy
     if extend_end {
         new_spl
             .control_points
-            .push(codec::types::Vector3::new(hit_x, hit_y, z));
+            .push(document::types::Vector3::new(hit_x, hit_y, z));
     } else {
         new_spl
             .control_points
-            .insert(0, codec::types::Vector3::new(hit_x, hit_y, z));
+            .insert(0, document::types::Vector3::new(hit_x, hit_y, z));
     }
     // Rebuild knots (uniform) for the extended control polygon.
     let degree = new_spl.degree as usize;
@@ -1324,34 +1456,48 @@ fn lwpoly_self_cut_params(poly: &LwPolyline, geos: &[Geo]) -> Vec<f64> {
     let total = segment_count as f64;
 
     let mut cuts = Vec::new();
-
+    // Self-cuts previously reconstructed the arc/line for segment j inside
+    // the nested O(N²) loop. Precompute every curve and its conservative
+    // envelope once; index the envelopes so only spatially overlapping
+    // non-neighbour pairs reach the exact intersection kernel.
+    let curves: Vec<_> = (0..segment_count)
+        .map(|i| lwpoly_segment_curve(poly, i))
+        .collect();
+    let spatial = TrimAabbIndex::new(curves.iter().map(|entry| {
+        entry
+            .as_ref()
+            .and_then(|(curve, _)| trim_target_bounds(curve))
+    }));
     for i in 0..segment_count {
-        let Some((curve_a, reverse_a)) = lwpoly_segment_curve(poly, i) else {
+        let Some((curve_a, reverse_a)) = curves[i].as_ref() else {
             continue;
         };
+        let candidate_segments = trim_target_bounds(curve_a)
+            .map(|bounds| spatial.overlapping(bounds))
+            .unwrap_or_else(|| (0..segment_count).collect());
 
-        for j in (i + 1)..segment_count {
+        for j in candidate_segments {
+            if j <= i {
+                continue;
+            }
             // Ordinary neighbouring segments meet at their common vertex.
             let adjacent = j == i + 1 || (closed && i == 0 && j + 1 == segment_count);
-
             if adjacent {
                 continue;
             }
-
-            let Some((curve_b, reverse_b)) = lwpoly_segment_curve(poly, j) else {
+            let Some((curve_b, reverse_b)) = curves[j].as_ref() else {
                 continue;
             };
-
-            let hits = kernel_intersect(&curve_a, &curve_b, KernelTolerance::new(CUT_TOLERANCE));
+            let hits = kernel_intersect(curve_a, curve_b, KernelTolerance::new(CUT_TOLERANCE));
 
             for hit in hits {
                 let mut ua = hit.t_a;
                 let mut ub = hit.t_b;
 
-                if reverse_a {
+                if *reverse_a {
                     ua = 1.0 - ua;
                 }
-                if reverse_b {
+                if *reverse_b {
                     ub = 1.0 - ub;
                 }
 
@@ -1397,16 +1543,16 @@ fn lwpoly_self_cut_params(poly: &LwPolyline, geos: &[Geo]) -> Vec<f64> {
 /// ≥2 cuts and becomes an open polyline (the surviving arc); an open one yields
 /// the surviving piece(s). Bulges on surviving arc segments are preserved
 /// with proportionally scaled curvature.
-fn trim_lwpolyline(poly: &LwPolyline, cx: f64, cy: f64, geos: &[Geo]) -> Option<Vec<EntityType>> {
+fn lwpoly_cut_params(poly: &LwPolyline, geos: &[Geo]) -> Vec<f64> {
+    let started = crate::perf::enabled().then(iced::time::Instant::now);
     let handle = poly.common.handle;
     let n = poly.vertices.len();
     if n < 2 {
-        return None;
+        return Vec::new();
     }
     let closed = poly.is_closed;
     let seg_count = if closed { n } else { n - 1 };
     let total = seg_count as f64;
-
     let vx = |i: usize| -> [f64; 2] {
         let v = &poly.vertices[i % n];
         [v.location.x, v.location.y]
@@ -1415,13 +1561,39 @@ fn trim_lwpolyline(poly: &LwPolyline, cx: f64, cy: f64, geos: &[Geo]) -> Option<
 
     // External boundary cuts as global params (segment index + local u).
     let mut cuts: Vec<f64> = Vec::new();
+    // On a large low-poly drawing the same tens of thousands of boundaries
+    // were scanned again for *every* target vertex. Index once per target
+    // and narrow each segment's exact kernel pass to overlapping boundaries.
+    let cutter_index = (seg_count >= 8 && geos.len() >= 256)
+        .then(|| TrimAabbIndex::new(geos.iter().map(trim_geo_aabb)));
+    let mut local_geos = Vec::new();
 
     for i in 0..seg_count {
         let p0 = vx(i);
         let p1 = vx(i + 1);
         let b = seg_bulge(i);
-
-        for u in polyline_seg_ts(p0, p1, b, handle, geos) {
+        let segment_geos = if let Some(index) = cutter_index.as_ref() {
+            // Use the full supporting arc envelope for bulged segments. The
+            // same conservative bounds are applied by cut_params itself.
+            let bounds = lwpoly_segment_curve(poly, i)
+                .as_ref()
+                .and_then(|(curve, _)| trim_target_bounds(curve));
+            if let Some(bounds) = bounds {
+                local_geos.clear();
+                local_geos.extend(
+                    index
+                        .overlapping(bounds)
+                        .into_iter()
+                        .map(|idx| geos[idx].clone()),
+                );
+                local_geos.as_slice()
+            } else {
+                geos
+            }
+        } else {
+            geos
+        };
+        for u in polyline_seg_ts(p0, p1, b, handle, segment_geos) {
             let param = i as f64 + u.clamp(0.0, 1.0);
 
             cuts.push(if closed {
@@ -1432,6 +1604,8 @@ fn trim_lwpolyline(poly: &LwPolyline, cx: f64, cy: f64, geos: &[Geo]) -> Option<
         }
     }
 
+    let external_ms = crate::perf::elapsed_ms(started);
+
     // A polyline can also cut itself. These are intersections between
     // non-adjacent segments belonging to this same LwPolyline. Its vertices
     // are not cuts: the trimmed piece runs on past corners to the next
@@ -1440,9 +1614,39 @@ fn trim_lwpolyline(poly: &LwPolyline, cx: f64, cy: f64, geos: &[Geo]) -> Option<
 
     cuts.sort_by(f64::total_cmp);
     cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-    if cuts.is_empty() {
+    let total_ms = crate::perf::elapsed_ms(started);
+    if total_ms >= 8.0 {
+        crate::perf_record!(
+            "[perf] trim-lwpoly-cuts {total_ms:.2}ms segments={seg_count} boundaries={} external={external_ms:.2}ms self={:.2}ms cuts={}",
+            geos.len(),
+            total_ms - external_ms,
+            cuts.len(),
+        );
+    }
+    cuts
+}
+
+/// Given fixed cutting points, only locate the clicked segment and construct
+/// its surviving pieces. Reusing these points on hover avoids repeating the
+/// expensive multi-segment kernel intersection pass on every cursor move.
+fn trim_lwpolyline_with_cuts(
+    poly: &LwPolyline,
+    cx: f64,
+    cy: f64,
+    cuts: &[f64],
+) -> Option<Vec<EntityType>> {
+    let n = poly.vertices.len();
+    if n < 2 || cuts.is_empty() {
         return None;
     }
+    let closed = poly.is_closed;
+    let seg_count = if closed { n } else { n - 1 };
+    let total = seg_count as f64;
+    let vx = |i: usize| -> [f64; 2] {
+        let v = &poly.vertices[i % n];
+        [v.location.x, v.location.y]
+    };
+    let seg_bulge = |i: usize| -> f64 { poly.vertices[i % n].bulge };
 
     // Click param: nearest point on the polyline.
     let mut best = (f64::INFINITY, 0.0_f64);
@@ -1556,6 +1760,11 @@ fn trim_lwpolyline(poly: &LwPolyline, cx: f64, cy: f64, geos: &[Geo]) -> Option<
     } else {
         Some(out)
     }
+}
+
+fn trim_lwpolyline(poly: &LwPolyline, cx: f64, cy: f64, geos: &[Geo]) -> Option<Vec<EntityType>> {
+    let cuts = lwpoly_cut_params(poly, geos);
+    trim_lwpolyline_with_cuts(poly, cx, cy, &cuts)
 }
 
 // ── Extend helpers ────────────────────────────────────────────────────────
@@ -2186,7 +2395,10 @@ fn crossing_trim_lwpolyline(
             })
             .collect()
     } else {
-        pieces.into_iter().filter(|&piece| overlaps(piece)).collect()
+        pieces
+            .into_iter()
+            .filter(|&piece| overlaps(piece))
+            .collect()
     };
     if removed.is_empty() {
         return None;
@@ -2242,11 +2454,15 @@ fn crossing_trim_lwpolyline(
 /// Unlike a rectangular fill with a hole, it can be removed with a single
 /// click without selecting another cutting edge. Do not delete arbitrary
 /// multi-loop / polygonal hatches when a trim solver finds no intersection.
-fn hatch_is_standalone_circle(hatch: &codec::entities::Hatch) -> bool {
-    if hatch.paths.len() != 1 { return false; }
+fn hatch_is_standalone_circle(hatch: &document::entities::Hatch) -> bool {
+    if hatch.paths.len() != 1 {
+        return false;
+    }
     let edges = &hatch.paths[0].edges;
-    if edges.len() != 1 { return false; }
-    let codec::entities::BoundaryEdge::CircularArc(arc) = &edges[0] else {
+    if edges.len() != 1 {
+        return false;
+    }
+    let document::entities::BoundaryEdge::CircularArc(arc) = &edges[0] else {
         return false;
     };
     arc.radius.is_finite()
@@ -2259,14 +2475,16 @@ fn hatch_is_standalone_circle(hatch: &codec::entities::Hatch) -> bool {
 /// Do not approximate the final arc with chords (DWG must retain a true arc).
 /// Return None for complex topology that would require a region boolean.
 fn trim_hatch_circle(
-    hatch: &codec::entities::Hatch,
+    hatch: &document::entities::Hatch,
     rings: &[Vec<[f64; 2]>],
     outer_index: usize,
     circle: &Geo,
     pick: [f64; 2],
-) -> Option<codec::entities::Hatch> {
-    use codec::entities::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, CircularArcEdge, LineEdge};
-    use codec::types::Vector2;
+) -> Option<document::entities::Hatch> {
+    use document::entities::{
+        BoundaryEdge, BoundaryPath, BoundaryPathFlags, CircularArcEdge, LineEdge,
+    };
+    use document::types::Vector2;
     use std::f64::consts::TAU;
     let Geo::Circle { handle, cx, cy, r } = *circle else {
         return None;
@@ -2285,7 +2503,11 @@ fn trim_hatch_circle(
     }
     let polygon_contains = |ring: &[[f64; 2]], p: [f64; 2]| {
         let mut inside = false;
-        for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)).take(ring.len()) {
+        for (a, b) in ring
+            .iter()
+            .zip(ring.iter().cycle().skip(1))
+            .take(ring.len())
+        {
             if (a[1] > p[1]) != (b[1] > p[1]) {
                 let cross_x = (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0];
                 if p[0] < cross_x {
@@ -2303,7 +2525,8 @@ fn trim_hatch_circle(
     let mut points = ring.clone();
     if points.len() >= 2
         && (points[0][0] - points.last().unwrap()[0])
-            .hypot(points[0][1] - points.last().unwrap()[1]) <= tolerance
+            .hypot(points[0][1] - points.last().unwrap()[1])
+            <= tolerance
     {
         points.pop();
     }
@@ -2332,8 +2555,10 @@ fn trim_hatch_circle(
             if discriminant <= tolerance * tolerance {
                 continue;
             }
-            for t in [(-bb - discriminant.sqrt()) / (2.0 * aa),
-                      (-bb + discriminant.sqrt()) / (2.0 * aa)] {
+            for t in [
+                (-bb - discriminant.sqrt()) / (2.0 * aa),
+                (-bb + discriminant.sqrt()) / (2.0 * aa),
+            ] {
                 if t < -tolerance || t > 1.0 + tolerance {
                     continue;
                 }
@@ -2342,7 +2567,10 @@ fn trim_hatch_circle(
                 if !hits.iter().any(|prev: &Hit| {
                     (point[0] - prev.point[0]).hypot(point[1] - prev.point[1]) <= tolerance
                 }) {
-                    hits.push(Hit { at: i as f64 + t, point });
+                    hits.push(Hit {
+                        at: i as f64 + t,
+                        point,
+                    });
                 }
             }
         }
@@ -2353,8 +2581,10 @@ fn trim_hatch_circle(
     // Don't attempt to combine a cutter with existing holes. The hole must
     // remain completely separate from this disk.
     for (index, hole) in rings.iter().enumerate() {
-        if index == outer_index { continue; }
-        if hits_on(hole).len() != 0
+        if index == outer_index {
+            continue;
+        }
+        if !hits_on(hole).is_empty()
             || hole.iter().any(|p| d2(*p) <= (r + tolerance).powi(2))
             || polygon_contains(hole, centre)
         {
@@ -2403,8 +2633,10 @@ fn trim_hatch_circle(
             let b = forward_chain(hits[1], hits[0]);
             let outside = |chain: &[[f64; 2]]| {
                 chain.windows(2).all(|pair| {
-                    let p = [(pair[0][0] + pair[1][0]) * 0.5,
-                             (pair[0][1] + pair[1][1]) * 0.5];
+                    let p = [
+                        (pair[0][0] + pair[1][0]) * 0.5,
+                        (pair[0][1] + pair[1][1]) * 0.5,
+                    ];
                     d2(p) >= (r - tolerance).max(0.0).powi(2)
                 })
             };
@@ -2432,7 +2664,11 @@ fn trim_hatch_circle(
                 (false, true) => false,
                 _ => return None,
             };
-            let sweep = if counter_clockwise { ccw_sweep } else { cw_sweep };
+            let sweep = if counter_clockwise {
+                ccw_sweep
+            } else {
+                cw_sweep
+            };
             if sweep <= tolerance || sweep >= TAU - tolerance {
                 return None;
             }
@@ -2471,47 +2707,72 @@ fn trim_hatch_circle(
 /// on the opposite side of the click and close it along the cutter. A new
 /// CircularArcEdge is emitted for the surviving portion of any split arc.
 fn trim_hatch_curved_outer(
-    path: &codec::entities::BoundaryPath,
+    path: &document::entities::BoundaryPath,
     p1: [f64; 2],
     p2: [f64; 2],
     keep_sign: f64,
-) -> Option<codec::entities::BoundaryPath> {
-    use codec::entities::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, CircularArcEdge, LineEdge};
-    use codec::types::Vector2;
+) -> Option<document::entities::BoundaryPath> {
+    use document::entities::{
+        BoundaryEdge, BoundaryPath, BoundaryPathFlags, CircularArcEdge, LineEdge,
+    };
+    use document::types::Vector2;
     const EPS: f64 = 1.0e-8;
     const TAU: f64 = std::f64::consts::TAU;
     #[derive(Clone, Copy)]
     enum Segment {
-        Line { a: [f64; 2], b: [f64; 2] },
-        Arc { center: [f64; 2], radius: f64, start: f64, sweep: f64, ccw: bool },
+        Line {
+            a: [f64; 2],
+            b: [f64; 2],
+        },
+        Arc {
+            center: [f64; 2],
+            radius: f64,
+            start: f64,
+            sweep: f64,
+            ccw: bool,
+        },
     }
     impl Segment {
         fn point(self, t: f64) -> [f64; 2] {
             match self {
-                Segment::Line { a, b } => [
-                    a[0] + t * (b[0] - a[0]),
-                    a[1] + t * (b[1] - a[1]),
-                ],
-                Segment::Arc { center, radius, start, sweep, ccw } => {
+                Segment::Line { a, b } => [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])],
+                Segment::Arc {
+                    center,
+                    radius,
+                    start,
+                    sweep,
+                    ccw,
+                } => {
                     let angle = start + if ccw { sweep * t } else { -sweep * t };
-                    [center[0] + radius * angle.cos(), center[1] + radius * angle.sin()]
+                    [
+                        center[0] + radius * angle.cos(),
+                        center[1] + radius * angle.sin(),
+                    ]
                 }
             }
         }
         fn portion(self, t0: f64, t1: f64) -> Option<BoundaryEdge> {
-            if t1 - t0 <= 1.0e-10 { return None; }
+            if t1 - t0 <= 1.0e-10 {
+                return None;
+            }
             match self {
                 Segment::Line { .. } => {
                     let a = self.point(t0);
                     let b = self.point(t1);
-                    ((a[0] - b[0]).hypot(a[1] - b[1]) > 1.0e-10).then_some(
-                        BoundaryEdge::Line(LineEdge {
+                    ((a[0] - b[0]).hypot(a[1] - b[1]) > 1.0e-10).then_some(BoundaryEdge::Line(
+                        LineEdge {
                             start: Vector2::new(a[0], a[1]),
                             end: Vector2::new(b[0], b[1]),
-                        })
-                    )
+                        },
+                    ))
                 }
-                Segment::Arc { center, radius, start, sweep, ccw } => {
+                Segment::Arc {
+                    center,
+                    radius,
+                    start,
+                    sweep,
+                    ccw,
+                } => {
                     let actual_start = start + if ccw { sweep * t0 } else { -sweep * t0 };
                     let stored = if ccw { actual_start } else { -actual_start }.rem_euclid(TAU);
                     Some(BoundaryEdge::CircularArc(CircularArcEdge {
@@ -2554,7 +2815,11 @@ fn trim_hatch_curved_outer(
                 edges.push(Segment::Arc {
                     center: [arc.center.x, arc.center.y],
                     radius: arc.radius,
-                    start: if arc.counter_clockwise { arc.start_angle } else { -arc.start_angle },
+                    start: if arc.counter_clockwise {
+                        arc.start_angle
+                    } else {
+                        -arc.start_angle
+                    },
                     sweep,
                     ccw: arc.counter_clockwise,
                 });
@@ -2575,44 +2840,76 @@ fn trim_hatch_curved_outer(
     }
     let (dx, dy) = (p2[0] - p1[0], p2[1] - p1[1]);
     let length = dx.hypot(dy);
-    if length <= EPS { return None; }
+    if length <= EPS {
+        return None;
+    }
     let (ux, uy) = (dx / length, dy / length);
     let side = |p: [f64; 2]| ux * (p[1] - p1[1]) - uy * (p[0] - p1[0]);
     #[derive(Clone, Copy)]
-    struct Hit { at: f64, point: [f64; 2] }
+    struct Hit {
+        at: f64,
+        point: [f64; 2],
+    }
     let mut hits: Vec<Hit> = Vec::new();
     let mut record = |edge_index: usize, t: f64, edge: Segment| {
         let p = edge.point(t.clamp(0.0, 1.0));
         let proj = (p[0] - p1[0]) * ux + (p[1] - p1[1]) * uy;
-        if proj < -EPS || proj > length + EPS { return; }
-        if hits.iter().any(|h| (h.point[0] - p[0]).hypot(h.point[1] - p[1]) <= EPS) {
+        if proj < -EPS || proj > length + EPS {
+            return;
+        }
+        if hits
+            .iter()
+            .any(|h| (h.point[0] - p[0]).hypot(h.point[1] - p[1]) <= EPS)
+        {
             return;
         }
         let position = (edge_index as f64 + t).rem_euclid(n as f64);
-        hits.push(Hit { at: position, point: p });
+        hits.push(Hit {
+            at: position,
+            point: p,
+        });
     };
     for (i, edge) in edges.iter().copied().enumerate() {
         match edge {
             Segment::Line { a, b } => {
                 let da = side(a);
                 let db = side(b);
-                if da.abs() <= EPS && db.abs() <= EPS { return None; }
-                if da.abs() <= EPS { record(i, 0.0, edge); }
-                if db.abs() <= EPS { record(i, 1.0, edge); }
+                if da.abs() <= EPS && db.abs() <= EPS {
+                    return None;
+                }
+                if da.abs() <= EPS {
+                    record(i, 0.0, edge);
+                }
+                if db.abs() <= EPS {
+                    record(i, 1.0, edge);
+                }
                 if da * db < -EPS * EPS {
                     record(i, da / (da - db), edge);
                 }
             }
-            Segment::Arc { center, radius, start, sweep, ccw } => {
+            Segment::Arc {
+                center,
+                radius,
+                start,
+                sweep,
+                ccw,
+            } => {
                 let signed = side(center);
-                if signed.abs() > radius + EPS { continue; }
+                if signed.abs() > radius + EPS {
+                    continue;
+                }
                 let along = (radius * radius - signed * signed).max(0.0).sqrt();
                 for proj in [-along, along] {
-                    let p = [center[0] - signed * (-uy) + proj * ux,
-                             center[1] - signed * ux + proj * uy];
+                    let p = [
+                        center[0] - signed * (-uy) + proj * ux,
+                        center[1] - signed * ux + proj * uy,
+                    ];
                     let angle = (p[1] - center[1]).atan2(p[0] - center[0]);
-                    let angle_delta = if ccw { (angle - start).rem_euclid(TAU) }
-                                      else { (start - angle).rem_euclid(TAU) };
+                    let angle_delta = if ccw {
+                        (angle - start).rem_euclid(TAU)
+                    } else {
+                        (start - angle).rem_euclid(TAU)
+                    };
                     if angle_delta <= sweep + EPS {
                         let t = (angle_delta / sweep).clamp(0.0, 1.0);
                         record(i, t, edge);
@@ -2621,10 +2918,16 @@ fn trim_hatch_curved_outer(
             }
         }
     }
-    if hits.len() != 2 { return None; }
+    if hits.len() != 2 {
+        return None;
+    }
     hits.sort_by(|a, b| a.at.total_cmp(&b.at));
     let create = |from: Hit, to: Hit| -> Option<BoundaryPath> {
-        let end = if to.at <= from.at { to.at + n as f64 } else { to.at };
+        let end = if to.at <= from.at {
+            to.at + n as f64
+        } else {
+            to.at
+        };
         let mut position = from.at;
         let mut parts: Vec<BoundaryEdge> = Vec::new();
         // Every surviving edge midpoint must be strictly inside the retained
@@ -2643,9 +2946,13 @@ fn trim_hatch_curved_outer(
                 parts.push(edge);
             }
             position = next;
-            if parts.len() > n + 3 { return None; }
+            if parts.len() > n + 3 {
+                return None;
+            }
         }
-        if parts.is_empty() { return None; }
+        if parts.is_empty() {
+            return None;
+        }
         parts.push(BoundaryEdge::Line(LineEdge {
             start: Vector2::new(to.point[0], to.point[1]),
             end: Vector2::new(from.point[0], from.point[1]),
@@ -2671,13 +2978,13 @@ fn trim_hatch_curved_outer(
 /// hatch is detached from its original associative source handles: these
 /// source curves have not changed to match the new boundary.
 fn trim_hatch_at(
-    hatch: &codec::entities::Hatch,
+    hatch: &document::entities::Hatch,
     geos: &[Geo],
     px: f64,
     py: f64,
-) -> Option<codec::entities::Hatch> {
-    use codec::entities::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, PolylineEdge};
-    use codec::types::Vector2;
+) -> Option<document::entities::Hatch> {
+    use document::entities::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, PolylineEdge};
+    use document::types::Vector2;
     // The working plane of TRIM is XY. Do not quietly clip a tilted OCS
     // boundary using an unrelated XY cutting edge.
     if hatch.normal.x.abs() > 1.0e-9
@@ -2709,15 +3016,19 @@ fn trim_hatch_at(
     // Only edit outer curves for which we can reconstruct exact HATCH edges.
     // Never silently convert an imported SPLINE/ELLIPSE into a sampled
     // polyline when TRIM is run a second time.
-    if !hatch.paths[outer_index].edges.iter().all(|edge| match edge {
-        BoundaryEdge::Line(_) | BoundaryEdge::CircularArc(_) => true,
-        BoundaryEdge::Polyline(poly) => {
-            poly.is_closed
-                && poly.vertices.len() >= 3
-                && poly.vertices.iter().all(|vertex| vertex.z.abs() <= 1.0e-12)
-        }
-        _ => false,
-    }) {
+    if !hatch.paths[outer_index]
+        .edges
+        .iter()
+        .all(|edge| match edge {
+            BoundaryEdge::Line(_) | BoundaryEdge::CircularArc(_) => true,
+            BoundaryEdge::Polyline(poly) => {
+                poly.is_closed
+                    && poly.vertices.len() >= 3
+                    && poly.vertices.iter().all(|vertex| vertex.z.abs() <= 1.0e-12)
+            }
+            _ => false,
+        })
+    {
         return None;
     }
     // Preserve exact outer curves; the mixed-edge solver below handles
@@ -2731,13 +3042,14 @@ fn trim_hatch_at(
             .take(points.len())
             .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
             .sum::<f64>()
-            .abs() * 0.5
+            .abs()
+            * 0.5
     };
     let old_area = ring_area(ring);
     if !old_area.is_finite() || old_area <= EPS {
         return None;
     }
-    let mut best: Option<(f64, codec::entities::Hatch)> = None;
+    let mut best: Option<(f64, document::entities::Hatch)> = None;
     // A click inside a circle should cut that disk out of the hatch. Do
     // not let an unrelated nearby straight edge win this pick.
     for circle in geos.iter().filter(|geo| matches!(geo, Geo::Circle { .. })) {
@@ -2837,25 +3149,29 @@ fn trim_hatch_at(
         }
         if cleaned.len() > 1
             && (cleaned[0][0] - cleaned[cleaned.len() - 1][0])
-                .hypot(cleaned[0][1] - cleaned[cleaned.len() - 1][1]) <= EPS
+                .hypot(cleaned[0][1] - cleaned[cleaned.len() - 1][1])
+                <= EPS
         {
             cleaned.pop();
         }
         let new_area = ring_area(&cleaned);
-        if cleaned.len() < 3 || !new_area.is_finite()
-            || new_area <= EPS || new_area >= old_area - EPS
+        if cleaned.len() < 3
+            || !new_area.is_finite()
+            || new_area <= EPS
+            || new_area >= old_area - EPS
         {
             continue;
         }
         // On a previously circular-notched hatch, use exact original arc
         // segments rather than tessellating the curved boundary to polylines.
-        let curved_outer = hatch.paths[outer_index].edges.iter().any(|edge| {
-            matches!(edge, BoundaryEdge::CircularArc(_))
-        });
+        let curved_outer = hatch.paths[outer_index]
+            .edges
+            .iter()
+            .any(|edge| matches!(edge, BoundaryEdge::CircularArc(_)));
         let analytic_outer = if curved_outer {
-            let Some(path) = trim_hatch_curved_outer(
-                &hatch.paths[outer_index], *p1, *p2, keep_sign,
-            ) else {
+            let Some(path) =
+                trim_hatch_curved_outer(&hatch.paths[outer_index], *p1, *p2, keep_sign)
+            else {
                 continue;
             };
             Some(path)
@@ -2871,10 +3187,7 @@ fn trim_hatch_at(
                 } else {
                     let mut replacement = BoundaryPath::with_flags(BoundaryPathFlags::OUTERMOST);
                     replacement.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(
-                        cleaned
-                            .iter()
-                            .map(|p| Vector2::new(p[0], p[1]))
-                            .collect(),
+                        cleaned.iter().map(|p| Vector2::new(p[0], p[1])).collect(),
                         true,
                     )));
                     new_paths.push(replacement);
@@ -3258,15 +3571,23 @@ fn entity_point_in_window(e: &EntityType, window: CrossingWindow) -> Option<[f64
 /// keeps entities that intersect the rectangle boundary.
 fn drag_selected_handles(
     entities: &[EntityType],
+    index: &ModifyEntityIndex,
     fence: &[[f64; 2]],
     window: Option<CrossingWindow>,
     crossing: bool,
 ) -> Vec<Handle> {
+    let candidates = trim_fence_candidates(index, fence, window);
     let fence_geos = build_fence_geos(fence);
     let lasso: Vec<Curve> = fence_geos.iter().filter_map(geo_to_curve).collect();
     entities
         .iter()
-        .filter(|entity| !entity.common().handle.is_null())
+        .filter(|entity| {
+            let handle = entity.common().handle;
+            !handle.is_null()
+                && candidates
+                    .as_ref()
+                    .is_none_or(|hits| hits.contains(&handle))
+        })
         .filter(|entity| {
             let Some(window) = window else {
                 // Lasso: edges crossing it or lying wholly inside it.
@@ -3295,6 +3616,22 @@ fn drag_selected_handles(
         })
         .map(|entity| entity.common().handle)
         .collect()
+}
+
+/// Update cutting-edge membership in linear expected time.  An ordinary
+/// Vec::contains for each selected handle made large drag selections quadratic.
+fn update_trim_edge_set(edges: &mut Vec<Handle>, handles: Vec<Handle>, remove: bool) {
+    if remove {
+        let removing: rustc_hash::FxHashSet<_> = handles.into_iter().collect();
+        edges.retain(|handle| !removing.contains(handle));
+    } else {
+        let mut existing: rustc_hash::FxHashSet<_> = edges.iter().copied().collect();
+        for handle in handles {
+            if existing.insert(handle) {
+                edges.push(handle);
+            }
+        }
+    }
 }
 
 fn trim_edge_glow(entity: &EntityType, candidate: bool) -> Vec<WireModel> {
@@ -3418,23 +3755,73 @@ fn build_fence_geos(fence: &[[f64; 2]]) -> Vec<Geo> {
         .collect()
 }
 
+/// Conservative bounding rectangle for the entire fence/window.  A missing
+/// or invalid bound falls back to the old all-entities path (never drop edits).
+fn trim_selection_bounds(fence: &[[f64; 2]], window: Option<CrossingWindow>) -> Option<[f64; 4]> {
+    if let Some(w) = window {
+        let aabb = [w.min[0], w.min[1], w.max[0], w.max[1]];
+        return aabb.iter().all(|v| v.is_finite()).then_some(aabb);
+    }
+    let first = fence.first()?;
+    if !first.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let mut aabb = [first[0], first[1], first[0], first[1]];
+    for point in fence.iter().skip(1) {
+        if !point.iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        aabb[0] = aabb[0].min(point[0]);
+        aabb[1] = aabb[1].min(point[1]);
+        aabb[2] = aabb[2].max(point[0]);
+        aabb[3] = aabb[3].max(point[1]);
+    }
+    Some(aabb)
+}
+
+fn trim_fence_candidates(
+    index: &ModifyEntityIndex,
+    fence: &[[f64; 2]],
+    window: Option<CrossingWindow>,
+) -> Option<rustc_hash::FxHashSet<Handle>> {
+    trim_selection_bounds(fence, window).map(|aabb| index.handles_in_aabb(aabb))
+}
+
 /// Live result preview of a fence / crossing pass: each affected original in
 /// gray, its surviving pieces in cyan — the same convention as the pick hover.
 fn fence_result_preview(
     all: &[EntityType],
+    index: &ModifyEntityIndex,
     geos: &[Geo],
     fence: &[[f64; 2]],
     window: Option<CrossingWindow>,
     extend: bool,
     implied_edges: bool,
 ) -> Vec<WireModel> {
+    let candidates = trim_fence_candidates(index, fence, window);
+    // Heavy overlapping geometry must not be re-trimmed on every mouse
+    // movement.  Display the fence alone in crowded areas; the final
+    // operation below remains exact and processes every matching object.
+    const MAX_LIVE_FENCE_TARGETS: usize = 64;
+    if candidates
+        .as_ref()
+        .is_some_and(|hits| hits.len() > MAX_LIVE_FENCE_TARGETS)
+    {
+        return Vec::new();
+    }
     let fence_geos = build_fence_geos(fence);
     let mut out = Vec::new();
     for e in all {
-        if e.common().handle.is_null() {
+        let handle = e.common().handle;
+        if handle.is_null()
+            || candidates
+                .as_ref()
+                .is_some_and(|hits| !hits.contains(&handle))
+        {
             continue;
         }
-        if let Some(pieces) = fence_pieces(e, geos, &fence_geos, window, extend) {
+        let cutters = cutters_near(e, geos, !extend && !implied_edges);
+        if let Some(pieces) = fence_pieces(e, &cutters, &fence_geos, window, extend) {
             out.push(WireModel::solid(
                 "trim_rm".into(),
                 entity_pts(e),
@@ -3465,19 +3852,68 @@ fn fence_result_preview(
 
 fn fence_pass(
     all: &[EntityType],
+    index: &ModifyEntityIndex,
     geos: &[Geo],
     fence: &[[f64; 2]],
     window: Option<CrossingWindow>,
     extend: bool,
 ) -> Vec<(Handle, Vec<EntityType>)> {
+    fence_pass_with(all, index, geos, fence, window, extend, false)
+}
+
+/// The cutters that can touch `target`'s pieces. A trimmed object's pieces
+/// stay inside its own box, so a cutter outside the box cannot cut them:
+/// with `local`, only the cutters reaching the box are kept, instead of
+/// intersecting every object with every cutter (#2461). Splines keep their
+/// place, as their sampled box can miss a bulge.
+fn cutters_near<'a>(
+    target: &EntityType,
+    geos: &'a [Geo],
+    local: bool,
+) -> std::borrow::Cow<'a, [Geo]> {
+    let Some(bounds) = local.then(|| entity_world_aabb_f64(target)).flatten() else {
+        return std::borrow::Cow::Borrowed(geos);
+    };
+    let pad = 1e-6
+        * (bounds[2] - bounds[0])
+            .abs()
+            .max((bounds[3] - bounds[1]).abs())
+            .max(1.0);
+    let bounds = [
+        bounds[0] - pad,
+        bounds[1] - pad,
+        bounds[2] + pad,
+        bounds[3] + pad,
+    ];
+    std::borrow::Cow::Owned(
+        geos.iter()
+            .filter(|geo| matches!(geo, Geo::Spline { .. }) || geo_overlaps_aabb(geo, bounds))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// [`fence_pass`], cutting each object only with the cutters near it when
+/// `local` (TRIM without extension, where nothing reaches past an object).
+fn fence_pass_with(
+    all: &[EntityType],
+    index: &ModifyEntityIndex,
+    geos: &[Geo],
+    fence: &[[f64; 2]],
+    window: Option<CrossingWindow>,
+    extend: bool,
+    local: bool,
+) -> Vec<(Handle, Vec<EntityType>)> {
+    let candidates = trim_fence_candidates(index, fence, window);
     let fence_geos: Vec<Geo> = build_fence_geos(fence);
     let mut out = Vec::new();
     for e in all {
         let h = e.common().handle;
-        if h.is_null() {
+        if h.is_null() || candidates.as_ref().is_some_and(|hits| !hits.contains(&h)) {
             continue;
         }
-        if let Some(pieces) = fence_pieces(e, geos, &fence_geos, window, extend) {
+        let cutters = cutters_near(e, geos, local && !extend);
+        if let Some(pieces) = fence_pieces(e, &cutters, &fence_geos, window, extend) {
             out.push((h, pieces));
         }
     }
@@ -3491,13 +3927,14 @@ fn fence_pass(
 /// boundary-edge geometry (`geos`).
 fn extend_box_pass(
     all: &[EntityType],
+    index: &ModifyEntityIndex,
     geos: &[Geo],
     boundary_handles: &[Handle],
     fence: &[[f64; 2]],
     window: Option<CrossingWindow>,
     crossing: bool,
 ) -> Vec<(Handle, Vec<EntityType>)> {
-    let selected = drag_selected_handles(all, fence, window, crossing);
+    let selected = drag_selected_handles(all, index, fence, window, crossing);
     if selected.is_empty() {
         return Vec::new();
     }
@@ -3514,10 +3951,11 @@ fn extend_box_pass(
         // if neither end is within it, follow the box crossing position.
         // This is independent of line direction in the file.
         let extended = if let EntityType::Line(line) = entity {
-            let contains = |x: f64, y: f64| window.is_some_and(|w| {
-                x >= w.min[0] && x <= w.max[0]
-                    && y >= w.min[1] && y <= w.max[1]
-            });
+            let contains = |x: f64, y: f64| {
+                window.is_some_and(|w| {
+                    x >= w.min[0] && x <= w.max[0] && y >= w.min[1] && y <= w.max[1]
+                })
+            };
             let start_in = contains(line.start.x, line.start.y);
             let end_in = contains(line.end.x, line.end.y);
             if start_in && end_in {
@@ -3526,7 +3964,9 @@ fn extend_box_pass(
                 match (start, end) {
                     (Some(a), Some(b)) => {
                         let dist = |result: &EntityType| {
-                            let EntityType::Line(extended) = result else { return f64::INFINITY; };
+                            let EntityType::Line(extended) = result else {
+                                return f64::INFINITY;
+                            };
                             (extended.start.x - line.start.x).hypot(extended.start.y - line.start.y)
                                 + (extended.end.x - line.end.x).hypot(extended.end.y - line.end.y)
                         };
@@ -3546,8 +3986,13 @@ fn extend_box_pass(
         } else {
             // Keep the existing analytic extension for arcs, polylines,
             // ellipses and splines instead of introducing another solver.
-            window.and_then(|w| entity_point_in_window(entity, w))
-                .or_else(|| fence_cross_points(entity, &build_fence_geos(fence)).first().copied())
+            window
+                .and_then(|w| entity_point_in_window(entity, w))
+                .or_else(|| {
+                    fence_cross_points(entity, &build_fence_geos(fence))
+                        .first()
+                        .copied()
+                })
                 .and_then(|p| pick_extend_at(all, geos, handle, p[0], p[1]))
         };
         if let Some(new_entity) = extended {
@@ -3831,8 +4276,17 @@ pub struct TrimCommand {
     all_entities: Vec<EntityType>,
     /// Exploded block contents used only as virtual cutting geometry.
     block_boundaries: Vec<(Handle, Vec<EntityType>)>,
+    /// Look up virtual INSERT boundaries in O(1) during nearby cutter scans,
+    /// rather than searching all block contents for each geometry.
+    block_boundary_owners: rustc_hash::FxHashSet<Handle>,
     entity_index: ModifyEntityIndex,
     geos: Vec<Geo>,
+    /// Lazily built for cursor-local cutter scans. Reused across hover
+    /// targets; cleared whenever a committed edit changes the boundaries.
+    geo_spatial: std::cell::RefCell<Option<TrimAabbIndex>>,
+    /// Bounded cache of cursor-independent cutting points for hover previews.
+    hover_cut_cache: rustc_hash::FxHashMap<Handle, Vec<f64>>,
+    hover_cut_order: std::collections::VecDeque<Handle>,
     /// Replacements sent to the host, applied once their handles are known.
     pending: Vec<(Handle, Vec<EntityType>)>,
     mode: TrimMode,
@@ -3883,7 +4337,7 @@ impl TrimCommand {
             .into_iter()
             .map(entity_with_lwpolyline_world_xy_owned)
             .collect();
-        let block_boundaries = block_boundaries
+        let block_boundaries: Vec<(Handle, Vec<EntityType>)> = block_boundaries
             .into_iter()
             .map(|(handle, entities)| {
                 (
@@ -3896,11 +4350,16 @@ impl TrimCommand {
             })
             .collect();
 
+        let block_boundary_owners = block_boundaries.iter().map(|(owner, _)| *owner).collect();
         let mut cmd = Self {
             all_entities,
             block_boundaries,
+            block_boundary_owners,
             entity_index: ModifyEntityIndex::empty(),
             geos: Vec::new(),
+            geo_spatial: std::cell::RefCell::new(None),
+            hover_cut_cache: rustc_hash::FxHashMap::default(),
+            hover_cut_order: std::collections::VecDeque::new(),
             pending: Vec::new(),
             mode: starting_mode(&initial_edges),
             quick: quick_mode(),
@@ -3918,6 +4377,9 @@ impl TrimCommand {
     /// Boundary geometry from the edge selection (or everything when none),
     /// with the Edge option's implied extrapolation applied on top.
     fn rebuild_geos(&mut self) {
+        self.hover_cut_cache.clear();
+        self.hover_cut_order.clear();
+        self.geo_spatial.get_mut().take();
         self.entity_index = ModifyEntityIndex::build(&self.all_entities);
         let mut geos = if self.edge_set.is_empty() {
             build_geos(&self.all_entities)
@@ -3933,8 +4395,8 @@ impl TrimCommand {
                 .collect();
             build_geos(&picked)
         };
-        let selected_edges: Option<std::collections::HashSet<Handle>> = (!self.edge_set.is_empty())
-            .then(|| self.edge_set.iter().copied().collect());
+        let selected_edges: Option<std::collections::HashSet<Handle>> =
+            (!self.edge_set.is_empty()).then(|| self.edge_set.iter().copied().collect());
         for (insert_handle, entities) in &self.block_boundaries {
             if selected_edges
                 .as_ref()
@@ -3965,18 +4427,118 @@ impl TrimCommand {
         let Some(target_bounds) = entity_world_aabb_f64(target_entity) else {
             return self.geos.clone();
         };
-        self.geos
-            .iter()
+        if !target_bounds.iter().all(|value| value.is_finite()) {
+            return self.geos.clone();
+        }
+        // Include near-contact tolerance as well as true bounding-box
+        // overlap. Rays and splines have no conservatively bounded index
+        // entry, so they are always included in candidate indices.
+        let slack = CUT_TOLERANCE * 8.0;
+        let target_bounds = [
+            target_bounds[0] - slack,
+            target_bounds[1] - slack,
+            target_bounds[2] + slack,
+            target_bounds[3] + slack,
+        ];
+        let candidate_indices = {
+            let mut cached = self.geo_spatial.borrow_mut();
+            cached
+                .get_or_insert_with(|| TrimAabbIndex::new(self.geos.iter().map(trim_geo_aabb)))
+                .overlapping(target_bounds)
+        };
+        candidate_indices
+            .into_iter()
+            .filter_map(|index| self.geos.get(index))
             .filter(|geo| {
                 handles.contains(&geo.handle())
-                    || self
-                        .block_boundaries
-                        .iter()
-                        .any(|(owner, _)| *owner == geo.handle()
-                            && geo_overlaps_aabb(geo, target_bounds))
+                    || (self.block_boundary_owners.contains(&geo.handle())
+                        && geo_overlaps_aabb(geo, target_bounds))
             })
             .cloned()
             .collect()
+    }
+
+    /// The mouse chooses a span, but the analytic cutting points remain
+    /// constant until an edit changes the geometry. Only cache 32 handles.
+    fn cached_hover_cut_params(&mut self, handle: Handle) -> Option<Vec<f64>> {
+        let entity = self.entity_index.get(&self.all_entities, handle)?;
+        if !matches!(
+            entity,
+            EntityType::Line(_)
+                | EntityType::Arc(_)
+                | EntityType::Circle(_)
+                | EntityType::Ray(_)
+                | EntityType::XLine(_)
+                | EntityType::Ellipse(_)
+                | EntityType::Spline(_)
+                | EntityType::LwPolyline(_)
+        ) {
+            return None;
+        }
+        if let Some(cuts) = self.hover_cut_cache.get(&handle) {
+            return Some(cuts.clone());
+        }
+        let solve_started = crate::perf::enabled().then(iced::time::Instant::now);
+        let nearby = self.nearby_geos(handle);
+        let nearby_ms = crate::perf::elapsed_ms(solve_started);
+        let entity = self.entity_index.get(&self.all_entities, handle)?;
+        let cuts = match entity {
+            EntityType::Line(l) => {
+                line_seg_ts(l.start.x, l.start.y, l.end.x, l.end.y, handle, &nearby)
+            }
+            EntityType::Arc(a) => arc_seg_ts(
+                a.center.x,
+                a.center.y,
+                a.radius,
+                a.start_angle,
+                a.end_angle,
+                handle,
+                &nearby,
+            ),
+            EntityType::Circle(c) => {
+                arc_seg_ts(c.center.x, c.center.y, c.radius, 0.0, TAU, handle, &nearby)
+            }
+            EntityType::Ray(r) => cut_params(&ray_curve(r), handle, &nearby),
+            EntityType::XLine(x) => cut_params(&xline_curve(x), handle, &nearby),
+            EntityType::Ellipse(e) => {
+                let a = e.major_axis.x.hypot(e.major_axis.y);
+                let b = a * e.minor_axis_ratio;
+                if a < 1e-9 || b < 1e-9 {
+                    Vec::new()
+                } else {
+                    let (nx, ny) = (e.major_axis.x / a, e.major_axis.y / a);
+                    let t0 = e.start_parameter;
+                    let mut t1 = e.end_parameter;
+                    if t1 <= t0 {
+                        t1 += TAU;
+                    }
+                    ellipse_seg_ts(
+                        e.center.x, e.center.y, a, b, nx, ny, t0, t1, handle, &nearby,
+                    )
+                }
+            }
+            EntityType::Spline(s) => spline_seg_ts(s, handle, &nearby),
+            EntityType::LwPolyline(p) => lwpoly_cut_params(p, &nearby),
+            _ => return None,
+        };
+        let solve_ms = crate::perf::elapsed_ms(solve_started);
+        if solve_ms >= 8.0 {
+            crate::perf_record!(
+                "[perf] trim-hover-cuts {solve_ms:.2}ms search={nearby_ms:.2}ms intersection={:.2}ms boundaries={} cuts={}",
+                solve_ms - nearby_ms,
+                nearby.len(),
+                cuts.len(),
+            );
+        }
+        const CAP: usize = 32;
+        if self.hover_cut_order.len() >= CAP {
+            if let Some(oldest) = self.hover_cut_order.pop_front() {
+                self.hover_cut_cache.remove(&oldest);
+            }
+        }
+        self.hover_cut_order.push_back(handle);
+        self.hover_cut_cache.insert(handle, cuts.clone());
+        Some(cuts)
     }
 
     fn hatch_trim_at(&self, handle: Handle, point: DVec3) -> Option<hatch_region::HatchTrim> {
@@ -3999,7 +4561,15 @@ impl TrimCommand {
     }
 
     fn fence_run(&mut self, fence: &[[f64; 2]], window: Option<CrossingWindow>) -> CmdResult {
-        let replacements = fence_pass(&self.all_entities, &self.geos, fence, window, self.shift);
+        let replacements = fence_pass_with(
+            &self.all_entities,
+            &self.entity_index,
+            &self.geos,
+            fence,
+            window,
+            self.shift,
+            !self.implied_edges,
+        );
         if replacements.is_empty() {
             return CmdResult::NeedPoint;
         }
@@ -4166,18 +4736,41 @@ impl CadCommand for TrimCommand {
                 // fragment, not a hole in another hatch. TRIM removes it on
                 // a click as requested; no cutting line is necessary.
                 if !self.shift
-                    && self.entity_index.get(&self.all_entities, handle).is_some_and(
-                        |entity| matches!(
-                            entity,
-                            EntityType::Hatch(hatch) if hatch_is_standalone_circle(hatch)
-                        ),
-                    )
+                    && self
+                        .entity_index
+                        .get(&self.all_entities, handle)
+                        .is_some_and(|entity| {
+                            matches!(
+                                entity,
+                                EntityType::Hatch(hatch) if hatch_is_standalone_circle(hatch)
+                            )
+                        })
                 {
                     self.pending = vec![(handle, Vec::new())];
                     return CmdResult::ReplaceEntity(handle, Vec::new());
                 }
                 let (px, py) = (pt.x, pt.y);
                 let entity = self.entity_index.get(&self.all_entities, handle);
+                // Block references can provide cutting edges, but are not
+                // editable TRIM targets. Avoid scanning/cloning all cutters
+                // for INSERTs and other unsupported entity types.
+                if !matches!(
+                    entity,
+                    Some(
+                        EntityType::Line(_)
+                            | EntityType::Arc(_)
+                            | EntityType::Circle(_)
+                            | EntityType::Ray(_)
+                            | EntityType::XLine(_)
+                            | EntityType::Ellipse(_)
+                            | EntityType::Spline(_)
+                            | EntityType::LwPolyline(_)
+                            | EntityType::MLine(_)
+                            | EntityType::Hatch(_)
+                    )
+                ) {
+                    return CmdResult::NeedPoint;
+                }
                 let new_entities = if self.shift {
                     // Shift+click swaps to Extend for this pick (#336).
                     pick_extend_at(&self.all_entities, &self.geos, handle, px, py).map(|e| vec![e])
@@ -4187,6 +4780,16 @@ impl CadCommand for TrimCommand {
                     // curved / tilted boundaries while retaining exact paths.
                     self.hatch_trim_at(handle, pt)
                         .map(|trim| vec![EntityType::Hatch(Box::new(trim.kept))])
+                } else if let Some(EntityType::LwPolyline(poly)) = entity {
+                    // A hovered polyline has already calculated its cutting
+                    // points. A click chooses a span; no need to solve every
+                    // intersection a second time.
+                    if let Some(cuts) = self.hover_cut_cache.get(&handle) {
+                        trim_lwpolyline_with_cuts(poly, px, py, cuts)
+                    } else {
+                        let geos = self.nearby_geos(handle);
+                        trim_lwpolyline(poly, px, py, &geos)
+                    }
                 } else {
                     let geos = self.nearby_geos(handle);
                     if self.quick {
@@ -4207,11 +4810,15 @@ impl CadCommand for TrimCommand {
         }
     }
 
-    fn on_entity_replaced(&mut self, old: Handle, new_handles: &[codec::Handle]) {
+    fn on_entity_replaced(&mut self, old: Handle, new_handles: &[document::Handle]) {
         self.on_entities_replaced(&[(old, new_handles.to_vec())]);
     }
 
-    fn on_entities_replaced(&mut self, replacements: &[(Handle, Vec<codec::Handle>)]) {
+    fn on_entities_replaced(&mut self, replacements: &[(Handle, Vec<document::Handle>)]) {
+        if !replacements.is_empty() {
+            self.hover_cut_cache.clear();
+            self.hover_cut_order.clear();
+        }
         let mut rebuild = false;
         for (old, new_handles) in replacements {
             let snapshot = Snapshot {
@@ -4225,6 +4832,10 @@ impl CadCommand for TrimCommand {
         }
         if rebuild {
             self.rebuild_geos();
+        } else if !replacements.is_empty() {
+            // Non-rebuilding replacement still mutates self.geos in place.
+            // The cached spatial indices must never point at old positions.
+            self.geo_spatial.get_mut().take();
         }
     }
 
@@ -4239,16 +4850,14 @@ impl CadCommand for TrimCommand {
         }
         let window = window.map(|(min, max)| CrossingWindow { min, max });
         if matches!(self.mode, TrimMode::SelectEdges) {
-            let handles = drag_selected_handles(&self.all_entities, fence, window, crossing);
-            if self.shift {
-                self.edge_set.retain(|handle| !handles.contains(handle));
-            } else {
-                for handle in handles {
-                    if !self.edge_set.contains(&handle) {
-                        self.edge_set.push(handle);
-                    }
-                }
-            }
+            let handles = drag_selected_handles(
+                &self.all_entities,
+                &self.entity_index,
+                fence,
+                window,
+                crossing,
+            );
+            update_trim_edge_set(&mut self.edge_set, handles, self.shift);
             return Some(CmdResult::NeedPoint);
         }
         if !matches!(self.mode, TrimMode::Pick) {
@@ -4335,8 +4944,38 @@ impl CadCommand for TrimCommand {
         if handle.is_null() {
             return vec![];
         }
+        // A picked INSERT is not an editable entity for TRIM. Its nested
+        // geometry still acts as cutting edges for external targets, but
+        // hovering the block must not query/clone thousands of cutters.
+        if !matches!(
+            self.entity_index.get(&self.all_entities, handle),
+            Some(
+                EntityType::Line(_)
+                    | EntityType::Arc(_)
+                    | EntityType::Circle(_)
+                    | EntityType::Ray(_)
+                    | EntityType::XLine(_)
+                    | EntityType::Ellipse(_)
+                    | EntityType::Spline(_)
+                    | EntityType::LwPolyline(_)
+                    | EntityType::Hatch(_)
+            )
+        ) {
+            return vec![];
+        }
 
-        let nearby_geos = self.nearby_geos(handle);
+        let hover_started = crate::perf::enabled().then(iced::time::Instant::now);
+        let hover_cuts = if self.implied_edges {
+            None
+        } else {
+            self.cached_hover_cut_params(handle)
+        };
+        // A cache hit needs neither a spatial query nor another intersection.
+        let nearby_geos = if hover_cuts.is_some() {
+            Vec::new()
+        } else {
+            self.nearby_geos(handle)
+        };
         let geos = nearby_geos.as_slice();
         let entity = self.entity_index.get(&self.all_entities, handle);
 
@@ -4346,7 +4985,9 @@ impl CadCommand for TrimCommand {
                 let ay = l.start.y;
                 let bx = l.end.x;
                 let by = l.end.y;
-                let ts = line_seg_ts(ax, ay, bx, by, handle, geos);
+                let ts = hover_cuts
+                    .clone()
+                    .unwrap_or_else(|| line_seg_ts(ax, ay, bx, by, handle, geos));
                 if ts.is_empty() {
                     if self.quick && (bx - ax).hypot(by - ay) > 1e-9 {
                         return vec![WireModel::solid(
@@ -4362,7 +5003,7 @@ impl CadCommand for TrimCommand {
                 let dy = by - ay;
                 let len2 = dx * dx + dy * dy;
                 let t_click = if len2 > 1e-12 {
-                    ((pt.x as f64 - ax) * dx + (pt.y as f64 - ay) * dy) / len2
+                    ((pt.x - ax) * dx + (pt.y - ay) * dy) / len2
                 } else {
                     0.5
                 };
@@ -4388,11 +5029,13 @@ impl CadCommand for TrimCommand {
                 let cy = a.center.y;
                 let a0 = a.start_angle;
                 let a1 = a.end_angle;
-                let ts = arc_seg_ts(cx, cy, a.radius, a0, a1, handle, geos);
+                let ts = hover_cuts
+                    .clone()
+                    .unwrap_or_else(|| arc_seg_ts(cx, cy, a.radius, a0, a1, handle, geos));
                 if ts.is_empty() {
                     return vec![];
                 }
-                let click_angle = (pt.y as f64 - cy).atan2(pt.x as f64 - cx);
+                let click_angle = (pt.y - cy).atan2(pt.x - cx);
                 let t_click = arc_t(click_angle, a0, a1);
                 let survivors = trim_arc(a, &ts, t_click);
                 let orig_pts = arc_pts(cx, cy, a.radius, a0, a1, a.center.z);
@@ -4412,11 +5055,13 @@ impl CadCommand for TrimCommand {
             Some(EntityType::Circle(c)) => {
                 let cx = c.center.x;
                 let cy = c.center.y;
-                let ts = arc_seg_ts(cx, cy, c.radius, 0.0, TAU, handle, geos);
+                let ts = hover_cuts
+                    .clone()
+                    .unwrap_or_else(|| arc_seg_ts(cx, cy, c.radius, 0.0, TAU, handle, geos));
                 if ts.len() < 2 {
                     return vec![];
                 }
-                let click_angle = (pt.y as f64 - cy).atan2(pt.x as f64 - cx);
+                let click_angle = (pt.y - cy).atan2(pt.x - cx);
                 let t_click = arc_t(click_angle, 0.0, TAU);
                 let survivors = trim_circle(c, &ts, t_click);
                 if survivors.is_empty() {
@@ -4440,11 +5085,13 @@ impl CadCommand for TrimCommand {
                 let bx = r.base_point.x;
                 let by = r.base_point.y;
                 let curve = ray_curve(r);
-                let ts = cut_params(&curve, handle, geos);
+                let ts = hover_cuts
+                    .clone()
+                    .unwrap_or_else(|| cut_params(&curve, handle, geos));
                 if ts.is_empty() {
                     return vec![];
                 }
-                let t_click = curve.parameter_at([pt.x as f64, pt.y as f64]);
+                let t_click = curve.parameter_at([pt.x, pt.y]);
                 let survivors = trim_ray(r, &ts, t_click);
                 // Show a finite preview section (20 units) for the original ray
                 let far = [
@@ -4471,11 +5118,13 @@ impl CadCommand for TrimCommand {
                 let bx = x.base_point.x;
                 let by = x.base_point.y;
                 let curve = xline_curve(x);
-                let ts = cut_params(&curve, handle, geos);
+                let ts = hover_cuts
+                    .clone()
+                    .unwrap_or_else(|| cut_params(&curve, handle, geos));
                 if ts.is_empty() {
                     return vec![];
                 }
-                let t_click = curve.parameter_at([pt.x as f64, pt.y as f64]);
+                let t_click = curve.parameter_at([pt.x, pt.y]);
                 let survivors = trim_xline(x, &ts, t_click);
                 let neg = [
                     (bx - x.direction.x * 20.0) as f32,
@@ -4516,12 +5165,14 @@ impl CadCommand for TrimCommand {
                 if t1 <= t0 {
                     t1 += TAU;
                 }
-                let ts = ellipse_seg_ts(e.center.x, e.center.y, a, b, nx, ny, t0, t1, handle, geos);
+                let ts = hover_cuts.clone().unwrap_or_else(|| {
+                    ellipse_seg_ts(e.center.x, e.center.y, a, b, nx, ny, t0, t1, handle, geos)
+                });
                 if ts.is_empty() {
                     return vec![];
                 }
-                let rx = pt.x as f64 - e.center.x;
-                let ry = pt.y as f64 - e.center.y;
+                let rx = pt.x - e.center.x;
+                let ry = pt.y - e.center.y;
                 let xl = rx * nx + ry * ny;
                 let yl = -rx * ny + ry * nx;
                 let t_ell = ellipse_closest_parameter(a, b, xl, yl);
@@ -4543,11 +5194,13 @@ impl CadCommand for TrimCommand {
                 out
             }
             Some(EntityType::Spline(s)) => {
-                let ts = spline_seg_ts(s, handle, geos);
+                let ts = hover_cuts
+                    .clone()
+                    .unwrap_or_else(|| spline_seg_ts(s, handle, geos));
                 if ts.is_empty() {
                     return vec![];
                 }
-                let t_click = spline_nearest_t(s, pt.x as f64, pt.y as f64)
+                let t_click = spline_nearest_t(s, pt.x, pt.y)
                     .and_then(|t_actual| {
                         let (t0, t1) = spline_range(s)?;
                         Some(t_to_rel(t_actual, t0, t1))
@@ -4570,23 +5223,48 @@ impl CadCommand for TrimCommand {
             }
             Some(EntityType::Hatch(hatch)) => {
                 if hatch_is_standalone_circle(hatch) {
-                    return hatch.paths.iter().enumerate().filter_map(|(index, path)| {
-                        let mut points = crate::scene::hatch_path_ring(path)?;
-                        points.push(*points.first()?);
-                        Some(WireModel::solid_f64(
-                            format!("trim_hatch_erase_{index}"),
-                            points.into_iter().map(|p| [p[0], p[1], hatch.elevation]).collect(),
-                            TRIM_REMOVE_GRAY,
-                            false,
-                        ))
-                    }).collect();
+                    return hatch
+                        .paths
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, path)| {
+                            let mut points = crate::scene::hatch_path_ring(path)?;
+                            points.push(*points.first()?);
+                            Some(WireModel::solid_f64(
+                                format!("trim_hatch_erase_{index}"),
+                                points
+                                    .into_iter()
+                                    .map(|p| [p[0], p[1], hatch.elevation])
+                                    .collect(),
+                                TRIM_REMOVE_GRAY,
+                                false,
+                            ))
+                        })
+                        .collect();
                 }
-                self.hatch_trim_at(handle, pt)
+                let started = crate::perf::enabled().then(iced::time::Instant::now);
+                let preview = self
+                    .hatch_trim_at(handle, pt)
                     .map(|trim| trim.preview_wires())
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                let ms = crate::perf::elapsed_ms(started);
+                if ms >= 8.0 {
+                    crate::perf_record!("[perf] trim-hover-hatch {ms:.2}ms");
+                }
+                preview
             }
             Some(EntityType::LwPolyline(p)) => {
-                let Some(survivors) = trim_lwpolyline(p, pt.x as f64, pt.y as f64, geos) else {
+                let started = crate::perf::enabled().then(iced::time::Instant::now);
+                let result = if let Some(cuts) = hover_cuts.as_ref() {
+                    trim_lwpolyline_with_cuts(p, pt.x, pt.y, cuts)
+                } else {
+                    trim_lwpolyline(p, pt.x, pt.y, geos)
+                };
+                let ms = crate::perf::elapsed_ms(started);
+                if ms >= 8.0 {
+                    crate::perf_record!("[perf] trim-hover-polyline {ms:.2}ms");
+                }
+                let Some(survivors) = result else {
                     return vec![];
                 };
                 let orig = WireModel::solid(
@@ -4618,6 +5296,14 @@ impl CadCommand for TrimCommand {
                 let cuts = piece_cut_points(orig, &pieces);
                 hover_wires.extend(implied_cut_guides(&self.all_entities, handle, &cuts));
             }
+        }
+        let hover_ms = crate::perf::elapsed_ms(hover_started);
+        if hover_ms >= 8.0 {
+            crate::perf_record!(
+                "[perf] trim-hover-total {hover_ms:.2}ms cached_cuts={} wires={}",
+                hover_cuts.is_some(),
+                hover_wires.len(),
+            );
         }
         hover_wires
     }
@@ -4658,6 +5344,7 @@ impl CadCommand for TrimCommand {
                 fpts.push([pt.x, pt.y]);
                 out.extend(fence_result_preview(
                     &self.all_entities,
+                    &self.entity_index,
                     &self.geos,
                     &fpts,
                     None,
@@ -4677,6 +5364,7 @@ impl CadCommand for TrimCommand {
                 };
                 out.extend(fence_result_preview(
                     &self.all_entities,
+                    &self.entity_index,
                     &self.geos,
                     &rect,
                     Some(window),
@@ -4821,7 +5509,14 @@ impl ExtendCommand {
 
     fn fence_run(&mut self, fence: &[[f64; 2]], window: Option<CrossingWindow>) -> CmdResult {
         // EXTEND's fence extends; Shift held at Enter swaps it to trim.
-        let replacements = fence_pass(&self.all_entities, &self.geos, fence, window, !self.shift);
+        let replacements = fence_pass(
+            &self.all_entities,
+            &self.entity_index,
+            &self.geos,
+            fence,
+            window,
+            !self.shift,
+        );
         if replacements.is_empty() {
             return CmdResult::NeedPoint;
         }
@@ -4982,11 +5677,11 @@ impl CadCommand for ExtendCommand {
         }
     }
 
-    fn on_entity_replaced(&mut self, old: Handle, new_handles: &[codec::Handle]) {
+    fn on_entity_replaced(&mut self, old: Handle, new_handles: &[document::Handle]) {
         self.on_entities_replaced(&[(old, new_handles.to_vec())]);
     }
 
-    fn on_entities_replaced(&mut self, replacements: &[(Handle, Vec<codec::Handle>)]) {
+    fn on_entities_replaced(&mut self, replacements: &[(Handle, Vec<document::Handle>)]) {
         let mut rebuild = false;
         for (old, new_handles) in replacements {
             let snapshot = Snapshot {
@@ -5019,9 +5714,10 @@ impl CadCommand for ExtendCommand {
         }
         // A 20 Hz geometric update keeps the live box responsive without
         // intersecting every visible edge on each raw mouse move.
-        if self.box_preview_at.is_some_and(|at| {
-            at.elapsed() < std::time::Duration::from_millis(50)
-        }) {
+        if self
+            .box_preview_at
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(50))
+        {
             return Some(self.box_preview_wires.clone());
         }
         let window = window.map(|(min, max)| CrossingWindow { min, max });
@@ -5034,7 +5730,13 @@ impl CadCommand for ExtendCommand {
             .filter_map(|&handle| self.entity_index.get(&self.all_entities, handle).cloned())
             .collect();
         let replacements = extend_box_pass(
-            &entities, &self.geos, &self.edge_set, fence, window, crossing,
+            &entities,
+            &self.entity_index,
+            &self.geos,
+            &self.edge_set,
+            fence,
+            window,
+            crossing,
         );
         let mut preview = Vec::new();
         for (handle, extended) in replacements {
@@ -5043,7 +5745,11 @@ impl CadCommand for ExtendCommand {
             };
             for entity in extended {
                 preview.extend(extend_hover_wires(
-                    original, &entity, &self.all_entities, handle, self.implied_edges,
+                    original,
+                    &entity,
+                    &self.all_entities,
+                    handle,
+                    self.implied_edges,
                 ));
             }
         }
@@ -5067,16 +5773,14 @@ impl CadCommand for ExtendCommand {
         let window = window.map(|(min, max)| CrossingWindow { min, max });
         match self.mode {
             TrimMode::SelectEdges => {
-                let handles = drag_selected_handles(&self.all_entities, fence, window, crossing);
-                if self.shift {
-                    self.edge_set.retain(|handle| !handles.contains(handle));
-                } else {
-                    for handle in handles {
-                        if !self.edge_set.contains(&handle) {
-                            self.edge_set.push(handle);
-                        }
-                    }
-                }
+                let handles = drag_selected_handles(
+                    &self.all_entities,
+                    &self.entity_index,
+                    fence,
+                    window,
+                    crossing,
+                );
+                update_trim_edge_set(&mut self.edge_set, handles, self.shift);
                 Some(CmdResult::NeedPoint)
             }
             TrimMode::Pick => {
@@ -5086,6 +5790,7 @@ impl CadCommand for ExtendCommand {
                 }
                 let replacements = extend_box_pass(
                     &self.all_entities,
+                    &self.entity_index,
                     &self.geos,
                     &self.edge_set,
                     fence,
@@ -5187,7 +5892,7 @@ impl CadCommand for ExtendCommand {
                 let dy = by - ay;
                 let len2 = dx * dx + dy * dy;
                 let t_click = if len2 > 1e-12 {
-                    ((pt.x as f64 - ax) * dx + (pt.y as f64 - ay) * dy) / len2
+                    ((pt.x - ax) * dx + (pt.y - ay) * dy) / len2
                 } else {
                     0.5
                 };
@@ -5202,7 +5907,7 @@ impl CadCommand for ExtendCommand {
                 }
             }
             Some(EntityType::Arc(a)) => {
-                let ang = (pt.y as f64 - a.center.y).atan2(pt.x as f64 - a.center.x);
+                let ang = (pt.y - a.center.y).atan2(pt.x - a.center.x);
                 let t_click = arc_t(ang, a.start_angle, a.end_angle);
                 if let Some(ext) = extend_arc(a, t_click, &self.geos) {
                     return extend_hover_wires(
@@ -5225,8 +5930,8 @@ impl CadCommand for ExtendCommand {
                         if t1 <= t0 {
                             t1 += TAU;
                         }
-                        let rx = pt.x as f64 - e.center.x;
-                        let ry = pt.y as f64 - e.center.y;
+                        let rx = pt.x - e.center.x;
+                        let ry = pt.y - e.center.y;
                         let xl = rx * nx + ry * ny;
                         let yl = -rx * ny + ry * nx;
                         let t_ell = ellipse_closest_parameter(a, b, xl, yl);
@@ -5244,7 +5949,7 @@ impl CadCommand for ExtendCommand {
                 }
             }
             Some(EntityType::LwPolyline(p)) => {
-                if let Some(ext) = extend_lwpoly(p, pt.x as f64, pt.y as f64, &self.geos) {
+                if let Some(ext) = extend_lwpoly(p, pt.x, pt.y, &self.geos) {
                     return extend_hover_wires(
                         &EntityType::LwPolyline(p.clone()),
                         &ext,
@@ -5255,7 +5960,7 @@ impl CadCommand for ExtendCommand {
                 }
             }
             Some(EntityType::Spline(s)) => {
-                let t_click = spline_nearest_t(s, pt.x as f64, pt.y as f64)
+                let t_click = spline_nearest_t(s, pt.x, pt.y)
                     .and_then(|t_actual| {
                         let (t0, t1) = spline_range(s)?;
                         Some(t_to_rel(t_actual, t0, t1))
@@ -5309,6 +6014,7 @@ impl CadCommand for ExtendCommand {
                 fpts.push([pt.x, pt.y]);
                 out.extend(fence_result_preview(
                     &self.all_entities,
+                    &self.entity_index,
                     &self.geos,
                     &fpts,
                     None,
@@ -5328,6 +6034,7 @@ impl CadCommand for ExtendCommand {
                 };
                 out.extend(fence_result_preview(
                     &self.all_entities,
+                    &self.entity_index,
                     &self.geos,
                     &rect,
                     Some(window),
@@ -5384,19 +6091,20 @@ mod tests {
     use super::*;
     use std::f64::consts::PI;
 
-    fn rect_hatch(handle: u64, associative: bool) -> codec::entities::Hatch {
-        use codec::entities::{BoundaryEdge, BoundaryPath, PolylineEdge};
-        use codec::types::Vector2;
-        let mut hatch = codec::entities::Hatch::new();
+    fn rect_hatch(handle: u64, associative: bool) -> document::entities::Hatch {
+        use document::entities::{BoundaryEdge, BoundaryPath, PolylineEdge};
+        use document::types::Vector2;
+        let mut hatch = document::entities::Hatch::new();
         hatch.common.handle = Handle::new(handle);
         hatch.is_associative = associative;
         hatch.is_solid = true;
-        let corners = [
-            [0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0],
-        ];
+        let corners = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
         let mut boundary = BoundaryPath::new();
         boundary.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(
-            corners.into_iter().map(|p| Vector2::new(p[0], p[1])).collect(),
+            corners
+                .into_iter()
+                .map(|p| Vector2::new(p[0], p[1]))
+                .collect(),
             true,
         )));
         if associative {
@@ -5407,15 +6115,233 @@ mod tests {
         hatch
     }
 
-    fn add_rect_hole(hatch: &mut codec::entities::Hatch, xmin: f64, ymin: f64, xmax: f64, ymax: f64) {
-        use codec::entities::{BoundaryEdge, BoundaryPath, PolylineEdge};
-        use codec::types::Vector2;
+    fn add_rect_hole(
+        hatch: &mut document::entities::Hatch,
+        xmin: f64,
+        ymin: f64,
+        xmax: f64,
+        ymax: f64,
+    ) {
+        use document::entities::{BoundaryEdge, BoundaryPath, PolylineEdge};
+        use document::types::Vector2;
         let points = [[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]];
         let mut hole = BoundaryPath::new();
         hole.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(
-            points.into_iter().map(|p| Vector2::new(p[0], p[1])).collect(), true,
+            points
+                .into_iter()
+                .map(|p| Vector2::new(p[0], p[1]))
+                .collect(),
+            true,
         )));
         hatch.paths.push(hole);
+    }
+
+    #[test]
+    fn trim_hover_spatial_index_is_lazily_cached_and_invalidated_on_rebuild() {
+        let target = xline_at(0.0, 0.0, 10.0, 0.0, 1);
+        let cutter = xline_at(5.0, -5.0, 5.0, 5.0, 2);
+        let mut command = TrimCommand::new(vec![target, cutter]);
+        assert!(command.geo_spatial.borrow().is_none());
+        let nearby = command.nearby_geos(Handle::new(1));
+        assert!(!nearby.is_empty());
+        assert!(command.geo_spatial.borrow().is_some());
+        command.rebuild_geos();
+        assert!(command.geo_spatial.borrow().is_none());
+    }
+
+    #[test]
+    fn spatial_cut_index_retains_remote_unbounded_edges_but_omits_distant_lines() {
+        let mut geos = vec![Geo::Line {
+            handle: Handle::new(11),
+            p1: [5.0, -1.0],
+            p2: [5.0, 1.0],
+        }];
+        for index in 0..2_000u64 {
+            let x = 100.0 + index as f64;
+            geos.push(Geo::Line {
+                handle: Handle::new(index + 100),
+                p1: [x, 10.0],
+                p2: [x, 20.0],
+            });
+        }
+        geos.push(Geo::InfLine {
+            handle: Handle::new(20_000),
+            bx: 1000.0,
+            by: 1000.0,
+            dx: 0.0,
+            dy: 1.0,
+        });
+        let index = TrimAabbIndex::new(geos.iter().map(trim_geo_aabb));
+        let nearby = index.overlapping([0.0, -2.0, 10.0, 2.0]);
+        assert_eq!(nearby, vec![0, geos.len() - 1]);
+        let retained: Vec<_> = nearby.into_iter().map(|slot| geos[slot].clone()).collect();
+        assert_eq!(
+            line_seg_ts(0.0, 0.0, 10.0, 0.0, Handle::new(1), &retained),
+            line_seg_ts(0.0, 0.0, 10.0, 0.0, Handle::new(1), &geos),
+        );
+    }
+
+    #[test]
+    fn indexed_lowpoly_cut_matches_crossing_positions_with_thousands_of_edges() {
+        let mut poly = LwPolyline::new();
+        poly.common.handle = Handle::new(1);
+        poly.vertices = (0..=200)
+            .map(|x| LwVertex::from_coords(x as f64, 0.0))
+            .collect();
+        let mut geos = vec![
+            Geo::Line {
+                handle: Handle::new(2),
+                p1: [35.5, -3.0],
+                p2: [35.5, 3.0],
+            },
+            Geo::Line {
+                handle: Handle::new(3),
+                p1: [155.5, -3.0],
+                p2: [155.5, 3.0],
+            },
+        ];
+        for index in 0..2_000u64 {
+            let x = 400.0 + index as f64;
+            geos.push(Geo::Line {
+                handle: Handle::new(index + 100),
+                p1: [x, -1.0],
+                p2: [x, 1.0],
+            });
+        }
+        let cuts = lwpoly_cut_params(&poly, &geos);
+        assert_eq!(cuts.len(), 2);
+        assert!((cuts[0] - 35.5).abs() < 1e-7);
+        assert!((cuts[1] - 155.5).abs() < 1e-7);
+    }
+
+    #[test]
+    fn indexed_self_intersection_preserves_nonadjacent_bowtie_crossings() {
+        let mut poly = LwPolyline::new();
+        poly.common.handle = Handle::new(1);
+        poly.vertices = [[0.0, 0.0], [2.0, 2.0], [0.0, 2.0], [2.0, 0.0]]
+            .into_iter()
+            .map(|xy| LwVertex::from_coords(xy[0], xy[1]))
+            .collect();
+        let geos = vec![Geo::Line {
+            handle: poly.common.handle,
+            p1: [0.0, 0.0],
+            p2: [2.0, 2.0],
+        }];
+        assert_eq!(lwpoly_self_cut_params(&poly, &geos), vec![0.5, 2.5]);
+    }
+
+    #[test]
+    fn broadphase_trim_keeps_real_crossings_and_discards_distant_lines() {
+        let target = Curve::Line(KernelLine {
+            start: [0.0, 0.0],
+            end: [10.0, 0.0],
+        });
+        let mut geos = vec![Geo::Line {
+            handle: Handle::new(2),
+            p1: [5.0, -3.0],
+            p2: [5.0, 3.0],
+        }];
+        for n in 0..1000 {
+            let x = 100.0 + n as f64;
+            geos.push(Geo::Line {
+                handle: Handle::new(n + 3),
+                p1: [x, -1.0],
+                p2: [x, 1.0],
+            });
+        }
+        let cuts = cut_params(&target, Handle::new(1), &geos);
+        assert_eq!(cuts.len(), 1);
+        assert!((cuts[0] - 0.5).abs() < 1e-8);
+        assert_eq!(
+            trim_target_bounds(&Curve::Ray(KernelRay {
+                origin: [0.0, 0.0],
+                direction: [1.0, 0.0],
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn hover_cut_cache_reuses_cuts_and_clears_on_boundary_rebuild() {
+        let all = vec![
+            xline_at(0.0, 5.0, 10.0, 5.0, 1),
+            xline_at(5.0, -5.0, 5.0, 15.0, 2),
+        ];
+        let mut cmd = TrimCommand::new(all);
+        let target = Handle::new(1);
+        let first = cmd.cached_hover_cut_params(target).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(cmd.hover_cut_cache.contains_key(&target));
+        assert_eq!(first, cmd.cached_hover_cut_params(target).unwrap());
+
+        cmd.all_entities[1] = xline_at(50.0, -5.0, 50.0, 15.0, 2);
+        cmd.rebuild_geos();
+        assert!(cmd.hover_cut_cache.is_empty());
+        assert!(cmd.cached_hover_cut_params(target).unwrap().is_empty());
+    }
+
+    #[test]
+    fn coincident_line_boundaries_produce_one_cut_even_with_reversed_duplicates() {
+        let all = vec![
+            xline_at(0.0, 5.0, 10.0, 5.0, 1),
+            xline_at(5.0, -5.0, 5.0, 15.0, 2),
+            xline_at(5.0, -5.0, 5.0, 15.0, 3),
+            xline_at(5.0, 15.0, 5.0, -5.0, 4),
+        ];
+        let geos = build_geos(&all);
+        let cuts = line_seg_ts(0.0, 5.0, 10.0, 5.0, Handle::new(1), &geos);
+        assert_eq!(cuts.len(), 1, "duplicate cutters should create one cut");
+        assert!((cuts[0] - 0.5).abs() < 1e-8);
+    }
+
+    #[test]
+    fn fence_candidates_skip_far_entities_without_losing_long_crossing_lines() {
+        let all = vec![
+            xline_at(-100.0, 5.0, 100.0, 5.0, 1),
+            xline_at(3.0, 3.0, 8.0, 8.0, 2),
+            xline_at(500.0, 500.0, 600.0, 600.0, 3),
+        ];
+        let index = ModifyEntityIndex::build(&all);
+        let window = CrossingWindow {
+            min: [0.0, 0.0],
+            max: [10.0, 10.0],
+        };
+        let hits = trim_fence_candidates(&index, &[], Some(window)).unwrap();
+        assert!(hits.contains(&Handle::new(1)));
+        assert!(hits.contains(&Handle::new(2)));
+        assert!(!hits.contains(&Handle::new(3)));
+    }
+
+    #[test]
+    fn crowded_crossing_preview_is_skipped_but_does_not_affect_final_cut() {
+        let mut all: Vec<_> = (0..70)
+            .map(|i| {
+                xline_at(
+                    -2.0,
+                    1.0 + i as f64 * 0.1,
+                    12.0,
+                    1.0 + i as f64 * 0.1,
+                    i + 1,
+                )
+            })
+            .collect();
+        all.push(xline_at(5.0, -2.0, 5.0, 12.0, 100));
+        let index = ModifyEntityIndex::build(&all);
+        let geos = build_geos(&all);
+        let window = CrossingWindow {
+            min: [1.0, 1.0],
+            max: [9.0, 9.0],
+        };
+        let fence = [[1.0, 1.0], [9.0, 1.0], [9.0, 9.0], [1.0, 9.0], [1.0, 1.0]];
+        assert!(
+            fence_result_preview(&all, &index, &geos, &fence, Some(window), false, false)
+                .is_empty()
+        );
+        let replacements = fence_pass(&all, &index, &geos, &fence, Some(window), false);
+        assert!(
+            !replacements.is_empty(),
+            "actual TRIM must not inherit the preview cap"
+        );
     }
 
     #[test]
@@ -5425,14 +6351,18 @@ mod tests {
         let all = vec![EntityType::Hatch(Box::new(hatch.clone())), boundary];
         let mut cmd = TrimCommand::new(all);
         assert!(cmd.entity_pick_includes_fills());
-        assert!(!cmd.on_hover_entity(Handle::new(1), DVec3::new(2.0, 5.0, 0.0)).is_empty());
-        let CmdResult::ReplaceEntity(handle, edited) = cmd.on_entity_pick(
-            Handle::new(1), DVec3::new(2.0, 5.0, 0.0),
-        ) else {
+        assert!(!cmd
+            .on_hover_entity(Handle::new(1), DVec3::new(2.0, 5.0, 0.0))
+            .is_empty());
+        let CmdResult::ReplaceEntity(handle, edited) =
+            cmd.on_entity_pick(Handle::new(1), DVec3::new(2.0, 5.0, 0.0))
+        else {
             panic!("TRIM should clip a picked hatch");
         };
         assert_eq!(handle, Handle::new(1));
-        let EntityType::Hatch(trimmed) = &edited[0] else { panic!("HATCH expected"); };
+        let EntityType::Hatch(trimmed) = &edited[0] else {
+            panic!("HATCH expected");
+        };
         assert!(!trimmed.is_associative);
         assert!(trimmed.paths.iter().all(|p| p.boundary_handles.is_empty()));
         assert_eq!(trimmed.common.handle, Handle::new(1));
@@ -5449,7 +6379,9 @@ mod tests {
         let mut hatch = rect_hatch(1, false);
         add_rect_hole(&mut hatch, 6.0, 3.0, 8.0, 7.0);
         let cutter = [Geo::Line {
-            handle: Handle::new(50), p1: [5.0, -2.0], p2: [5.0, 12.0],
+            handle: Handle::new(50),
+            p1: [5.0, -2.0],
+            p2: [5.0, 12.0],
         }];
         let kept = trim_hatch_at(&hatch, &cutter, 2.0, 5.0).expect("hole retained");
         assert_eq!(kept.paths.len(), 2);
@@ -5464,15 +6396,21 @@ mod tests {
         use std::f64::consts::PI;
         let hatch = rect_hatch(1, true);
         let cutter = [Geo::Circle {
-            handle: Handle::new(70), cx: 5.0, cy: 5.0, r: 3.0,
+            handle: Handle::new(70),
+            cx: 5.0,
+            cy: 5.0,
+            r: 3.0,
         }];
-        let result = trim_hatch_at(&hatch, &cutter, 5.0, 5.0)
-            .expect("circle inside hatch must make a hole");
+        let result =
+            trim_hatch_at(&hatch, &cutter, 5.0, 5.0).expect("circle inside hatch must make a hole");
         assert_eq!(result.paths.len(), 2);
         assert!(!result.is_associative);
-        assert!(result.paths.iter().all(|path| path.boundary_handles.is_empty()));
+        assert!(result
+            .paths
+            .iter()
+            .all(|path| path.boundary_handles.is_empty()));
         assert!(matches!(result.paths[1].edges.first(),
-            Some(codec::entities::BoundaryEdge::CircularArc(arc))
+            Some(document::entities::BoundaryEdge::CircularArc(arc))
                 if arc.counter_clockwise && (arc.end_angle - arc.start_angle - std::f64::consts::TAU).abs() < 1e-9));
         assert!((crate::entities::hatch::boundary_area(&result) - (100.0 - PI * 9.0)).abs() < 1e-5);
         let render = crate::scene::Scene::hatch_model_from_dxf(&result, [1.0; 4])
@@ -5484,15 +6422,24 @@ mod tests {
     fn trim_circle_intersecting_side_creates_exact_arc_notch() {
         let hatch = rect_hatch(1, false);
         let cutter = [Geo::Circle {
-            handle: Handle::new(70), cx: 10.5, cy: 5.0, r: 3.0,
+            handle: Handle::new(70),
+            cx: 10.5,
+            cy: 5.0,
+            r: 3.0,
         }];
         let result = trim_hatch_at(&hatch, &cutter, 9.0, 5.0)
             .expect("circle crossing one side must cut a curved notch");
         assert_eq!(result.paths.len(), 1);
-        let arcs: Vec<_> = result.paths[0].edges.iter().filter_map(|edge| {
-            let codec::entities::BoundaryEdge::CircularArc(arc) = edge else { return None; };
-            Some(arc)
-        }).collect();
+        let arcs: Vec<_> = result.paths[0]
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                let document::entities::BoundaryEdge::CircularArc(arc) = edge else {
+                    return None;
+                };
+                Some(arc)
+            })
+            .collect();
         assert_eq!(arcs.len(), 1);
         assert!((arcs[0].center.x - 10.5).abs() < 1e-9);
         assert!((arcs[0].radius - 3.0).abs() < 1e-9);
@@ -5514,14 +6461,19 @@ mod tests {
         let mut cmd = TrimCommand::with_cutting_edges(all, vec![Handle::new(70)]);
         assert!(cmd.entity_pick_includes_fills());
         let preview = cmd.on_hover_entity(Handle::new(1), DVec3::new(5.0, 5.0, 0.0));
-        assert!(!preview.is_empty(), "circle cutter must produce hatch hover preview");
-        let CmdResult::ReplaceEntity(handle, results) = cmd.on_entity_pick(
-            Handle::new(1), DVec3::new(5.0, 5.0, 0.0),
-        ) else {
+        assert!(
+            !preview.is_empty(),
+            "circle cutter must produce hatch hover preview"
+        );
+        let CmdResult::ReplaceEntity(handle, results) =
+            cmd.on_entity_pick(Handle::new(1), DVec3::new(5.0, 5.0, 0.0))
+        else {
             panic!("circle cutting edge must trim the picked hatch");
         };
         assert_eq!(handle, Handle::new(1));
-        let EntityType::Hatch(hatch) = &results[0] else { panic!("hatch expected"); };
+        let EntityType::Hatch(hatch) = &results[0] else {
+            panic!("hatch expected");
+        };
         assert_eq!(hatch.paths.len(), 2);
     }
 
@@ -5530,40 +6482,51 @@ mod tests {
         use std::f64::consts::PI;
         let source = rect_hatch(1, true);
         let circle = [Geo::Circle {
-            handle: Handle::new(70), cx: 7.0, cy: 7.0, r: 1.0,
+            handle: Handle::new(70),
+            cx: 7.0,
+            cy: 7.0,
+            r: 1.0,
         }];
-        let cut_circle = trim_hatch_at(&source, &circle, 7.0, 7.0)
-            .expect("first trim must make a round hole");
+        let cut_circle =
+            trim_hatch_at(&source, &circle, 7.0, 7.0).expect("first trim must make a round hole");
         assert_eq!(cut_circle.paths.len(), 2);
         let line = [Geo::Line {
-            handle: Handle::new(71), p1: [5.0, -1.0], p2: [5.0, 11.0],
+            handle: Handle::new(71),
+            p1: [5.0, -1.0],
+            p2: [5.0, 11.0],
         }];
         let cut_line = trim_hatch_at(&cut_circle, &line, 2.0, 5.0)
             .expect("next trim by line must retain round hole");
         assert_eq!(cut_line.paths.len(), 2);
-        assert!(matches!(cut_line.paths[1].edges.first(),
-            Some(codec::entities::BoundaryEdge::CircularArc(_))));
-        assert!((crate::entities::hatch::boundary_area(&cut_line)
-            - (50.0 - PI)).abs() < 1.0e-5);
+        assert!(matches!(
+            cut_line.paths[1].edges.first(),
+            Some(document::entities::BoundaryEdge::CircularArc(_))
+        ));
+        assert!((crate::entities::hatch::boundary_area(&cut_line) - (50.0 - PI)).abs() < 1.0e-5);
     }
 
     #[test]
     fn line_trim_after_circular_notch_keeps_exact_analytic_arc() {
         let source = rect_hatch(1, false);
         let circle = [Geo::Circle {
-            handle: Handle::new(70), cx: 10.5, cy: 5.0, r: 3.0,
+            handle: Handle::new(70),
+            cx: 10.5,
+            cy: 5.0,
+            r: 3.0,
         }];
-        let notch = trim_hatch_at(&source, &circle, 9.0, 5.0)
-            .expect("first trim must create arc notch");
+        let notch =
+            trim_hatch_at(&source, &circle, 9.0, 5.0).expect("first trim must create arc notch");
         let original_area = crate::entities::hatch::boundary_area(&notch);
         let line = [Geo::Line {
-            handle: Handle::new(71), p1: [3.0, -1.0], p2: [3.0, 11.0],
+            handle: Handle::new(71),
+            p1: [3.0, -1.0],
+            p2: [3.0, 11.0],
         }];
         let trimmed = trim_hatch_at(&notch, &line, 1.0, 5.0)
             .expect("subsequent line must trim the already notched hatch");
         assert_eq!(trimmed.paths.len(), 1);
         assert!(trimmed.paths[0].edges.iter().any(|edge| matches!(
-            edge, codec::entities::BoundaryEdge::CircularArc(arc)
+            edge, document::entities::BoundaryEdge::CircularArc(arc)
                 if (arc.center.x - 10.5).abs() < 1.0e-9
                     && (arc.radius - 3.0).abs() < 1.0e-9
         )));
@@ -5574,15 +6537,17 @@ mod tests {
 
     #[test]
     fn trim_click_erases_standalone_circular_hatch_not_plain_rectangle() {
-        use codec::entities::{BoundaryEdge, BoundaryPath, CircularArcEdge};
-        use codec::types::Vector2;
-        let mut round = codec::entities::Hatch::new();
+        use document::entities::{BoundaryEdge, BoundaryPath, CircularArcEdge};
+        use document::types::Vector2;
+        let mut round = document::entities::Hatch::new();
         round.common.handle = Handle::new(90);
         round.is_solid = true;
         let mut path = BoundaryPath::new();
         path.add_edge(BoundaryEdge::CircularArc(CircularArcEdge {
-            center: Vector2::new(5.0, 5.0), radius: 3.0,
-            start_angle: 0.0, end_angle: std::f64::consts::TAU,
+            center: Vector2::new(5.0, 5.0),
+            radius: 3.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::TAU,
             counter_clockwise: true,
         }));
         round.paths.push(path);
@@ -5592,16 +6557,21 @@ mod tests {
         ];
         let mut cmd = TrimCommand::new(all);
         cmd.mode = TrimMode::Pick;
-        assert!(!cmd.on_hover_entity(Handle::new(90), DVec3::new(5.0, 5.0, 0.0)).is_empty());
+        assert!(!cmd
+            .on_hover_entity(Handle::new(90), DVec3::new(5.0, 5.0, 0.0))
+            .is_empty());
         assert!(matches!(
             cmd.on_entity_pick(Handle::new(90), DVec3::new(5.0, 5.0, 0.0)),
             CmdResult::ReplaceEntity(handle, pieces)
                 if handle == Handle::new(90) && pieces.is_empty()
         ));
-        assert!(matches!(
-            cmd.on_entity_pick(Handle::new(91), DVec3::new(1.0, 1.0, 0.0)),
-            CmdResult::NeedPoint
-        ), "ordinary polygon hatch without cutting boundary must survive");
+        assert!(
+            matches!(
+                cmd.on_entity_pick(Handle::new(91), DVec3::new(1.0, 1.0, 0.0)),
+                CmdResult::NeedPoint
+            ),
+            "ordinary polygon hatch without cutting boundary must survive"
+        );
     }
 
     #[test]
@@ -5609,13 +6579,19 @@ mod tests {
         let mut hatch = rect_hatch(1, false);
         add_rect_hole(&mut hatch, 4.0, 4.0, 6.0, 6.0);
         let cutter = [Geo::Circle {
-            handle: Handle::new(70), cx: 5.0, cy: 5.0, r: 3.0,
+            handle: Handle::new(70),
+            cx: 5.0,
+            cy: 5.0,
+            r: 3.0,
         }];
         assert!(trim_hatch_at(&hatch, &cutter, 5.0, 5.0).is_none());
         let clean = rect_hatch(1, false);
         assert!(trim_hatch_at(&clean, &cutter, 1.0, 1.0).is_none());
         let outside = [Geo::Circle {
-            handle: Handle::new(70), cx: 20.0, cy: 20.0, r: 3.0,
+            handle: Handle::new(70),
+            cx: 20.0,
+            cy: 20.0,
+            r: 3.0,
         }];
         assert!(trim_hatch_at(&clean, &outside, 5.0, 5.0).is_none());
     }
@@ -5624,11 +6600,15 @@ mod tests {
     fn trim_hatch_rejects_cutter_that_does_not_span_boundary() {
         let hatch = rect_hatch(1, false);
         let too_short = [Geo::Line {
-            handle: Handle::new(50), p1: [5.0, 3.0], p2: [5.0, 7.0],
+            handle: Handle::new(50),
+            p1: [5.0, 3.0],
+            p2: [5.0, 7.0],
         }];
         assert!(trim_hatch_at(&hatch, &too_short, 2.0, 5.0).is_none());
         let tangent = [Geo::Line {
-            handle: Handle::new(50), p1: [10.0, -2.0], p2: [10.0, 12.0],
+            handle: Handle::new(50),
+            p1: [10.0, -2.0],
+            p2: [10.0, 12.0],
         }];
         assert!(trim_hatch_at(&hatch, &tangent, 2.0, 5.0).is_none());
     }
@@ -5657,17 +6637,31 @@ mod tests {
         cmd.edge_set = vec![Handle::new(100)];
         cmd.rebuild_geos();
         let fence = [
-            [-1.0, 3.0], [3.0, 3.0], [3.0, 6.0], [-1.0, 6.0], [-1.0, 3.0],
+            [-1.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 6.0],
+            [-1.0, 6.0],
+            [-1.0, 3.0],
         ];
         let window = Some(([-1.0, 3.0], [3.0, 6.0]));
-        let preview = cmd.on_drag_selection_preview(
-            &fence, window, true,
-            &[Handle::new(1), Handle::new(2), Handle::new(100)],
-        ).expect("EXTEND must preview crossing boxes");
+        let preview = cmd
+            .on_drag_selection_preview(
+                &fence,
+                window,
+                true,
+                &[Handle::new(1), Handle::new(2), Handle::new(100)],
+            )
+            .expect("EXTEND must preview crossing boxes");
         // Same cyan complete-object overlay and dashed added tail as a single
         // hover, once for every valid target (not for the cutting boundary).
-        assert_eq!(preview.iter().filter(|w| w.name == "extend_prev").count(), 2);
-        assert_eq!(preview.iter().filter(|w| w.name == "extend_tail").count(), 2);
+        assert_eq!(
+            preview.iter().filter(|w| w.name == "extend_prev").count(),
+            2
+        );
+        assert_eq!(
+            preview.iter().filter(|w| w.name == "extend_tail").count(),
+            2
+        );
         for wire in preview.iter().filter(|w| w.name == "extend_prev") {
             assert!(wire.points.iter().any(|p| (p[1] - 10.0).abs() < 1e-6));
         }
@@ -5696,7 +6690,11 @@ mod tests {
         cmd.edge_set = vec![Handle::new(100)];
         cmd.rebuild_geos();
         let fence = [
-            [-0.5, 1.5], [4.5, 1.5], [4.5, 6.0], [-0.5, 6.0], [-0.5, 1.5],
+            [-0.5, 1.5],
+            [4.5, 1.5],
+            [4.5, 6.0],
+            [-0.5, 6.0],
+            [-0.5, 1.5],
         ];
         let CmdResult::ReplaceManyContinue(replacements) = cmd
             .on_drag_selection(&fence, Some(([-0.5, 1.5], [4.5, 6.0])), true)
@@ -5705,9 +6703,9 @@ mod tests {
             panic!("the crossing box must extend all selected lines");
         };
         assert_eq!(replacements.len(), 3);
-        assert!(replacements.iter().all(|(handle, _)|
-            *handle != Handle::new(4) && *handle != Handle::new(100)
-        ));
+        assert!(replacements
+            .iter()
+            .all(|(handle, _)| *handle != Handle::new(4) && *handle != Handle::new(100)));
         for (handle, entities) in replacements {
             let EntityType::Line(line) = &entities[0] else {
                 panic!("line expected");
@@ -5717,7 +6715,9 @@ mod tests {
                 assert!((line.end.y - 1.0).abs() < 1e-9);
             } else {
                 assert!((line.end.y - 10.0).abs() < 1e-9);
-                assert!((line.start.y - if handle == Handle::new(1) { 0.0 } else { 2.0 }).abs() < 1e-9);
+                assert!(
+                    (line.start.y - if handle == Handle::new(1) { 0.0 } else { 2.0 }).abs() < 1e-9
+                );
             }
         }
     }
@@ -5731,7 +6731,11 @@ mod tests {
         let mut cmd = ExtendCommand::new(lines);
         cmd.mode = TrimMode::Pick;
         let fence = [
-            [-1.0, 3.0], [3.0, 3.0], [3.0, 5.0], [-1.0, 5.0], [-1.0, 3.0],
+            [-1.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 5.0],
+            [-1.0, 5.0],
+            [-1.0, 3.0],
         ];
         assert!(matches!(
             cmd.on_drag_selection(&fence, Some(([-1.0, 3.0], [3.0, 5.0])), true),
@@ -5748,7 +6752,11 @@ mod tests {
         let mut cmd = ExtendCommand::new(all);
         cmd.mode = TrimMode::Pick;
         let fence = [
-            [-0.5, 3.0], [0.5, 3.0], [0.5, 5.0], [-0.5, 5.0], [-0.5, 3.0],
+            [-0.5, 3.0],
+            [0.5, 3.0],
+            [0.5, 5.0],
+            [-0.5, 5.0],
+            [-0.5, 3.0],
         ];
         assert!(matches!(
             cmd.on_drag_selection(&fence, Some(([-0.5, 3.0], [0.5, 5.0])), false),
@@ -5770,7 +6778,13 @@ mod tests {
         let rectangle = [[1.0, 1.0], [5.0, 1.0], [5.0, 4.0], [1.0, 4.0], [1.0, 1.0]];
 
         assert_eq!(
-            drag_selected_handles(&entities, &rectangle, Some(window), false),
+            drag_selected_handles(
+                &entities,
+                &ModifyEntityIndex::build(&entities),
+                &rectangle,
+                Some(window),
+                false,
+            ),
             vec![Handle::new(1)]
         );
     }
@@ -5789,7 +6803,13 @@ mod tests {
         let rectangle = [[1.0, 1.0], [5.0, 1.0], [5.0, 4.0], [1.0, 4.0], [1.0, 1.0]];
 
         assert_eq!(
-            drag_selected_handles(&entities, &rectangle, Some(window), true),
+            drag_selected_handles(
+                &entities,
+                &ModifyEntityIndex::build(&entities),
+                &rectangle,
+                Some(window),
+                true,
+            ),
             vec![Handle::new(1), Handle::new(2)]
         );
     }
@@ -5832,7 +6852,7 @@ mod tests {
 
     #[test]
     fn selected_legacy_polyline_boundary_has_visible_glow() {
-        use codec::entities::{Polyline2D, Vertex2D};
+        use document::entities::{Polyline2D, Vertex2D};
 
         let mut boundary = Polyline2D::new();
         boundary.vertices = vec![
@@ -5854,7 +6874,7 @@ mod tests {
 
     #[test]
     fn trim_can_select_a_polyline2d_as_cutting_edge() {
-        use codec::entities::{Polyline2D, Vertex2D};
+        use document::entities::{Polyline2D, Vertex2D};
 
         let target = xline_at(0.0, 0.0, 4.0, 0.0, 1);
         let mut boundary = Polyline2D::new();
@@ -5934,6 +6954,92 @@ mod tests {
     }
 
     #[test]
+    fn lightweight_polyline_hover_reuses_click_independent_cut_points() {
+        let mut poly = LwPolyline::new();
+        poly.common.handle = Handle::new(10);
+        poly.vertices = vec![
+            LwVertex::from_coords(0.0, 0.0),
+            LwVertex::from_coords(5.0, 0.0),
+            LwVertex::from_coords(10.0, 0.0),
+        ];
+        let all = vec![
+            EntityType::LwPolyline(poly.clone()),
+            xline_at(7.5, -1.0, 7.5, 1.0, 20),
+        ];
+        let geos = build_geos(&all);
+        let cuts = lwpoly_cut_params(&poly, &geos);
+        assert_eq!(cuts.len(), 1);
+
+        let direct_first = trim_lwpolyline(&poly, 2.0, 0.0, &geos).unwrap();
+        let cached_first = trim_lwpolyline_with_cuts(&poly, 2.0, 0.0, &cuts).unwrap();
+        assert_eq!(format!("{direct_first:?}"), format!("{cached_first:?}"));
+
+        let direct_second = trim_lwpolyline(&poly, 9.0, 0.0, &geos).unwrap();
+        let cached_second = trim_lwpolyline_with_cuts(&poly, 9.0, 0.0, &cuts).unwrap();
+        assert_eq!(format!("{direct_second:?}"), format!("{cached_second:?}"));
+
+        let mut command = TrimCommand::new(all);
+        assert_eq!(
+            command.cached_hover_cut_params(Handle::new(10)).unwrap(),
+            cuts
+        );
+        assert!(command.hover_cut_cache.contains_key(&Handle::new(10)));
+        assert_eq!(
+            command.cached_hover_cut_params(Handle::new(10)).unwrap(),
+            cuts
+        );
+    }
+
+    #[test]
+    fn virtual_block_reference_is_not_a_trim_hover_or_pick_target() {
+        let virtual_handle = Handle::new(90);
+        let mut command = TrimCommand::with_block_boundaries(
+            vec![xline_at(0.0, 5.0, 10.0, 5.0, 1)],
+            vec![(virtual_handle, vec![xline_at(5.0, 0.0, 5.0, 10.0, 101)])],
+            Vec::new(),
+        );
+        let point = DVec3::new(5.0, 5.0, 0.0);
+        assert!(command.on_hover_entity(virtual_handle, point).is_empty());
+        assert!(command.hover_cut_cache.is_empty());
+        assert!(matches!(
+            command.on_entity_pick(virtual_handle, point),
+            CmdResult::NeedPoint
+        ));
+        // The block is still a valid cutting boundary for a real LINE.
+        assert_eq!(
+            command
+                .cached_hover_cut_params(Handle::new(1))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn virtual_block_cutters_are_filtered_by_bounds_without_scanning_all_owners() {
+        let target = xline_at(0.0, 5.0, 10.0, 5.0, 1);
+        let near_handle = Handle::new(90);
+        let far_handle = Handle::new(91);
+        let command = TrimCommand::with_block_boundaries(
+            vec![target],
+            vec![
+                (near_handle, vec![xline_at(5.0, 0.0, 5.0, 10.0, 101)]),
+                (far_handle, vec![xline_at(500.0, 0.0, 500.0, 10.0, 102)]),
+            ],
+            Vec::new(),
+        );
+        assert!(command.block_boundary_owners.contains(&near_handle));
+        assert!(command.block_boundary_owners.contains(&far_handle));
+        let nearby = command.nearby_geos(Handle::new(1));
+        assert!(nearby.iter().any(|g| g.handle() == near_handle));
+        assert!(!nearby.iter().any(|g| g.handle() == far_handle));
+        assert_eq!(
+            line_seg_ts(0.0, 5.0, 10.0, 5.0, Handle::new(1), &nearby).len(),
+            1
+        );
+    }
+
+    #[test]
     fn trim_against_block_contents_keeps_only_the_clicked_block_interval() {
         let target = xline_at(0.0, 5.0, 10.0, 5.0, 1);
         let block_handle = Handle::new(90);
@@ -5952,10 +7058,9 @@ mod tests {
             command.quick = quick;
             command.mode = TrimMode::Pick;
 
-            let CmdResult::ReplaceEntity(handle, survivors) = command.on_entity_pick(
-                Handle::new(1),
-                DVec3::new(5.0, 5.0, 0.0),
-            ) else {
+            let CmdResult::ReplaceEntity(handle, survivors) =
+                command.on_entity_pick(Handle::new(1), DVec3::new(5.0, 5.0, 0.0))
+            else {
                 panic!("TRIM should cut against the block contents");
             };
             assert_eq!(handle, Handle::new(1));
@@ -6083,10 +7188,17 @@ mod tests {
         // A rejected edit (locked layer) never calls back: snapshot untouched.
         let trim_result = trim.fence_run(&[[8.0, -1.0], [8.0, 1.0]], None);
         assert!(matches!(trim_result, CmdResult::ReplaceManyContinue(_)));
-        assert!(trim.all_entities.iter().all(|e| !e.common().handle.is_null()));
+        assert!(trim
+            .all_entities
+            .iter()
+            .all(|e| !e.common().handle.is_null()));
         // An accepted one swaps in the pieces under their document handles.
         trim.on_entities_replaced(&[(Handle::new(1), vec![Handle::new(10)])]);
-        let handles: Vec<_> = trim.all_entities.iter().map(|e| e.common().handle).collect();
+        let handles: Vec<_> = trim
+            .all_entities
+            .iter()
+            .map(|e| e.common().handle)
+            .collect();
         assert_eq!(handles, vec![Handle::new(2), Handle::new(10)]);
 
         let extend_all = vec![
@@ -6099,7 +7211,11 @@ mod tests {
         assert!(matches!(extend_result, CmdResult::ReplaceManyContinue(_)));
         assert!(matches!(extend.mode, TrimMode::Pick));
         extend.on_entities_replaced(&[(Handle::new(1), vec![Handle::new(10)])]);
-        let handles: Vec<_> = extend.all_entities.iter().map(|e| e.common().handle).collect();
+        let handles: Vec<_> = extend
+            .all_entities
+            .iter()
+            .map(|e| e.common().handle)
+            .collect();
         assert_eq!(handles, vec![Handle::new(2), Handle::new(10)]);
     }
 
@@ -6171,7 +7287,7 @@ mod tests {
 
     #[test]
     fn polyline2d_bulge_segment_is_used_as_a_curved_trim_boundary() {
-        use codec::entities::{Polyline2D, Vertex2D};
+        use document::entities::{Polyline2D, Vertex2D};
 
         let target = xline_at(-2.0, 0.0, 4.0, 0.0, 1);
         let mut boundary = Polyline2D::new();
@@ -6195,7 +7311,7 @@ mod tests {
 
     #[test]
     fn extend_line_reaches_polyline2d_boundary() {
-        use codec::entities::{Polyline2D, Vertex2D};
+        use document::entities::{Polyline2D, Vertex2D};
 
         let target = xline_at(0.0, 0.0, 1.0, 0.0, 1);
         let mut boundary = Polyline2D::new();
@@ -6265,7 +7381,9 @@ mod tests {
 
         // This is the imported OCS case: the existing explode helper cannot
         // materialize world-XY segments, but the shared curve projection can.
-        assert!(crate::modules::draw::modify::explode::explode_polyline_segments(&boundary).is_empty());
+        assert!(
+            crate::modules::draw::modify::explode::explode_polyline_segments(&boundary).is_empty()
+        );
         let mut command = TrimCommand::new(vec![target, boundary]);
         command.quick = false;
         command.mode = TrimMode::SelectEdges;
@@ -6326,7 +7444,14 @@ mod tests {
                 targets[0].clone(),
             ],
         ] {
-            let replacements = fence_pass(&all, &build_geos(&all), &fence, None, false);
+            let replacements = fence_pass(
+                &all,
+                &ModifyEntityIndex::build(&all),
+                &build_geos(&all),
+                &fence,
+                None,
+                false,
+            );
             let mut actual: Vec<_> = replacements
                 .into_iter()
                 .map(|(handle, pieces)| {
@@ -6377,7 +7502,14 @@ mod tests {
             min: [1.0, 1.0],
             max: [9.0, 9.0],
         };
-        let replacements = fence_pass(&all, &build_geos(&all), &[], Some(window), false);
+        let replacements = fence_pass(
+            &all,
+            &ModifyEntityIndex::build(&all),
+            &build_geos(&all),
+            &[],
+            Some(window),
+            false,
+        );
         assert!(replacements
             .iter()
             .any(|(handle, _)| *handle == Handle::new(1)));
@@ -6482,7 +7614,14 @@ mod tests {
         ];
         let geos = build_geos(&all);
         let fence = [[8.0, 10.0], [10.0, 8.0]];
-        let repl = fence_pass(&all, &geos, &fence, None, false);
+        let repl = fence_pass(
+            &all,
+            &ModifyEntityIndex::build(&all),
+            &geos,
+            &fence,
+            None,
+            false,
+        );
         assert_eq!(
             repl.len(),
             1,
@@ -6804,7 +7943,7 @@ mod tests {
     /// two empty ends as equal and sliced the empty sample from index 1.
     #[test]
     fn sampling_skips_segments_with_no_plan_shape() {
-        use codec::entities::{Polyline3D, Vertex3DPolyline};
+        use document::entities::{Polyline3D, Vertex3DPolyline};
 
         let mut pl = Polyline3D::new();
         pl.vertices = vec![
@@ -6830,7 +7969,7 @@ mod tests {
     /// must keep dropping the duplicated seam vertex between two of them.
     #[test]
     fn sampling_still_joins_segments_at_their_seam() {
-        use codec::entities::{Polyline3D, Vertex3DPolyline};
+        use document::entities::{Polyline3D, Vertex3DPolyline};
 
         let mut pl = Polyline3D::new();
         pl.vertices = vec![
@@ -6850,7 +7989,7 @@ mod tests {
 
     #[test]
     fn preview_sampling_skips_edge_on_polyline2d_arc_segments() {
-        use codec::entities::{Polyline2D, Vertex2D};
+        use document::entities::{Polyline2D, Vertex2D};
 
         let mut pl = Polyline2D::new();
         let mut start = Vertex2D::new(Vector3::new(0.0, 0.0, 0.0));
@@ -6867,7 +8006,7 @@ mod tests {
 
     #[test]
     fn trim_circle_with_tangent_arcs_touching_at_endpoints() {
-        use codec::entities::{Arc as ArcEnt, Circle as CircleEnt};
+        use document::entities::{Arc as ArcEnt, Circle as CircleEnt};
         let mut c = CircleEnt::new();
         c.common.handle = Handle::new(1);
         c.center = Vector3::new(0.0, 0.0, 0.0);
@@ -6927,7 +8066,7 @@ mod tests {
 
     #[test]
     fn test_trim_circle_between_two_tangent_lines() {
-        use codec::entities::{Circle as CircleEnt, Line as LineEnt};
+        use document::entities::{Circle as CircleEnt, Line as LineEnt};
         let mut c = CircleEnt::new();
         c.common.handle = Handle::new(1);
         c.center = Vector3::new(0.0, 0.0, 0.0);
@@ -7087,7 +8226,7 @@ mod tests {
 
     #[test]
     fn trim_ellipse_with_tangent_arcs_touching_at_endpoints() {
-        use codec::entities::{Arc as ArcEnt, Ellipse as EllipseEnt};
+        use document::entities::{Arc as ArcEnt, Ellipse as EllipseEnt};
         let mut e = EllipseEnt::new();
         e.common.handle = Handle::new(10);
         e.center = Vector3::new(0.0, 0.0, 0.0);
@@ -7136,7 +8275,7 @@ mod tests {
 
     #[test]
     fn trim_ellipse_selection_tracking_near_breakpoint() {
-        use codec::entities::{Ellipse as EllipseEnt, Line as LineEnt};
+        use document::entities::{Ellipse as EllipseEnt, Line as LineEnt};
         use std::f64::consts::TAU;
 
         let mut e = EllipseEnt::new();
@@ -7244,7 +8383,7 @@ mod tests {
 
     #[test]
     fn trim_arc_selection_tracking_near_start_endpoint() {
-        use codec::entities::{Arc as ArcEnt, Line as LineEnt};
+        use document::entities::{Arc as ArcEnt, Line as LineEnt};
         // Arc from 0.5 to 2.0 rad (~28.6° to 114.6°), radius 10.0
         let mut a = ArcEnt::new();
         a.common.handle = Handle::new(20);
@@ -7287,7 +8426,7 @@ mod tests {
 
     #[test]
     fn test_tangent_circles_or_arcs_trim() {
-        use codec::entities::{Arc as ArcEnt, Circle as CircleEnt};
+        use document::entities::{Arc as ArcEnt, Circle as CircleEnt};
         let mut c1 = CircleEnt::new();
         c1.common.handle = Handle::new(1);
         c1.center = Vector3::new(0.0, 0.0, 0.0);
@@ -7498,7 +8637,7 @@ mod tests {
 
     #[test]
     fn test_skinny_ellipse_crossing_arc() {
-        use codec::entities::{Arc as ArcEnt, Ellipse as EllipseEnt};
+        use document::entities::{Arc as ArcEnt, Ellipse as EllipseEnt};
         let mut e = EllipseEnt::new();
         e.common.handle = Handle::new(100);
         e.center = Vector3::new(0.0, 0.0, 0.0);
@@ -7561,7 +8700,7 @@ mod tests {
 
     #[test]
     fn test_trim_line_tangent_to_arc() {
-        use codec::entities::{Arc as ArcEnt, Line as LineEnt};
+        use document::entities::{Arc as ArcEnt, Line as LineEnt};
         let mut l1 = LineEnt::new();
         l1.common.handle = Handle::new(1);
         l1.start = Vector3::new(-10.0, 0.0, 0.0);
@@ -7593,7 +8732,7 @@ mod tests {
     fn test_trim_arc_tangent_to_two_lines() {
         use crate::command::{TangentObject, WorkingPlane};
         use crate::modules::draw::draw::arc::{solve_arc_3_inputs, ArcPick};
-        use codec::entities::{Arc as CadArc, Line as LineEnt};
+        use document::entities::{Arc as CadArc, Line as LineEnt};
 
         let mut l1 = LineEnt::new();
         l1.common.handle = Handle::new(1);
@@ -7678,7 +8817,7 @@ mod tests {
     fn test_trim_arc_tangent_angled_lines() {
         use crate::command::{TangentObject, WorkingPlane};
         use crate::modules::draw::draw::arc::{solve_arc_3_inputs, ArcPick};
-        use codec::entities::{Arc as CadArc, Line as LineEnt};
+        use document::entities::{Arc as CadArc, Line as LineEnt};
 
         // Two lines meeting at (0, 0): one along (cos(20 deg), sin(20 deg)), other along (cos(80 deg), sin(80 deg))
         let a1 = 20.0_f64.to_radians();
@@ -7868,7 +9007,7 @@ mod tests {
     fn test_arc_tangent_line_precision_sweep() {
         use crate::command::{TangentObject, WorkingPlane};
         use crate::modules::draw::draw::arc::{solve_arc_3_inputs, ArcPick};
-        use codec::entities::{Arc as CadArc, Line as LineEnt};
+        use document::entities::{Arc as CadArc, Line as LineEnt};
 
         let mut max_dist = 0.0_f64;
         let mut failed_cuts = 0;
@@ -8257,7 +9396,6 @@ fn preview_wire(points: Vec<[f32; 3]>, color: [f32; 4], name: &str) -> WireModel
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
         dash_from_start: false,
-        dash_align_end: None,
         text_verts: Vec::new(),
         name: name.into(),
         points,
@@ -8427,8 +9565,11 @@ impl CadCommand for ExtrimCommand {
         };
         let q = [pt.x, pt.y];
         let geos = self.geos.clone();
-        let side =
-            |m: [f64; 2]| line_seg_ts(m[0], m[1], q[0], q[1], Handle::NULL, &geos).len() % 2 == 0;
+        let side = |m: [f64; 2]| {
+            line_seg_ts(m[0], m[1], q[0], q[1], Handle::NULL, &geos)
+                .len()
+                .is_multiple_of(2)
+        };
         let mut repl: Vec<(Handle, Vec<EntityType>)> = Vec::new();
         for (h, e) in &self.all {
             if *h == bh {
@@ -8508,8 +9649,11 @@ impl CadCommand for ExtrimCommand {
         }
         let q = [pt.x, pt.y];
         let geos = &self.geos;
-        let side =
-            |m: [f64; 2]| line_seg_ts(m[0], m[1], q[0], q[1], Handle::NULL, geos).len() % 2 == 0;
+        let side = |m: [f64; 2]| {
+            line_seg_ts(m[0], m[1], q[0], q[1], Handle::NULL, geos)
+                .len()
+                .is_multiple_of(2)
+        };
         // Removed (pick side) → red, surviving → blue; the boundary → yellow.
         let mut removed: Vec<[f32; 3]> = Vec::new();
         let mut kept: Vec<[f32; 3]> = Vec::new();

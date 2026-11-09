@@ -39,8 +39,15 @@ const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 /// `input` gained `handles`, so a selection prompt can be handed a set
 /// without a round trip through `select`; the dialog actions gained
 /// `dialog_discard` and `dialog_cancel`.
+/// The attribute form an attributed insertion raises is answerable from a
+/// script, so the action list gained `dialog_answer`.
+/// Table cells are driven from a script: `table_cell_dialog`,
+/// `table_cell_warning`, `table_cell_tab` and `command_submit`.
+/// `set_properties` lists its `name` selector and takes a colour as a
+/// number or `{"rgb":[r,g,b]}`, which its example shows on a layer.
+/// `command_escape` presses Esc once, where `cancel` ends the command.
 #[cfg(test)]
-const TOOL_SCHEMA_DIGEST: &str = "31b9a8521e51fee379efeea3a7471fde1d7a7dea3ce3257b3f6e7fec411a7d2d";
+const TOOL_SCHEMA_DIGEST: &str = "3d3c991e8dc24ebd3de3ee56d71a3526bc3af16dd78f2cc42351fc48965014f6";
 const MAX_REQUEST: usize = 1_048_576;
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 const CACHE_TTL_MS: u64 = 3_600_000;
@@ -348,7 +355,7 @@ fn is_cancel_for(line: &str, mkey: &str) -> bool {
     message
         .get("params")
         .and_then(|params| params.get("requestId"))
-        .is_some_and(|id| id.to_string() == mkey)
+        .is_some_and(|id| mcp_key(id) == mkey)
 }
 
 fn wait_deadline(op: &str, wait_seconds: f64) -> Duration {
@@ -1376,6 +1383,12 @@ impl GuiClient {
             batch.results.push(compact);
             batch.next += 1;
 
+            // Nothing ran: forget the batch so the same request_id can retry
+            // against the state this reply just refreshed (#2488).
+            if stale_before_first_step(&batch, &response) {
+                return Ok(batch_result(&batch, "failed", false));
+            }
+
             if response["ok"].as_bool() == Some(false)
                 || matches!(response["status"].as_str(), Some("failed" | "cancelled"))
             {
@@ -1404,6 +1417,33 @@ impl GuiClient {
             }
         }
     }
+}
+
+/// `stale_state` on a batch's first step: the GUI refused before running
+/// anything. On a later step, earlier steps have already run.
+fn stale_before_first_step(batch: &BatchExecution, response: &Value) -> bool {
+    batch.next == 1 && response["code"] == "stale_state"
+}
+
+/// A fresh `state` for each held connection, so an idle one is not left stale.
+/// A connection whose active document changed keeps its state: the bridge
+/// must not silently retarget its next edit.
+fn refresh_client_states(clients: &mut HashMap<String, GuiClient>) {
+    for client in clients.values_mut() {
+        if let Ok(state) = exchange(
+            &client.descriptor,
+            json!({"op":"state"}),
+            Duration::from_secs(5),
+        ) {
+            if adopt_refreshed_state(&client.state, &state) {
+                client.state = state;
+            }
+        }
+    }
+}
+
+fn adopt_refreshed_state(current: &Value, fresh: &Value) -> bool {
+    fresh["ok"] == true && fresh["document_id"] == current["document_id"]
 }
 
 fn batch_step_id(id: &str, step: usize) -> String {
@@ -1927,7 +1967,7 @@ fn read_resource(
                         if result["ok"].as_bool() != Some(true)
                             || result["status"].as_str() != Some("completed")
                         {
-                            return Err(result.to_string().into());
+                            return Err(result.to_string());
                         }
                         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
                         let _ = std::fs::remove_file(path);
@@ -2047,7 +2087,9 @@ fn call_tool(
     match name {
         "ocs_sessions" => {
             let launch = arguments["launch_if_none"].as_bool().unwrap_or(true);
-            Ok(Value::Array(sessions(launch).map_err(CallError::Infra)?))
+            let listed = sessions(launch).map_err(CallError::Infra)?;
+            refresh_client_states(clients);
+            Ok(Value::Array(listed))
         }
         "ocs_read" => {
             let op = arguments["op"].as_str().unwrap_or("state");
@@ -2158,7 +2200,7 @@ fn call_tool(
             let scope = arguments["scope"].as_str().unwrap_or("viewport");
             let max_dimension = arguments["max_dimension"].as_u64().unwrap_or(1600);
             let delivery = arguments["delivery"].as_str().unwrap_or("inline");
-            refuse_retired_capture_parameters(&arguments).map_err(CallError::from)?;
+            refuse_retired_capture_parameters(arguments).map_err(CallError::from)?;
             let tile = arguments.get("tile");
             let want_manifest = arguments["pyramid_manifest"].as_bool().unwrap_or(false);
 
@@ -2783,9 +2825,7 @@ fn handle_message(
     }
     let id = message.get("id").cloned();
     let method = message.get("method").and_then(Value::as_str)?;
-    if id.is_none() {
-        return None;
-    }
+    id.as_ref()?;
     let id = id.unwrap();
     let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
     if let Some(requested) = params["_meta"]["io.modelcontextprotocol/protocolVersion"].as_str() {
@@ -3044,7 +3084,7 @@ pub fn sync_agent_tool_schemas() -> bool {
         return false;
     }
     let base_dir = mcp_root.join("opencadstudio");
-    if let Err(_) = std::fs::create_dir_all(&base_dir) {
+    if std::fs::create_dir_all(&base_dir).is_err() {
         return false;
     }
 
@@ -4290,8 +4330,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|block| block["type"] == "image"
-                    && block["data"] == "capture-png"));
+                .any(|block| block["type"] == "image" && block["data"] == "capture-png"));
         }
     }
 
@@ -4496,6 +4535,43 @@ mod tests {
         store.insert_at(mk("second"), past_ttl);
         assert_eq!(store.tasks.len(), 1);
         assert!(store.get_mut_at("second", past_ttl).is_some());
+    }
+
+    #[test]
+    fn only_a_first_step_stale_state_is_retryable() {
+        let stale = json!({"ok":false,"code":"stale_state"});
+        let batch = |next| BatchExecution {
+            id: "b".into(),
+            request: json!({}),
+            steps: Vec::new(),
+            next,
+            active: None,
+            pending: None,
+            results: Vec::new(),
+            changes: Vec::new(),
+            state: None,
+            terminal: None,
+        };
+        assert!(stale_before_first_step(&batch(1), &stale));
+        assert!(!stale_before_first_step(&batch(2), &stale), "step 0 ran");
+        assert!(!stale_before_first_step(
+            &batch(1),
+            &json!({"ok":false,"code":"command_busy"})
+        ));
+    }
+
+    #[test]
+    fn a_refresh_never_retargets_another_document() {
+        let current = json!({"document_id":2,"revision":1});
+        assert!(adopt_refreshed_state(
+            &current,
+            &json!({"ok":true,"document_id":2,"revision":9})
+        ));
+        assert!(!adopt_refreshed_state(
+            &current,
+            &json!({"ok":true,"document_id":3,"revision":9})
+        ));
+        assert!(!adopt_refreshed_state(&current, &json!({"ok":false})));
     }
 
     #[test]

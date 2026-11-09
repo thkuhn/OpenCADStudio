@@ -1,8 +1,8 @@
 // DIMALIGNED command — aligned dimension (measures true distance between two points).
 
-use codec::entities::{Dimension, DimensionAligned};
-use codec::types::{Handle, Vector3};
-use codec::EntityType;
+use document::entities::{Dimension, DimensionAligned};
+use document::types::{Handle, Vector3};
+use document::EntityType;
 use glam::DVec3;
 
 use crate::command::{
@@ -45,6 +45,12 @@ pub struct AlignedDimensionCommand {
     picked_entity: Option<EntityType>,
     source_handle: Option<Handle>,
     mtext_override: bool,
+}
+
+impl Default for AlignedDimensionCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AlignedDimensionCommand {

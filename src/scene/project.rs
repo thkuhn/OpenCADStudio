@@ -13,7 +13,7 @@ impl Scene {
         exclude_vp: Option<Handle>,
         plot: bool,
     ) -> Vec<WireModel> {
-        use codec::entities::Viewport;
+        use document::entities::Viewport;
 
         let (_, _, viewport_handles) = self.paper_viewport_handles();
         let viewports: Vec<&Viewport> = viewport_handles
@@ -25,8 +25,8 @@ impl Scene {
             .filter(|vp| {
                 vp.common.owner_handle == paper_block
                     && vp.is_on()
-                    && only_vp.map_or(true, |h| vp.common.handle == h)
-                    && exclude_vp.map_or(true, |h| vp.common.handle != h)
+                    && only_vp.is_none_or(|h| vp.common.handle == h)
+                    && (exclude_vp != Some(vp.common.handle))
             })
             .collect();
 
@@ -86,6 +86,10 @@ impl Scene {
             // Pass 0.0 for screen height — the CPU-projection / hit-test
             // path wants the full-fidelity (no-LOD-stub) wire list,
             // regardless of paper zoom.
+            // A plot has no later frame to catch up on a zoom that just ended.
+            if plot {
+                self.viewport_complex_lt_factor(vp_handle, true);
+            }
             let model_wires = self.model_wires_for_viewport_arc(vp_handle, 0.0);
             let mut model_wires = crate::scene::model::instance_model::expand_stubs(&model_wires);
             if plot {
@@ -126,9 +130,9 @@ impl Scene {
             // already folded view_center through the (twisted) view basis and
             // applied the empty-WCS auto-fit, so taking its target keeps the CPU
             // projection identical to the GPU renderer under any twist.
-            let display_center_x = cam_frame.target.x as f64 + [0.0_f64; 3][0];
-            let display_center_y = cam_frame.target.y as f64 + [0.0_f64; 3][1];
-            let display_center_z = cam_frame.target.z as f64 + [0.0_f64; 3][2];
+            let display_center_x = cam_frame.target.x + [0.0_f64; 3][0];
+            let display_center_y = cam_frame.target.y + [0.0_f64; 3][1];
+            let display_center_z = cam_frame.target.z + [0.0_f64; 3][2];
             let view_right_d = (
                 view_right.x as f64,
                 view_right.y as f64,
@@ -242,7 +246,10 @@ impl Scene {
                         [p[0], p[1]]
                     };
                     let corners = [corner(0), corner(1), corner(2)];
-                    if corners.iter().any(|p| !p[0].is_finite() || !p[1].is_finite()) {
+                    if corners
+                        .iter()
+                        .any(|p| !p[0].is_finite() || !p[1].is_finite())
+                    {
                         continue;
                     }
                     let clipped = clip_polygon_to_rect(&corners, vp_x0, vp_y0, vp_x1, vp_y1);
@@ -279,10 +286,7 @@ impl Scene {
                 // A text-only wire (TEXT / MTEXT carry no stroke `points` since
                 // text went SDF-only) has nothing to pre-reject on, so gate both
                 // rejections on the glyphs too or it never reaches the sheet.
-                if !any_near
-                    && !aabb_hits
-                    && projected_text.is_empty()
-                    && projected_fill.is_empty()
+                if !any_near && !aabb_hits && projected_text.is_empty() && projected_fill.is_empty()
                 {
                     continue;
                 }
@@ -379,6 +383,9 @@ impl Scene {
                         // widths no longer line up; fall back to a constant band.
                         out.taper_widths.clear();
                     }
+                }
+                if out.points.len() != wire.points.len() {
+                    out.dash_closure = crate::scene::model::wire_model::DashClosure::Open;
                 }
                 if let Some(source_length) = source_length {
                     for station in &mut clipped_stations {
@@ -478,7 +485,7 @@ impl Scene {
         Vec<HatchModel>,
         Vec<crate::io::pdf_export::PlotImage>,
     ) {
-        use codec::entities::Viewport;
+        use document::entities::Viewport;
         use model::hatch_model::HatchPattern;
 
         if self.current_layout == "Model" {
@@ -722,7 +729,7 @@ impl Scene {
         us: f32,
         vs: f32,
     ) -> Vec<[f32; 2]> {
-        use codec::entities::Viewport;
+        use document::entities::Viewport;
         let Some(EntityType::Viewport(vp)) = self.document.get_entity(vp_handle) else {
             return vec![];
         };
@@ -788,7 +795,7 @@ impl Scene {
         view: [f64; 3],
         viewport: Option<Handle>,
     ) -> Vec<WireModel> {
-        use codec::types::Vector3;
+        use document::types::Vector3;
         let mut wires = Vec::new();
         for set in meshes {
             let Some(handle) = set.entity_handle() else {
@@ -831,7 +838,9 @@ impl Scene {
             let generators = set
                 .instance_source
                 .as_ref()
-                .map_or(set.curved_gens.as_slice(), |source| source.curved_gens.as_slice());
+                .map_or(set.curved_gens.as_slice(), |source| {
+                    source.curved_gens.as_slice()
+                });
             for generator in generators {
                 // A block instance's source is block-local: place it first, so
                 // the contour is taken against the world view direction.
@@ -1137,7 +1146,6 @@ fn polygon_edge_intersection(start: [f32; 2], end: [f32; 2], edge: u8, value: f3
 /// Clip a single segment (x0,y0)→(x1,y1) against the axis-aligned rectangle
 /// [xmin,xmax]×[ymin,ymax].  Returns the clipped endpoints or `None` if the
 /// segment is entirely outside.
-
 fn cs_clip(
     mut x0: f32,
     mut y0: f32,

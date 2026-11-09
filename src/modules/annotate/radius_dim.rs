@@ -1,6 +1,6 @@
-use codec::entities::{Dimension, DimensionRadius};
-use codec::types::{Handle, Vector3};
-use codec::EntityType;
+use document::entities::{Dimension, DimensionRadius};
+use document::types::{Handle, Vector3};
+use document::EntityType;
 
 use crate::command::{
     CadCommand, CmdOption, CmdResult, DimensionAssociationInput, DimensionPreview, InputKind,
@@ -35,6 +35,12 @@ pub struct RadiusDimensionCommand {
     awaiting_angle: bool,
     picked_entity: Option<EntityType>,
     source_handle: Option<Handle>,
+}
+
+impl Default for RadiusDimensionCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RadiusDimensionCommand {
@@ -136,10 +142,7 @@ impl CadCommand for RadiusDimensionCommand {
             return t!("DIMRADIUS  Specify text angle (degrees):").into_owned();
         }
         match self.step {
-            Step::SelectObject => {
-                t!("DIMRADIUS  Select arc or circle:")
-                    .into_owned()
-            }
+            Step::SelectObject => t!("DIMRADIUS  Select arc or circle:").into_owned(),
             Step::DimLine(_) => {
                 t!("DIMRADIUS  Specify dimension line location  [Mtext/Text/Angle]:").into_owned()
             }

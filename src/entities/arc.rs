@@ -1,10 +1,10 @@
 use crate::t;
-use codec::entities::Arc;
+use document::entities::Arc;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
     center_grip, edit_angle_prop as edit_angle, edit_prop as edit, format_angle, format_area,
-    format_length, parse_f64, ro_prop as ro, square_grip,
+    format_decimal, format_length, parse_f64, ro_prop as ro, square_grip,
 };
 use crate::entities::traits::RenderConvertible;
 use crate::scene::convert::acad_to_render::{extrusion_wall_tris, RenderEntity, RenderObject};
@@ -210,11 +210,27 @@ fn properties(arc: &Arc) -> Vec<PropSection> {
                 "total_angle",
                 format_angle(total_angle.to_radians()),
             ),
-            edit(t!("Arc length").as_ref(), "arc_length", arc_length),
+            ro(
+                t!("Arc length").as_ref(),
+                "arc_length",
+                format_length(arc_length),
+            ),
             ro(t!("Area").as_ref(), "area", format_area(area)),
-            edit(t!("Normal X").as_ref(), "normal_x", arc.normal.x),
-            edit(t!("Normal Y").as_ref(), "normal_y", arc.normal.y),
-            edit(t!("Normal Z").as_ref(), "normal_z", arc.normal.z),
+            ro(
+                t!("Normal X").as_ref(),
+                "normal_x",
+                format_decimal(arc.normal.x),
+            ),
+            ro(
+                t!("Normal Y").as_ref(),
+                "normal_y",
+                format_decimal(arc.normal.y),
+            ),
+            ro(
+                t!("Normal Z").as_ref(),
+                "normal_z",
+                format_decimal(arc.normal.z),
+            ),
         ],
     }]
 }
@@ -244,28 +260,6 @@ fn apply_geom_prop(arc: &mut Arc, field: &str, value: &str) {
         "radius" if v > 0.0 => arc.radius = v,
         "start_angle" => arc.start_angle = v.to_radians(),
         "end_angle" => arc.end_angle = v.to_radians(),
-        // The start stays put; the end moves along the circle.
-        "arc_length" if v > 0.0 && v < TAU * arc.radius => {
-            arc.end_angle = (arc.start_angle + v / arc.radius).rem_euclid(TAU);
-        }
-        "normal_x" | "normal_y" | "normal_z" => {
-            let center = arc.center_wcs();
-            let mut normal = kernel::space::Vec3::new(arc.normal.x, arc.normal.y, arc.normal.z);
-            match field {
-                "normal_x" => normal.x = v,
-                "normal_y" => normal.y = v,
-                "normal_z" => normal.z = v,
-                _ => {}
-            }
-            if let Some(normal) = normal.normalize() {
-                arc.normal = codec::types::Vector3::new(normal.x, normal.y, normal.z);
-                let (x, y, z) = crate::scene::view::transform::wcs_point_to_ocs(
-                    (center.x, center.y, center.z),
-                    (normal.x, normal.y, normal.z),
-                );
-                arc.center = codec::types::Vector3::new(x, y, z);
-            }
-        }
         _ => {}
     }
 }
@@ -306,8 +300,8 @@ fn apply_transform(arc: &mut Arc, t: &EntityTransform) {
             p1,
             p2,
         );
-        let dx = (p2.x - p1.x) as f64;
-        let dy = (p2.y - p1.y) as f64;
+        let dx = p2.x - p1.x;
+        let dy = p2.y - p1.y;
         let line_angle = dy.atan2(dx);
         let tmp = entity.start_angle;
         entity.start_angle = 2.0 * line_angle - entity.end_angle;
@@ -316,7 +310,7 @@ fn apply_transform(arc: &mut Arc, t: &EntityTransform) {
 }
 
 impl RenderConvertible for Arc {
-    fn to_render(&self, _document: &codec::Document) -> Option<RenderEntity> {
+    fn to_render(&self, _document: &document::Document) -> Option<RenderEntity> {
         Some(to_render(self))
     }
 }
@@ -492,7 +486,7 @@ impl crate::entities::traits::Transformable for Arc {
     }
 }
 
-impl crate::entities::traits::MassPropsCalc for codec::entities::Arc {
+impl crate::entities::traits::MassPropsCalc for document::entities::Arc {
     fn mass_props(&self) -> crate::entities::traits::MassProps {
         let curve = crate::entities::curve::arc_curve(self);
         let area = curve.curve.chord_closed_area().unwrap_or(0.0).abs();
@@ -519,8 +513,8 @@ mod tests {
     #[test]
     fn midpoint_grip_drives_radius_and_arc_length_in_entity_plane() {
         let mut arc = Arc::default();
-        arc.center = codec::types::Vector3::new(1.0, 2.0, 3.0);
-        arc.normal = codec::types::Vector3::new(0.0, 1.0, 0.0);
+        arc.center = document::types::Vector3::new(1.0, 2.0, 3.0);
+        arc.normal = document::types::Vector3::new(0.0, 1.0, 0.0);
         arc.radius = 2.0;
         arc.start_angle = 0.0;
         arc.end_angle = std::f64::consts::FRAC_PI_2;

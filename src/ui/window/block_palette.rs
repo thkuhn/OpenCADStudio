@@ -213,7 +213,7 @@ pub enum BlockPaletteMsg {
     /// Web: the picked drawing arrived already parsed from the picker's
     /// bytes — a name-only path has nothing behind it to read later.
     #[cfg(target_arch = "wasm32")]
-    FilePickedDoc(Result<(String, codec::Document), String>),
+    FilePickedDoc(Result<(String, document::Document), String>),
     Refresh,
     Option(OptionMsg),
     ToggleOptions,
@@ -288,6 +288,18 @@ pub struct BlockPreview {
     wires: std::cell::OnceCell<Vec<WireModel>>,
     cache: canvas::Cache,
     gallery_cache: canvas::Cache,
+}
+
+impl Default for BlockPreview {
+    fn default() -> Self {
+        Self::pending()
+    }
+}
+
+impl std::fmt::Debug for BlockPreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockPreview").finish_non_exhaustive()
+    }
 }
 
 impl BlockPreview {
@@ -1554,17 +1566,12 @@ mod tests {
         let mut renderer = iced_test::futures::futures::executor::block_on(
             <iced::Renderer as iced_test::core::renderer::Headless>::new(
                 iced_test::core::renderer::Settings::default(),
-                None,
+                std::env::var("ICED_TEST_BACKEND").ok().as_deref(),
             ),
         )
         .expect("headless renderer");
         let size = iced::Size::new(300.0, 100_000.0);
-        let mut ui = UserInterface::build(
-            element,
-            size,
-            Cache::default(),
-            &mut renderer,
-        );
+        let mut ui = UserInterface::build(element, size, Cache::default(), &mut renderer);
         let mut find = Selector::find(label);
         ui.operate(&renderer, &mut widget::operation::black_box(&mut find));
         match widget::Operation::finish(&find) {
@@ -1672,7 +1679,7 @@ mod tests {
         let renderer = iced_test::futures::futures::executor::block_on(
             <iced::Renderer as iced_test::core::renderer::Headless>::new(
                 iced_test::core::renderer::Settings::default(),
-                None,
+                std::env::var("ICED_TEST_BACKEND").ok().as_deref(),
             ),
         )
         .expect("headless renderer");

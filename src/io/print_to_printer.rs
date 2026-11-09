@@ -1068,7 +1068,7 @@ fn gdi_raster_print(
             }));
         }
         unsafe { SetStretchBltMode(hdc, COLORONCOLOR) };
-        let mut bmi = BITMAPINFO {
+        let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: src_w as i32,
@@ -1102,7 +1102,7 @@ fn gdi_raster_print(
                     src_w as i32,
                     src_h as i32,
                     bgra.as_ptr().cast(),
-                    &mut bmi,
+                    &bmi,
                     DIB_RGB_COLORS,
                     SRCCOPY,
                 )
@@ -1370,7 +1370,11 @@ fn dispatch_to_printer_opts(path: &std::path::Path, opts: &PrintOptions) -> Resu
         }
         // The plot PDF is already the sheet at size; a driver default of
         // fitting it into the printable area shrinks a 1:1 plot (#1651).
-        if !opts.driver_options.iter().any(|(key, _)| key == "print-scaling") {
+        if !opts
+            .driver_options
+            .iter()
+            .any(|(key, _)| key == "print-scaling")
+        {
             cmd.arg("-o").arg("print-scaling=none");
         }
         let lp_result = cmd.arg("--").arg(path_str.as_ref()).output();

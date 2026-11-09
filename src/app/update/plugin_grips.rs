@@ -182,8 +182,8 @@ impl OpenCADStudio {
         point: DVec3,
     ) -> Task<Message> {
         if let Some(active) = self.tabs[i].active_plugin_grip.as_mut() {
+            active.moved |= point != active.last_world;
             active.last_world = point;
-            active.moved = true;
         }
         self.plugin_grip_deliveries.park_move(point);
         self.pump_plugin_grips()
@@ -321,10 +321,8 @@ impl OpenCADStudio {
         );
         if let Some(event) = event {
             self.issue_phase(tab, ocs_plugin_api::host::CustomGripPhase::Settle, event);
-            self.plugin_grip_deliveries.begin_settle_watch(
-                self.plugin_grip_settle_watchdog,
-                std::time::Instant::now(),
-            );
+            self.plugin_grip_deliveries
+                .begin_settle_watch(self.plugin_grip_settle_watchdog, std::time::Instant::now());
         } else {
             // The owner vanished mid-drag: end as a cancel.
             let _ = self.cancel_plugin_grip_drag();
@@ -558,7 +556,7 @@ impl OpenCADStudio {
     fn apply_plugin_grip_live_geometry(
         &mut self,
         tab: usize,
-        live_entities: &[(codec::Handle, codec::EntityType)],
+        live_entities: &[(document::Handle, document::EntityType)],
     ) {
         if live_entities.is_empty() {
             return;
@@ -700,6 +698,10 @@ impl OpenCADStudio {
         self.plugin_grip_deliveries = Default::default();
         self.plugin_grip_live_originals = Vec::new();
         self.plugin_grip_descriptor_drag = None;
+        // The drag's snap and tracking state ends with it.
+        self.snapper.from_point = None;
+        self.otrack_active = None;
+        self.tabs[tab].snap_result = None;
         self.tabs[tab].scene.set_preview_wires(Vec::new());
         self.tabs[tab].dirty = true;
     }
@@ -727,6 +729,24 @@ impl OpenCADStudio {
     pub(in crate::app) fn reap_plugin_grips(&mut self) {
         let (dying_drag, dead_hover) = {
             let visible = grip_points::visibility(&self.disabled_plugins);
+            // API v15: the quad panel store reaps with the same liveness — a
+            // dead plugin's panels drop out of every quad. The store is
+            // app-global, so one sweep covers every tab. Its reaper asks the
+            // manager's process liveness only: `sink_installed` is
+            // thread-local (test sinks), and a thread-local probe inside a
+            // process-global sweep would let one thread's drain tick erase
+            // another thread's registration. Plugins unknown to the manager
+            // (in-process sinks — never a production registration shape) are
+            // left to their explicit teardown; their user-visible drop-out
+            // stays the feed-time `panels_for_visible` filter either way.
+            crate::plugin::quad::retain_alive(|plugin| {
+                !self.disabled_plugins.contains(plugin)
+                    && crate::plugin::external::with_manager(|manager| {
+                        manager
+                            .grip_endpoint(plugin)
+                            .is_none_or(|(_, _, alive)| alive)
+                    })
+            });
             for i in 0..self.tabs.len() {
                 self.tabs[i]
                     .plugin_grips
@@ -837,7 +857,9 @@ impl OpenCADStudio {
                 return;
             }
         };
-        let Some(declaration) = self.tabs[tab].plugin_classes.find(&plugin, &binding.class_id)
+        let Some(declaration) = self.tabs[tab]
+            .plugin_classes
+            .find(&plugin, &binding.class_id)
         else {
             refuse(format!("class {:?} not registered", binding.class_id));
             return;
@@ -878,9 +900,7 @@ impl OpenCADStudio {
         }
         let handles = Self::instance_display_set(self, tab, &binding);
         if handles.is_empty() {
-            refuse(
-                "no stamped display set resolves for the instance's identity stamp".to_owned(),
-            );
+            refuse("no stamped display set resolves for the instance's identity stamp".to_owned());
             return;
         }
         self.plugin_grip_descriptor_drag = Some(crate::plugin::grip_points::DescriptorGripDrag {
@@ -934,64 +954,62 @@ impl OpenCADStudio {
         let tolerance = drag.tolerance;
         let handles = drag.handles.clone();
         match reanchor_profile_chain(&chain, segment, drag.anchor, constrained) {
-            Ok(reanchored) => match crate::parametric::build_display_entities(
-                &reanchored,
-                tolerance,
-            ) {
-                Ok((fresh, _carriers)) if fresh.len() == handles.len() => {
-                    // The honest lane (the seat test's own arms): clone the
-                    // live entities — identity, layer and the XDATA stamp ride
-                    // along — and patch ONLY the geometry from the re-derived
-                    // carriers. The count-staged set stays the drag's handles.
-                    let document = &self.tabs[tab].scene.document;
-                    let mut pairs: Vec<(codec::Handle, codec::EntityType)> =
-                        Vec::with_capacity(handles.len());
-                    let mut refused: Option<String> = None;
-                    for (slot, fresh_entity) in handles.iter().zip(fresh.iter()) {
-                        let Some(current) = document.get_entity(*slot) else {
-                            refused = Some(format!("staged entity {slot:?} is no longer live"));
-                            break;
-                        };
-                        let mut patched = current.clone();
-                        if let Err(reason) =
-                            patch_carrier_geometry(&mut patched, fresh_entity)
-                        {
-                            refused = Some(reason);
-                            break;
-                        }
-                        pairs.push((*slot, patched));
-                    }
-                    match refused {
-                        None => {
-                            let live = crate::plugin::grip_points::DescriptorGripDrag {
-                                chain: reanchored,
-                                ..drag
+            Ok(reanchored) => {
+                match crate::parametric::build_display_entities(&reanchored, tolerance) {
+                    Ok((fresh, _carriers)) if fresh.len() == handles.len() => {
+                        // The honest lane (the seat test's own arms): clone the
+                        // live entities — identity, layer and the XDATA stamp ride
+                        // along — and patch ONLY the geometry from the re-derived
+                        // carriers. The count-staged set stays the drag's handles.
+                        let document = &self.tabs[tab].scene.document;
+                        let mut pairs: Vec<(document::Handle, document::EntityType)> =
+                            Vec::with_capacity(handles.len());
+                        let mut refused: Option<String> = None;
+                        for (slot, fresh_entity) in handles.iter().zip(fresh.iter()) {
+                            let Some(current) = document.get_entity(*slot) else {
+                                refused = Some(format!("staged entity {slot:?} is no longer live"));
+                                break;
                             };
-                            self.plugin_grip_descriptor_drag = Some(live);
-                            // The live-geometry machinery: same handles,
-                            // originals stashed once, zero history steps.
-                            self.apply_plugin_grip_live_geometry(tab, &pairs);
+                            let mut patched = current.clone();
+                            if let Err(reason) = patch_carrier_geometry(&mut patched, fresh_entity)
+                            {
+                                refused = Some(reason);
+                                break;
+                            }
+                            pairs.push((*slot, patched));
                         }
-                        Some(reason) => Self::note_descriptor_refusal(
-                            self,
-                            format!("the display set cannot be patched in place: {reason}"),
-                        ),
+                        match refused {
+                            None => {
+                                let live = crate::plugin::grip_points::DescriptorGripDrag {
+                                    chain: reanchored,
+                                    ..drag
+                                };
+                                self.plugin_grip_descriptor_drag = Some(live);
+                                // The live-geometry machinery: same handles,
+                                // originals stashed once, zero history steps.
+                                self.apply_plugin_grip_live_geometry(tab, &pairs);
+                            }
+                            Some(reason) => Self::note_descriptor_refusal(
+                                self,
+                                format!("the display set cannot be patched in place: {reason}"),
+                            ),
+                        }
                     }
-                }
-                Ok((fresh, _)) => Self::note_descriptor_refusal(
-                    self,
-                    format!(
-                        "the re-derived entity count {} differs from the staged set {}; the \
+                    Ok((fresh, _)) => Self::note_descriptor_refusal(
+                        self,
+                        format!(
+                            "the re-derived entity count {} differs from the staged set {}; the \
                          count-stable restage cannot apply",
-                        fresh.len(),
-                        handles.len()
+                            fresh.len(),
+                            handles.len()
+                        ),
                     ),
-                ),
-                Err(reason) => Self::note_descriptor_refusal(
-                    self,
-                    format!("the re-derivation's own gates refuse the move: {reason}"),
-                ),
-            },
+                    Err(reason) => Self::note_descriptor_refusal(
+                        self,
+                        format!("the re-derivation's own gates refuse the move: {reason}"),
+                    ),
+                }
+            }
             Err(reason) => Self::note_descriptor_refusal(self, reason),
         }
     }
@@ -1005,8 +1023,8 @@ impl OpenCADStudio {
         app: &OpenCADStudio,
         tab: usize,
         binding: &crate::app::plugin_host::PluginClassInstanceBinding,
-    ) -> Vec<codec::Handle> {
-        use codec::xdata::XDataValue;
+    ) -> Vec<document::Handle> {
+        use document::xdata::XDataValue;
         let mut out = Vec::new();
         for entity in app.tabs[tab].scene.document.entities() {
             let handle = entity.common().handle;
@@ -1024,8 +1042,7 @@ impl OpenCADStudio {
                     }
                     match record.values.get(1) {
                         Some(XDataValue::String(linkage)) => {
-                            !binding.design_record.is_empty()
-                                && linkage == &binding.design_record
+                            !binding.design_record.is_empty() && linkage == &binding.design_record
                         }
                         None => binding.design_record.is_empty(),
                         Some(_) => false,
@@ -1058,15 +1075,15 @@ impl OpenCADStudio {
 /// entity, keyed by kind (the seat test's honest arms). The identity stamp,
 /// the reference-only designation and the layer ride on the clone untouched.
 pub(in crate::app) fn patch_carrier_geometry(
-    patched: &mut codec::EntityType,
-    fresh: &codec::EntityType,
+    patched: &mut document::EntityType,
+    fresh: &document::EntityType,
 ) -> Result<(), String> {
-    match (&mut *patched, &*fresh) {
-        (codec::EntityType::Line(old), codec::EntityType::Line(newer)) => {
+    match (&mut *patched, fresh) {
+        (document::EntityType::Line(old), document::EntityType::Line(newer)) => {
             old.start = newer.start;
             old.end = newer.end;
         }
-        (codec::EntityType::Spline(old), codec::EntityType::Spline(newer)) => {
+        (document::EntityType::Spline(old), document::EntityType::Spline(newer)) => {
             old.degree = newer.degree;
             old.control_points = newer.control_points.clone();
             old.knots = newer.knots.clone();
@@ -1074,13 +1091,13 @@ pub(in crate::app) fn patch_carrier_geometry(
             old.begin_tangent = newer.begin_tangent;
             old.end_tangent = newer.end_tangent;
         }
-        (codec::EntityType::Arc(old), codec::EntityType::Arc(newer)) => {
+        (document::EntityType::Arc(old), document::EntityType::Arc(newer)) => {
             old.center = newer.center;
             old.radius = newer.radius;
             old.start_angle = newer.start_angle;
             old.end_angle = newer.end_angle;
         }
-        (codec::EntityType::Circle(old), codec::EntityType::Circle(newer)) => {
+        (document::EntityType::Circle(old), document::EntityType::Circle(newer)) => {
             old.center = newer.center;
             old.radius = newer.radius;
         }
@@ -1096,12 +1113,12 @@ pub(in crate::app) fn patch_carrier_geometry(
 }
 
 /// A stable diagnostic label for the carrier-shape refusal.
-fn entity_kind_label(entity: &codec::EntityType) -> &'static str {
+fn entity_kind_label(entity: &document::EntityType) -> &'static str {
     match entity {
-        codec::EntityType::Line(_) => "line",
-        codec::EntityType::Spline(_) => "spline",
-        codec::EntityType::Arc(_) => "arc",
-        codec::EntityType::Circle(_) => "circle",
+        document::EntityType::Line(_) => "line",
+        document::EntityType::Spline(_) => "spline",
+        document::EntityType::Arc(_) => "arc",
+        document::EntityType::Circle(_) => "circle",
         _ => "other",
     }
 }
@@ -1143,7 +1160,9 @@ pub(in crate::app) fn reanchor_profile_chain(
         return Err("the re-anchor serves the profile sheet only".to_owned());
     }
     let Some(_) = chain.segments.get(segment) else {
-        return Err(format!("drive segment {segment} is out of the design's range"));
+        return Err(format!(
+            "drive segment {segment} is out of the design's range"
+        ));
     };
     let mut edited = chain.clone();
     {
@@ -1193,11 +1212,7 @@ pub(in crate::app) fn reanchor_profile_chain(
                         return None;
                     }
                     let scaled = scale_ramp(&current, scale);
-                    Some(
-                        h0
-                            + length
-                                * crate::parametric::ramp_integral(&scaled, 1.0),
-                    )
+                    Some(h0 + length * crate::parametric::ramp_integral(&scaled, 1.0))
                 };
                 let scale = solve_by_bisection(voice, 1.0, cursor.y)?;
                 seg.def.ramp = scale_ramp(&current, scale);
@@ -1232,8 +1247,7 @@ pub(in crate::app) fn reanchor_profile_chain(
             .ok()
             .flatten()
             .ok_or_else(|| {
-                "the re-anchored front does not sample (the design left its own domain)"
-                    .to_owned()
+                "the re-anchored front does not sample (the design left its own domain)".to_owned()
             })?;
         for j in (segment + 1)..n {
             let slope = joint.direction[1] / joint.direction[0];
@@ -1275,7 +1289,10 @@ pub(in crate::app) fn ramp_with_unit_integral(ramp: &Ramp, w_target: f64) -> Res
             let d = *degree as usize;
             let mut next = *coeffs;
             next[d] += delta * (d as f64 + 1.0);
-            Ok(Ramp::Polynomial { degree: *degree, coeffs: next })
+            Ok(Ramp::Polynomial {
+                degree: *degree,
+                coeffs: next,
+            })
         }
         Ramp::Piecewise { count, knots } => {
             let active = (*count).clamp(1, knots.len() as u32) as usize;
@@ -1291,7 +1308,10 @@ pub(in crate::app) fn ramp_with_unit_integral(ramp: &Ramp, w_target: f64) -> Res
                 let gain = (span * 0.5 + (1.0 - knots[m].0)).max(1e-12);
                 next[m].1 += delta / gain;
             }
-            Ok(Ramp::Piecewise { count: *count, knots: next })
+            Ok(Ramp::Piecewise {
+                count: *count,
+                knots: next,
+            })
         }
         Ramp::Sampled { n, values } => {
             let count = (*n).clamp(1, values.len() as u32) as usize;
@@ -1302,7 +1322,10 @@ pub(in crate::app) fn ramp_with_unit_integral(ramp: &Ramp, w_target: f64) -> Res
                 let step = 1.0 / (count - 1) as f64;
                 next[count - 1] += delta * 2.0 / step;
             }
-            Ok(Ramp::Sampled { n: *n, values: next })
+            Ok(Ramp::Sampled {
+                n: *n,
+                values: next,
+            })
         }
     }
 }
@@ -1318,19 +1341,28 @@ pub(in crate::app) fn ramp_with_end_value(ramp: &Ramp, end_value: f64) -> Ramp {
             let mut next = *coeffs;
             let lower: f64 = coeffs[..d].iter().sum();
             next[d] = end_value - lower;
-            Ramp::Polynomial { degree: *degree, coeffs: next }
+            Ramp::Polynomial {
+                degree: *degree,
+                coeffs: next,
+            }
         }
         Ramp::Piecewise { count, knots } => {
             let active = (*count).clamp(1, knots.len() as u32) as usize;
             let mut next = *knots;
             next[active - 1].1 = end_value;
-            Ramp::Piecewise { count: *count, knots: next }
+            Ramp::Piecewise {
+                count: *count,
+                knots: next,
+            }
         }
         Ramp::Sampled { n, values } => {
             let count = (*n).clamp(1, values.len() as u32) as usize;
             let mut next = values.clone();
             next[count - 1] = end_value;
-            Ramp::Sampled { n: *n, values: next }
+            Ramp::Sampled {
+                n: *n,
+                values: next,
+            }
         }
     }
 }

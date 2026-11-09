@@ -1,23 +1,28 @@
 //! Native Move/Scale/Stretch/Rotate/Flip/Array authoring and deterministic block evaluation.
 use super::block_authoring::{self as authoring, *};
-use codec::objects::{
+use document::objects::{
     BlockAction, BlockActionOffsets, BlockActionWithBasePoint, BlockArrayAction,
     BlockBasePointAction, BlockConnection, BlockElement, BlockEvalValue, BlockFlipAction,
     BlockMoveAction, BlockPolarStretchAction, BlockStretchAction, DynamicBlockData, ObjectType,
 };
-use codec::types::{Transform, Vector3};
-use codec::{Document, EntityType, Handle};
+use document::types::{Transform, Vector3};
+use document::{Document, EntityType, Handle};
 use glam::DVec3;
+mod array;
+pub(crate) mod association;
+pub(crate) mod chain;
+mod chains;
+pub(crate) mod feedback;
+mod flip_frames;
+pub(super) mod flip_graph;
+#[cfg(test)]
+mod flip_graph_tests;
 pub(crate) mod grip_roles;
 pub(crate) mod instance;
-pub(crate) mod feedback;
-pub(crate) mod association;
+pub(crate) mod options;
 mod representation;
 mod stretch;
 mod targets;
-mod array;
-pub(crate) mod options;
-pub(crate) mod chain;
 
 /// Smallest signed distance between two angles in radians, accounting for the
 /// wrap at ±π. Used for BPT rotation snapping and current-row detection.
@@ -25,13 +30,13 @@ pub(crate) fn angle_distance(a: f64, b: f64) -> f64 {
     ((a - b + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI).abs()
 }
 #[cfg(test)]
-mod tests;
+mod frame_evaluation_tests;
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
-mod frame_evaluation_tests;
-#[cfg(test)]
 mod polar_frame_tests;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -99,6 +104,32 @@ pub(crate) struct Parameter {
     pub flip: bool,
     pub reference: DVec3,
 }
+
+impl Parameter {
+    pub(crate) fn is_move_target(&self) -> bool {
+        self.point || self.linear || self.flip
+    }
+
+    pub(super) fn is_flip_target(&self) -> bool {
+        self.linear || self.flip
+    }
+
+    pub(crate) fn is_action_target(&self, kind: Kind, source: i32) -> bool {
+        self.id != source
+            && match kind {
+                Kind::Move => self.is_move_target(),
+                Kind::Flip => self.is_flip_target(),
+                _ => false,
+            }
+    }
+}
+
+fn flip_parameter_target(doc: &Document, definition: Handle, source: i32, handle: Handle) -> bool {
+    all_parameters(doc, definition)
+        .iter()
+        .any(|p| p.handle == handle && p.is_action_target(Kind::Flip, source))
+}
+
 pub(crate) fn v(p: Vector3) -> DVec3 {
     DVec3::new(p.x, p.y, p.z)
 }
@@ -116,7 +147,10 @@ impl Value {
     pub(crate) fn map_points(self, map: impl Fn(DVec3) -> DVec3) -> Self {
         match self {
             Self::Point(point) => Self::Point(map(point)),
-            Self::Frame { base, end } => Self::Frame { base: map(base), end: map(end) },
+            Self::Frame { base, end } => Self::Frame {
+                base: map(base),
+                end: map(end),
+            },
             state => state,
         }
     }
@@ -130,10 +164,26 @@ pub(crate) fn all_parameters(doc: &Document, definition: Handle) -> Vec<Paramete
     result
 }
 
+/// The listing reader over every parameter kind.
+pub(crate) fn all_listed_parameters(doc: &Document, definition: Handle) -> Vec<Parameter> {
+    let mut result = listed_parameters(doc, definition, Kind::Move);
+    result.extend(listed_parameters(doc, definition, Kind::Rotate));
+    result.extend(listed_parameters(doc, definition, Kind::Flip));
+    result.sort_by_key(|p| p.id);
+    result
+}
+
 /// Resolve native action association for runtime grip interaction.
 pub(crate) fn has_action(doc: &Document, definition: Handle, parameter: Handle) -> bool {
-    let Some(p) = all_parameters(doc, definition).into_iter().find(|p| p.handle == parameter) else { return false; };
-    actions(doc, definition).iter().any(|(_, _, _, node)| *node == p.id)
+    let Some(p) = all_parameters(doc, definition)
+        .into_iter()
+        .find(|p| p.handle == parameter)
+    else {
+        return false;
+    };
+    actions(doc, definition)
+        .iter()
+        .any(|(_, _, _, node)| *node == p.id)
 }
 
 pub(crate) fn compatible(p: &Parameter, kind: Kind) -> bool {
@@ -165,7 +215,9 @@ fn flip_component(doc: &Document, p: &Parameter) -> Result<Handle, &'static str>
         .filter_map(|(h, x)| match x {
             ObjectType::DynamicBlock(x) if x.owner == o.owner => match &x.data {
                 DynamicBlockData::GripLocationComponent(c)
-                    if c.grip_type == p.id && state_id.is_none_or(|id| c.eval.node_id == id) && c.expression == "UpdatedFlip" =>
+                    if c.grip_type == p.id
+                        && state_id.is_none_or(|id| c.eval.node_id == id)
+                        && c.expression == "UpdatedFlip" =>
                 {
                     Some(*h)
                 }
@@ -249,7 +301,9 @@ pub(crate) fn grip_position(p: &Parameter, value: Value) -> DVec3 {
 }
 
 /// Native display placement is independent of the evaluated endpoint.
-pub(crate) fn grip_offset(p: &Parameter) -> DVec3 { p.grip_location.map(|at| at - p.end).unwrap_or(DVec3::ZERO) }
+pub(crate) fn grip_offset(p: &Parameter) -> DVec3 {
+    p.grip_location.map(|at| at - p.end).unwrap_or(DVec3::ZERO)
+}
 
 /// A Flip arrow points across its reflection line and reverses with its state.
 pub(crate) fn grip_direction(p: &Parameter, value: Value) -> Option<DVec3> {
@@ -264,6 +318,21 @@ pub(crate) fn parameters(doc: &Document, definition: Handle, kind: Kind) -> Vec<
     let Ok(Some(graph)) = authoring::graph(doc, definition) else {
         return vec![];
     };
+    parameters_at(doc, definition, kind, graph)
+}
+
+/// The same parameters for a reader that only lists them. The graph is resolved
+/// through the links that say a definition holds it, not through the checks that
+/// decide whether an edit can be addressed through it, so a definition keeps
+/// listing its parameters while a graph refuses an edit.
+pub(crate) fn listed_parameters(doc: &Document, definition: Handle, kind: Kind) -> Vec<Parameter> {
+    let Some(graph) = authoring::listed_graph(doc, definition) else {
+        return vec![];
+    };
+    parameters_at(doc, definition, kind, graph)
+}
+
+fn parameters_at(doc: &Document, definition: Handle, kind: Kind, graph: Handle) -> Vec<Parameter> {
     let mut result = vec![];
     for (handle, p) in super::block_point_parameter::parameters(doc, definition) {
         if matches!(kind, Kind::Move | Kind::Stretch) {
@@ -401,11 +470,15 @@ pub(crate) fn parameters(doc: &Document, definition: Handle, kind: Kind) -> Vec<
         }
         p.grip = grips.first().copied().unwrap_or(Handle::NULL);
         p.grip_location = doc.objects.get(&p.grip).and_then(|object| {
-            let ObjectType::DynamicBlock(object) = object else { return None };
+            let ObjectType::DynamicBlock(object) = object else {
+                return None;
+            };
             match &object.data {
                 DynamicBlockData::LinearGrip(g) => Some(v(g.grip.location)),
                 DynamicBlockData::FlipGrip(g) => Some(v(g.grip.location)),
-                DynamicBlockData::XYGrip(g) | DynamicBlockData::PolarGrip(g) | DynamicBlockData::RotationGrip(g) => Some(v(g.location)),
+                DynamicBlockData::XYGrip(g)
+                | DynamicBlockData::PolarGrip(g)
+                | DynamicBlockData::RotationGrip(g) => Some(v(g.location)),
                 _ => None,
             }
         });
@@ -429,6 +502,12 @@ pub(crate) fn parameters(doc: &Document, definition: Handle, kind: Kind) -> Vec<
 }
 
 pub(crate) fn supported(e: &EntityType) -> bool {
+    let in_xy = |normal: Vector3| normal.x == 0. && normal.y == 0. && normal.z == 1.;
+    match e {
+        EntityType::Polyline2D(p) => return in_xy(p.normal),
+        EntityType::Solid(s) => return in_xy(s.normal),
+        _ => {}
+    }
     matches!(
         e,
         EntityType::Line(_)
@@ -511,8 +590,15 @@ pub(crate) fn create_with_frame(
     frame: Option<[DVec3; 2]>,
 ) -> Result<Handle, &'static str> {
     create_with_frame_points(
-        doc, definition, kind, parameter, None, targets, location,
-        frame.as_ref().map(|points| points.as_slice()), None,
+        doc,
+        definition,
+        kind,
+        parameter,
+        None,
+        targets,
+        location,
+        frame.as_ref().map(|points| points.as_slice()),
+        None,
     )
 }
 
@@ -528,8 +614,17 @@ pub(crate) fn create_with_options(
     frame: Option<[DVec3; 2]>,
     array_offsets: Option<(f64, f64)>,
 ) -> Result<Handle, &'static str> {
-    create_with_frame_points(doc, definition, kind, parameter, xy_key_point, targets, location,
-        frame.as_ref().map(|points| points.as_slice()), array_offsets)
+    create_with_frame_points(
+        doc,
+        definition,
+        kind,
+        parameter,
+        xy_key_point,
+        targets,
+        location,
+        frame.as_ref().map(|points| points.as_slice()),
+        array_offsets,
+    )
 }
 
 pub(crate) fn create_with_frame_points(
@@ -571,14 +666,21 @@ pub(crate) fn create_with_frame_points(
         .ok_or("The block definition is unavailable.")?
         .entity_handles;
     if targets.iter().any(|h| {
-        !members.contains(h)
-            || doc
-                .get_entity(*h)
-                .is_none_or(|e| !supported(e) || e.common().owner_handle != definition)
+        if let Some(entity) = doc.get_entity(*h) {
+            !members.contains(h) || !supported(entity) || entity.common().owner_handle != definition
+        } else {
+            match kind {
+                Kind::Move => chains::frame_target(doc, definition, p.id, *h).is_none(),
+                Kind::Flip => !flip_parameter_target(doc, definition, p.id, *h),
+                _ => true,
+            }
+        }
     }) {
-        return Err(
-            "Select lines, lightweight polylines, arcs, circles, ellipses, points or text belonging to this block.",
-        );
+        return Err(if matches!(kind, Kind::Move | Kind::Flip) {
+            "Select supported targets belonging to this block."
+        } else {
+            "Select lines, lightweight polylines, arcs, circles, ellipses, points or text belonging to this block."
+        });
     }
     let (column_offset, row_offset) = if kind == Kind::Array {
         let (col, row) = array_offsets.unwrap_or((1.0, 1.0));
@@ -631,7 +733,12 @@ pub(crate) fn create_with_frame_points(
     };
     register_classes(&mut staged, &[(dxf, cpp, 55)]);
     let handle = staged.allocate_handle();
-    let mut dependencies = targets.to_vec();
+    let flip_links = kind == Kind::Flip && targets.iter().any(|h| doc.get_entity(*h).is_none());
+    let mut dependencies = if flip_links {
+        flip_graph::authored_dependencies(doc, definition, p.id, targets, &[])?
+    } else {
+        targets.to_vec()
+    };
     dependencies.sort();
     dependencies.dedup();
     let action = BlockAction {
@@ -742,6 +849,14 @@ pub(crate) fn create_with_frame_points(
     );
     authoring::append_single(&mut staged, graph, slots, handle);
     authoring::graph::bind_ids(&mut staged, graph, slots.eval, &[p.id])?;
+    if kind == Kind::Move {
+        chains::Graph::new(&staged, definition)?;
+    }
+    if flip_links {
+        flip_graph::validate_authored_selection(&staged, definition, handle, p.id, &dependencies)?;
+    } else {
+        flip_graph::preserve_authored_selection(doc, &staged, definition)?;
+    }
     *doc = staged;
     Ok(handle)
 }
@@ -763,8 +878,13 @@ fn move_connections(p: &Parameter, key_point: Option<XyKeyPoint>) -> [BlockConne
 fn polar_connections(p: &Parameter, key_point: Option<XyKeyPoint>) -> [BlockConnection; 6] {
     let (x, y) = if key_point == Some(XyKeyPoint::Base) {
         ("BaseXDelta", "BaseYDelta")
-    } else { ("EndXDelta", "EndYDelta") };
-    [x, y, "Base", "End", "UpdatedBase", "UpdatedEnd"].map(|name| BlockConnection { code: p.id, name: name.into() })
+    } else {
+        ("EndXDelta", "EndYDelta")
+    };
+    [x, y, "Base", "End", "UpdatedBase", "UpdatedEnd"].map(|name| BlockConnection {
+        code: p.id,
+        name: name.into(),
+    })
 }
 
 fn action_move_delta(
@@ -803,12 +923,46 @@ pub(crate) fn retarget(
     targets: &[Handle],
     frame: Option<[DVec3; 2]>,
 ) -> Result<bool, &'static str> {
-    retarget_frame_points(doc, definition, handle, targets, frame.as_ref().map(|points| points.as_slice()))
+    retarget_frame_points(
+        doc,
+        definition,
+        handle,
+        targets,
+        frame.as_ref().map(|points| points.as_slice()),
+    )
 }
 
 pub(crate) fn validate_frame_points(points: &[DVec3]) -> Result<(), &'static str> {
     let plane = points.first().ok_or("Specify a stretch frame.")?.z;
     stretch::native_frame(points, plane).map(|_| ())
+}
+
+/// User-editable targets, with owned Point/grip aliases represented once.
+pub(crate) fn editable_action_targets(
+    doc: &Document,
+    definition: Handle,
+    kind: Kind,
+    parameter_id: i32,
+    dependencies: &[Handle],
+) -> Vec<Handle> {
+    let mut seen = std::collections::BTreeSet::new();
+    dependencies
+        .iter()
+        .filter_map(|handle| {
+            if doc.get_entity(*handle).is_some() {
+                Some(*handle)
+            } else if kind == Kind::Move {
+                chains::frame_target(doc, definition, parameter_id, *handle)
+            } else if kind == Kind::Flip
+                && flip_parameter_target(doc, definition, parameter_id, *handle)
+            {
+                Some(*handle)
+            } else {
+                None
+            }
+        })
+        .filter(|handle| seen.insert(*handle))
+        .collect()
 }
 
 pub(crate) fn retarget_frame_points(
@@ -822,11 +976,20 @@ pub(crate) fn retarget_frame_points(
         .into_iter()
         .find(|(h, _, _, _)| *h == handle)
         .ok_or("Select an action belonging to this block.")?;
-    let mut targets = targets.to_vec();
+    let mut targets = targets
+        .iter()
+        .map(|handle| {
+            if kind == Kind::Move {
+                chains::frame_target(doc, definition, id, *handle).unwrap_or(*handle)
+            } else {
+                *handle
+            }
+        })
+        .collect::<Vec<_>>();
     targets.sort();
     targets.dedup();
     if targets.is_empty() {
-        return Err("An action needs at least one object.");
+        return Err("An action needs at least one target.");
     }
     let members = &doc
         .block_records
@@ -835,16 +998,55 @@ pub(crate) fn retarget_frame_points(
         .ok_or("The definition is unavailable.")?
         .entity_handles;
     if targets.iter().any(|h| {
-        !members.contains(h)
-            || doc
-                .get_entity(*h)
-                .is_none_or(|e| e.common().owner_handle != definition || !supported(e))
+        if let Some(entity) = doc.get_entity(*h) {
+            !members.contains(h) || entity.common().owner_handle != definition || !supported(entity)
+        } else {
+            match kind {
+                Kind::Move => chains::frame_target(doc, definition, id, *h).is_none(),
+                Kind::Flip => !flip_parameter_target(doc, definition, id, *h),
+                _ => true,
+            }
+        }
     }) {
-        return Err("Select supported drawing objects belonging to this block.");
+        return Err("Select supported targets belonging to this block.");
     }
     let old_targets = action.dependencies.clone();
+    let flip_links = kind == Kind::Flip
+        && targets.iter().chain(&old_targets).any(|h| {
+            doc.get_entity(*h).is_none() && flip_parameter_target(doc, definition, id, *h)
+        });
+    if flip_links {
+        let dependencies =
+            flip_graph::authored_dependencies(doc, definition, id, &targets, &old_targets)?;
+        if dependencies == old_targets {
+            return Ok(false);
+        }
+        if frame.is_some() {
+            return Err("Only Stretch actions have an action frame.");
+        }
+        let mut staged = doc.clone();
+        let ObjectType::DynamicBlock(object) = staged.objects.get_mut(&handle).unwrap() else {
+            unreachable!()
+        };
+        targets::action_mut(&mut object.data)
+            .unwrap()
+            .dependencies
+            .clone_from(&dependencies);
+        flip_graph::validate_authored_selection(&staged, definition, handle, id, &dependencies)?;
+        flip_graph::preserve_authored_selection(doc, &staged, definition)?;
+        *doc = staged;
+        return Ok(true);
+    }
     let old_geometry = targets::geometry(doc, definition, kind, id, &old_targets)?;
-    let bookkeeping = old_targets.iter().copied().filter(|handle| !old_geometry.contains(handle)).collect::<Vec<_>>();
+    let bookkeeping = old_targets
+        .iter()
+        .copied()
+        .filter(|handle| {
+            !old_geometry.contains(handle)
+                && (kind != Kind::Move
+                    || chains::frame_target(doc, definition, id, *handle).is_none())
+        })
+        .collect::<Vec<_>>();
     let requested_targets = targets.clone();
     let mut staged = doc.clone();
     let ObjectType::DynamicBlock(o) = staged.objects.get_mut(&handle).unwrap() else {
@@ -887,7 +1089,11 @@ pub(crate) fn retarget_frame_points(
                 .ok_or("The Polar Stretch parameter is unavailable.")?
                 .end
                 .z;
-            let stretching = targets.iter().copied().filter(|handle| !a.handles.contains(handle)).collect::<Vec<_>>();
+            let stretching = targets
+                .iter()
+                .copied()
+                .filter(|handle| !a.handles.contains(handle))
+                .collect::<Vec<_>>();
             if let Some(corners) = frame {
                 let (points, bindings) = stretch::bind_frame(doc, &stretching, corners, plane)?;
                 a.points = points;
@@ -915,19 +1121,40 @@ pub(crate) fn retarget_frame_points(
         DynamicBlockData::ArrayAction(a) => a.action.dependencies = targets,
         _ => return Err("This action's selection cannot be edited yet."),
     }
-    if !bookkeeping.is_empty() {
+    if !bookkeeping.is_empty() || kind == Kind::Move {
         let action = targets::action_mut(&mut o.data).unwrap();
-        action.dependencies = old_targets.iter().copied().filter(|handle| bookkeeping.contains(handle) || requested_targets.contains(handle)).collect();
+        action.dependencies = old_targets
+            .iter()
+            .copied()
+            .filter(|handle| {
+                bookkeeping.contains(handle)
+                    || requested_targets.contains(handle)
+                    || (kind == Kind::Move
+                        && chains::frame_target(doc, definition, id, *handle)
+                            .is_some_and(|point| requested_targets.contains(&point)))
+            })
+            .collect();
         for handle in requested_targets {
-            if !action.dependencies.contains(&handle) { action.dependencies.push(handle); }
+            let already_present = action.dependencies.iter().any(|existing| {
+                *existing == handle
+                    || (kind == Kind::Move
+                        && chains::frame_target(doc, definition, id, *existing) == Some(handle))
+            });
+            if !already_present {
+                action.dependencies.push(handle);
+            }
         }
     }
     if frame.is_some() && !needs_frame(kind) {
         return Err("Only Stretch actions have an action frame.");
     }
+    if kind == Kind::Move {
+        chains::Graph::new(&staged, definition)?;
+    }
     if staged == *doc {
         return Ok(false);
     }
+    flip_graph::preserve_authored_selection(doc, &staged, definition)?;
     *doc = staged;
     Ok(true)
 }
@@ -987,16 +1214,37 @@ pub(crate) fn actions(
         })
         .collect()
 }
+
+pub(crate) fn action_node_id(doc: &Document, action_handle: Handle) -> Option<i32> {
+    let ObjectType::DynamicBlock(object) = doc.objects.get(&action_handle)? else {
+        return None;
+    };
+    match &object.data {
+        DynamicBlockData::MoveAction(a) => Some(a.action.element.eval.node_id),
+        DynamicBlockData::StretchAction(a) => Some(a.action.element.eval.node_id),
+        DynamicBlockData::PolarStretchAction(a) => Some(a.action.element.eval.node_id),
+        DynamicBlockData::FlipAction(a) => Some(a.action.element.eval.node_id),
+        DynamicBlockData::RotateAction(a) => Some(a.action.action.element.eval.node_id),
+        DynamicBlockData::ScaleAction(a) => Some(a.action.action.element.eval.node_id),
+        DynamicBlockData::ArrayAction(a) => Some(a.action.element.eval.node_id),
+        _ => None,
+    }
+}
+
 /// Drop erased objects from action targets without replacing graph nodes.
 pub(crate) fn prune_erased_targets(doc: &mut Document, definition: Handle) {
     let mut live = authoring::members(doc, definition)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     if let Ok(Some(graph)) = authoring::graph(doc, definition) {
-        live.extend(doc.objects.iter().filter_map(|(handle, object)| match object {
-            ObjectType::DynamicBlock(object) if object.owner == graph => Some(*handle),
-            _ => None,
-        }));
+        live.extend(
+            doc.objects
+                .iter()
+                .filter_map(|(handle, object)| match object {
+                    ObjectType::DynamicBlock(object) if object.owner == graph => Some(*handle),
+                    _ => None,
+                }),
+        );
     }
     let handles = actions(doc, definition)
         .into_iter()
@@ -1064,7 +1312,7 @@ pub(crate) fn reframe(doc: &mut Document, definition: Handle, t: &Transform) -> 
                     .into_iter()
                     .map(|p| {
                         let p = t.apply(p);
-                        codec::types::Vector2::new(p.x, p.y)
+                        document::types::Vector2::new(p.x, p.y)
                     })
                     .collect();
             }
@@ -1075,7 +1323,7 @@ pub(crate) fn reframe(doc: &mut Document, definition: Handle, t: &Transform) -> 
                     .into_iter()
                     .map(|p| {
                         let p = t.apply(p);
-                        codec::types::Vector2::new(p.x, p.y)
+                        document::types::Vector2::new(p.x, p.y)
                     })
                     .collect();
             }
@@ -1095,7 +1343,11 @@ pub(crate) fn reframe(doc: &mut Document, definition: Handle, t: &Transform) -> 
 }
 
 /// Keep scratch parameter output in the same coordinate frame as its definition.
-pub(crate) fn reframe_value(eval: &mut codec::objects::BlockEvalExpression, plane: f64, transform: &Transform) {
+pub(crate) fn reframe_value(
+    eval: &mut document::objects::BlockEvalExpression,
+    plane: f64,
+    transform: &Transform,
+) {
     if let BlockEvalValue::Point([x, y]) = eval.value {
         if matches!(eval.value_code, 10 | 11) {
             let point = transform.apply(Vector3::new(x, y, plane));
@@ -1117,7 +1369,9 @@ pub(crate) fn current(doc: &Document, p: &Parameter) -> DVec3 {
         _ => return p.end,
     };
     match eval.value {
-        BlockEvalValue::Point([x, y]) if matches!(eval.value_code, 10 | 11) => DVec3::new(x, y, p.end.z),
+        BlockEvalValue::Point([x, y]) if matches!(eval.value_code, 10 | 11) => {
+            DVec3::new(x, y, p.end.z)
+        }
         _ => p.end,
     }
 }
@@ -1197,7 +1451,14 @@ pub(crate) fn evaluate_value(
     parameter: Handle,
     input: Value,
 ) -> Result<bool, &'static str> {
-    evaluate_impl(doc, baseline, definition, parameter, input, Evaluation::default())
+    evaluate_impl(
+        doc,
+        baseline,
+        definition,
+        parameter,
+        input,
+        Evaluation::default(),
+    )
 }
 
 pub(crate) fn rebuild(
@@ -1209,7 +1470,17 @@ pub(crate) fn rebuild(
         return Ok(());
     };
     let input = value(doc, &p)?;
-    evaluate_impl(doc, baseline, definition, p.handle, input, Evaluation { rebuild: true, ..Evaluation::default() })?;
+    evaluate_impl(
+        doc,
+        baseline,
+        definition,
+        p.handle,
+        input,
+        Evaluation {
+            rebuild: true,
+            ..Evaluation::default()
+        },
+    )?;
     Ok(())
 }
 
@@ -1217,7 +1488,18 @@ pub(crate) fn rebuild(
 struct Evaluation<'a> {
     rebuild: bool,
     bases: Option<&'a std::collections::BTreeMap<Handle, DVec3>>,
+    action_bases: Option<&'a std::collections::BTreeMap<Handle, DVec3>>,
     base_changed: bool,
+    previous_bases: Option<&'a std::collections::BTreeMap<Handle, DVec3>>,
+    previous_graph: Option<&'a Document>,
+    previous_values: Option<&'a std::collections::BTreeMap<Handle, DVec3>>,
+    migrated_inputs: Option<&'a std::collections::BTreeMap<Handle, instance::ParameterFrame>>,
+    requested: Option<&'a std::collections::BTreeSet<Handle>>,
+    resolved_frames: Option<&'a mut std::collections::BTreeMap<Handle, instance::ParameterFrame>>,
+    resolved_active: Option<&'a mut std::collections::BTreeMap<Handle, instance::ParameterFrame>>,
+    frames: Option<&'a std::collections::BTreeMap<Handle, instance::ParameterFrame>>,
+    managed_flip: Option<Handle>,
+    managed_flips: &'a [Handle],
 }
 
 pub(crate) fn evaluate_framed(
@@ -1227,11 +1509,57 @@ pub(crate) fn evaluate_framed(
     parameter: Handle,
     input: Value,
     frames: &std::collections::BTreeMap<Handle, instance::ParameterFrame>,
+    action_bases: Option<&std::collections::BTreeMap<Handle, DVec3>>,
     base_changed: bool,
+    previous_frames: &std::collections::BTreeMap<Handle, instance::ParameterFrame>,
+    resolved_frames: &mut std::collections::BTreeMap<Handle, instance::ParameterFrame>,
+    resolved_active: &mut std::collections::BTreeMap<Handle, instance::ParameterFrame>,
+    managed_flip: Option<Handle>,
+    managed_flips: &[Handle],
 ) -> Result<bool, &'static str> {
-    let bases = frames.iter().map(|(handle, frame)| (*handle, frame.base)).collect();
-    evaluate_impl(doc, baseline, definition, parameter, input,
-        Evaluation { bases: Some(&bases), base_changed, rebuild: false })
+    let bases = frames
+        .iter()
+        .map(|(handle, frame)| (*handle, frame.base))
+        .collect();
+    let previous_bases = previous_frames
+        .iter()
+        .map(|(handle, frame)| (*handle, frame.base))
+        .collect();
+    let previous_values = previous_frames
+        .iter()
+        .map(|(handle, frame)| (*handle, frame.end))
+        .collect();
+    evaluate_impl(
+        doc,
+        baseline,
+        definition,
+        parameter,
+        input,
+        Evaluation {
+            bases: Some(&bases),
+            action_bases,
+            previous_bases: Some(&previous_bases),
+            previous_values: Some(&previous_values),
+            base_changed,
+            resolved_frames: Some(resolved_frames),
+            resolved_active: Some(resolved_active),
+            frames: Some(frames),
+            managed_flip,
+            managed_flips,
+            rebuild: false,
+            ..Evaluation::default()
+        },
+    )
+}
+
+/// Effective input before a bulk update, with the graph that produced it.
+#[derive(Clone, Copy)]
+pub(crate) struct RebuildInputs<'a> {
+    pub document: &'a Document,
+    pub frames: &'a std::collections::BTreeMap<Handle, instance::ParameterFrame>,
+    pub values: &'a std::collections::BTreeMap<Handle, DVec3>,
+    pub requested: &'a std::collections::BTreeSet<Handle>,
+    pub migrated_inputs: Option<&'a std::collections::BTreeMap<Handle, instance::ParameterFrame>>,
 }
 
 pub(crate) fn rebuild_framed(
@@ -1239,12 +1567,64 @@ pub(crate) fn rebuild_framed(
     baseline: &Document,
     definition: Handle,
     frames: &std::collections::BTreeMap<Handle, instance::ParameterFrame>,
-) -> Result<(), &'static str> {
-    let Some(p) = all_parameters(baseline, definition).into_iter().next() else { return Ok(()) };
-    let bases = frames.iter().map(|(handle, frame)| (*handle, frame.base)).collect();
-    evaluate_impl(doc, baseline, definition, p.handle, value(doc, &p)?,
-        Evaluation { bases: Some(&bases), rebuild: true, base_changed: false })?;
-    Ok(())
+    action_bases: Option<&std::collections::BTreeMap<Handle, DVec3>>,
+    previous: Option<RebuildInputs<'_>>,
+) -> Result<std::collections::BTreeMap<Handle, instance::ParameterFrame>, &'static str> {
+    rebuild_framed_with_flips(
+        doc,
+        baseline,
+        definition,
+        frames,
+        action_bases,
+        previous,
+        &[],
+        None,
+    )
+}
+
+fn rebuild_framed_with_flips(
+    doc: &mut Document,
+    baseline: &Document,
+    definition: Handle,
+    frames: &std::collections::BTreeMap<Handle, instance::ParameterFrame>,
+    action_bases: Option<&std::collections::BTreeMap<Handle, DVec3>>,
+    previous: Option<RebuildInputs<'_>>,
+    managed_flips: &[Handle],
+    resolved_active: Option<&mut std::collections::BTreeMap<Handle, instance::ParameterFrame>>,
+) -> Result<std::collections::BTreeMap<Handle, instance::ParameterFrame>, &'static str> {
+    let Some(p) = all_parameters(baseline, definition).into_iter().next() else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let bases = frames
+        .iter()
+        .map(|(handle, frame)| (*handle, frame.base))
+        .collect();
+    let previous_bases = previous.map(|p| p.frames.iter().map(|(h, f)| (*h, f.base)).collect());
+    let mut resolved_frames = std::collections::BTreeMap::new();
+    evaluate_impl(
+        doc,
+        baseline,
+        definition,
+        p.handle,
+        value(doc, &p)?,
+        Evaluation {
+            bases: Some(&bases),
+            action_bases,
+            frames: Some(frames),
+            rebuild: true,
+            base_changed: false,
+            previous_bases: previous_bases.as_ref().or(Some(&bases)),
+            previous_graph: previous.map(|p| p.document),
+            previous_values: previous.map(|p| p.values),
+            migrated_inputs: previous.and_then(|p| p.migrated_inputs),
+            requested: previous.map(|p| p.requested),
+            resolved_frames: Some(&mut resolved_frames),
+            resolved_active,
+            managed_flip: None,
+            managed_flips,
+        },
+    )?;
+    Ok(resolved_frames)
 }
 
 fn evaluate_impl(
@@ -1253,10 +1633,16 @@ fn evaluate_impl(
     definition: Handle,
     parameter: Handle,
     input: Value,
-    evaluation: Evaluation<'_>,
+    mut evaluation: Evaluation<'_>,
 ) -> Result<bool, &'static str> {
     let force = evaluation.rebuild;
-    let base_for = |p: &Parameter| evaluation.bases.and_then(|bases| bases.get(&p.handle)).copied().unwrap_or(p.base);
+    let base_for = |p: &Parameter| {
+        evaluation
+            .bases
+            .and_then(|bases| bases.get(&p.handle))
+            .copied()
+            .unwrap_or(p.base)
+    };
     if authoring::graph(baseline, definition)?.is_none() {
         return Err("The block authoring graph is unavailable.");
     }
@@ -1265,11 +1651,15 @@ fn evaluate_impl(
         .find(|p| p.handle == parameter)
         .ok_or("The block parameter is unavailable.")?;
     let base = base_for(&p);
-    if !base.is_finite() || (base.z - p.base.z).abs() > 1e-8 { return Err("Specify a finite parameter base in the definition plane."); }
+    if !base.is_finite() || (base.z - p.base.z).abs() > 1e-8 {
+        return Err("Specify a finite parameter base in the definition plane.");
+    }
     p.end += base - p.base;
     p.base = base;
     let input = match input {
-        Value::Frame { .. } => return Err("Evaluate complete parameter frames in a reference context."),
+        Value::Frame { .. } => {
+            return Err("Evaluate complete parameter frames in a reference context.")
+        }
         Value::Flip(_) if !p.flip => return Err("Select a Flip parameter."),
         Value::Point(_) if p.flip => return Err("Use the Flip grip to toggle its state."),
         Value::Point(mut position) => {
@@ -1365,8 +1755,10 @@ fn evaluate_impl(
         }
         value => value,
     };
+    let chain = chains::Graph::new(baseline, definition)?;
     let previous = value(doc, &p)?;
-    if !force && !evaluation.base_changed
+    if !force
+        && !evaluation.base_changed
         && match (previous, input) {
             (Value::Flip(a), Value::Flip(b)) => a == b,
             (Value::Point(a), Value::Point(b)) => a.distance(b) < 1e-10,
@@ -1377,6 +1769,71 @@ fn evaluate_impl(
     }
     let mut staged = doc.clone();
     set_value(&mut staged, &p, input)?;
+    let previous_chain =
+        chains::Graph::new(evaluation.previous_graph.unwrap_or(baseline), definition)?;
+    let mut autonomous = previous_chain.autonomous(
+        doc,
+        evaluation.previous_values,
+        evaluation.previous_bases.or(evaluation.bases),
+    )?;
+    if let Some(migrated) = evaluation.migrated_inputs {
+        autonomous.extend(migrated.iter().map(|(handle, frame)| (*handle, *frame)));
+    }
+    let requested = if let Some(requested) = evaluation.requested {
+        requested.clone()
+    } else if force {
+        std::collections::BTreeSet::new()
+    } else {
+        std::collections::BTreeSet::from([parameter])
+    };
+    let mut detached_points = Vec::new();
+    for p in previous_chain
+        .receivers()
+        .filter(|p| !chain.contains(p.handle))
+    {
+        if let Some(current) = all_parameters(baseline, definition)
+            .into_iter()
+            .find(|q| q.handle == p.handle && (q.point || q.linear || q.flip))
+        {
+            let frame = autonomous[&p.handle];
+            if !current.flip {
+                set_value(&mut staged, &current, Value::Point(frame.end))?;
+            }
+            detached_points.push((current, frame));
+        }
+    }
+    let mut active_frames = detached_points
+        .iter()
+        .map(|(parameter, frame)| (parameter.handle, *frame))
+        .collect();
+    let chain_values = chain.resolve(
+        doc,
+        &mut staged,
+        &requested,
+        &autonomous,
+        evaluation.previous_values,
+        evaluation.bases,
+        &mut active_frames,
+    )?;
+    if let Some(resolved) = evaluation.resolved_active.as_deref_mut() {
+        resolved.extend(
+            active_frames
+                .iter()
+                .map(|(handle, frame)| (*handle, *frame)),
+        );
+    }
+    let base_for = |p: &Parameter| {
+        active_frames
+            .get(&p.handle)
+            .map(|f| f.base)
+            .or_else(|| {
+                evaluation
+                    .bases
+                    .and_then(|bases| bases.get(&p.handle))
+                    .copied()
+            })
+            .unwrap_or(p.base)
+    };
     let baseline_members = authoring::members(baseline, definition)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
@@ -1402,7 +1859,15 @@ fn evaluate_impl(
         });
     }
     let all = actions(baseline, definition);
-    let order = chain_order(&all)?;
+    let (mut order, successors) = action_schedule(baseline, definition, &all)?;
+    flip_graph::order_linked_scales(
+        baseline,
+        definition,
+        &all,
+        evaluation.managed_flips,
+        &mut order,
+    );
+    let ordered_arrays = array::Sequence::new(&all, &successors);
     let mut affected = std::collections::BTreeSet::new();
     let mut geometric_targets = std::collections::BTreeMap::new();
     let mut prepared = std::collections::BTreeMap::new();
@@ -1426,35 +1891,70 @@ fn evaluate_impl(
             };
             stretch::validate_polar(baseline, definition, s)?;
         }
-        let geometric = targets::geometry(baseline, definition, *kind, *id, &a.dependencies)?;
+        // An inactive Flip has no effect on its targets. Retained drawings may
+        // include action/parameter dependencies we cannot transform yet; do not
+        // let those inactive links prevent another parameter from evaluating.
+        let inactive_flip = *kind == Kind::Flip
+            && parameters(baseline, definition, *kind)
+                .into_iter()
+                .find(|p| p.id == *id)
+                .is_some_and(|p| value(&staged, &p) == Ok(Value::Flip(false)));
+        let active_dependencies;
+        let dependencies = if inactive_flip
+            || evaluation.managed_flip == Some(*action_handle)
+            || evaluation.managed_flips.contains(action_handle)
+        {
+            active_dependencies = a
+                .dependencies
+                .iter()
+                .copied()
+                .filter(|h| baseline.get_entity(*h).is_some())
+                .collect::<Vec<_>>();
+            &active_dependencies
+        } else {
+            &a.dependencies
+        };
+        let geometric = targets::geometry(baseline, definition, *kind, *id, dependencies)?;
         affected.extend(geometric.iter().copied());
         let target_count = geometric.len();
         geometric_targets.insert(*action_handle, geometric);
         if *kind == Kind::Array {
-            let ObjectType::DynamicBlock(object) = &baseline.objects[action_handle] else { unreachable!() };
-            let DynamicBlockData::ArrayAction(arr) = &object.data else { unreachable!() };
+            let ObjectType::DynamicBlock(object) = &baseline.objects[action_handle] else {
+                unreachable!()
+            };
+            let DynamicBlockData::ArrayAction(arr) = &object.data else {
+                unreachable!()
+            };
             let q = parameters(baseline, definition, Kind::Array)
-                .into_iter().find(|p| p.id == *id)
+                .into_iter()
+                .find(|p| p.id == *id)
                 .ok_or("An action has an unsupported parameter binding.")?;
             if !supported_parameter(baseline, q.handle) {
                 return Err("This parameter uses value constraints not supported yet.");
             }
-            if arr.column_offset <= 1e-6 || !arr.column_offset.is_finite()
+            if arr.column_offset <= 1e-6
+                || !arr.column_offset.is_finite()
                 || (q.xy && (arr.row_offset <= 1e-6 || !arr.row_offset.is_finite()))
                 || grip_roles::scalar_mask(&q, &object.data) == Some(0)
             {
                 return Err("This Array action uses options not supported yet.");
             }
-            if !a.action_ids.is_empty() {
-                return Err("An Array action cannot chain follow-up actions yet.");
-            }
-            array_plans.insert(*action_handle, array::Plan::new(
-                &q, base_for(&q), current(&staged, &q), arr, target_count,
-                &mut remaining_array_entities,
-            )?);
+            array_plans.insert(
+                *action_handle,
+                array::Plan::new(
+                    &q,
+                    base_for(&q),
+                    current(&staged, &q),
+                    arr,
+                    target_count,
+                    &mut remaining_array_entities,
+                )?,
+            );
             continue;
         }
-        if a.dependencies.is_empty() { continue; }
+        if a.dependencies.is_empty() {
+            continue;
+        }
         let q = parameters(baseline, definition, *kind)
             .into_iter()
             .find(|p| p.id == *id)
@@ -1468,10 +1968,11 @@ fn evaluate_impl(
             unreachable!()
         };
         let move_translation = match &action_object.data {
-            DynamicBlockData::MoveAction(move_action) => {
-                Some(action_move_delta(&q, base, end, &move_action.connections)
-                    .map(|delta| options::displacement(&move_action.offsets, delta)).transpose()?)
-            }
+            DynamicBlockData::MoveAction(move_action) => Some(
+                action_move_delta(&q, base, end, &move_action.connections)
+                    .map(|delta| options::displacement(&move_action.offsets, delta))
+                    .transpose()?,
+            ),
             _ => None,
         };
         let transform = match kind {
@@ -1481,17 +1982,26 @@ fn evaluate_impl(
                     .ok_or("This Move action uses unsupported parameter connections.")?,
             ),
             Kind::Stretch => {
-                let DynamicBlockData::StretchAction(action) = &action_object.data else { unreachable!() };
+                let DynamicBlockData::StretchAction(action) = &action_object.data else {
+                    unreachable!()
+                };
                 let delta = action_move_delta(&q, base, end, &action.connections)
                     .ok_or("This Stretch action uses unsupported parameter connections.")?;
-                crate::command::EntityTransform::Translate(options::displacement(&action.offsets, delta)?)
+                crate::command::EntityTransform::Translate(options::displacement(
+                    &action.offsets,
+                    delta,
+                )?)
             }
             Kind::PolarStretch => crate::command::EntityTransform::Translate(end - q.end),
             Kind::Rotate => {
                 let a = end - base;
                 let b = q.end - q.base;
                 crate::command::EntityTransform::Rotate {
-                    center: options::pivot(options::base(baseline, *action_handle).ok_or("The Rotate action base is unavailable.")?, q.base)?,
+                    center: options::pivot(
+                        options::base(baseline, *action_handle)
+                            .ok_or("The Rotate action base is unavailable.")?,
+                        q.base,
+                    )?,
                     axis: DVec3::Z,
                     angle_rad: a.y.atan2(a.x) - b.y.atan2(b.x),
                 }
@@ -1500,9 +2010,17 @@ fn evaluate_impl(
                 if value(&staged, &q)? == Value::Flip(false) {
                     crate::command::EntityTransform::Translate(DVec3::ZERO)
                 } else {
+                    let (p1, p2) = if let Some(frame) = active_frames
+                        .get(&q.handle)
+                        .or_else(|| evaluation.frames.and_then(|f| f.get(&q.handle)))
+                    {
+                        (frame.base, frame.end)
+                    } else {
+                        (q.base, q.end)
+                    };
                     crate::command::EntityTransform::Mirror {
-                        p1: q.base,
-                        p2: q.end,
+                        p1,
+                        p2,
                         working_normal: DVec3::Z,
                     }
                 }
@@ -1513,7 +2031,11 @@ fn evaluate_impl(
                     return Err("Specify a positive scale distance.");
                 }
                 crate::command::EntityTransform::Scale {
-                    center: options::pivot(options::base(baseline, *action_handle).ok_or("The Scale action base is unavailable.")?, q.base)?,
+                    center: options::pivot(
+                        options::base(baseline, *action_handle)
+                            .ok_or("The Scale action base is unavailable.")?,
+                        q.base,
+                    )?,
                     factor,
                 }
             }
@@ -1532,8 +2054,12 @@ fn evaluate_impl(
                 if grip_roles::scalar_mask(&q, &o.data) == Some(0) =>
             {
                 return Err(match &o.data {
-                    DynamicBlockData::FlipAction(_) => "This Flip action uses options not supported yet.",
-                    DynamicBlockData::RotateAction(_) => "This Rotate action uses options not supported yet.",
+                    DynamicBlockData::FlipAction(_) => {
+                        "This Flip action uses options not supported yet."
+                    }
+                    DynamicBlockData::RotateAction(_) => {
+                        "This Rotate action uses options not supported yet."
+                    }
                     _ => "This Scale action uses options not supported yet.",
                 });
             }
@@ -1541,12 +2067,111 @@ fn evaluate_impl(
         }
         if *kind == Kind::PolarStretch {
             let (old_length, new_length) = (q.end.distance(q.base), end.distance(base));
-            if !old_length.is_finite() || !new_length.is_finite() || old_length <= 1e-9 || new_length <= 1e-9 {
+            if !old_length.is_finite()
+                || !new_length.is_finite()
+                || old_length <= 1e-9
+                || new_length <= 1e-9
+            {
                 return Err("The Polar parameter needs a nonzero distance.");
             }
         }
         prepared.insert(*action_handle, (q, base, end, transform));
     }
+    if let Some((handle, baseline_point)) = super::block_basepoint::parameter(baseline, definition)
+    {
+        let node = baseline_point.parameter.parameter.element.eval.node_id;
+        let mut point = v(baseline_point.point);
+        for &index in &order {
+            let (action, binding, kind, _) = all[index];
+            if !matches!(kind, Kind::Stretch | Kind::Flip)
+                || !binding.dependencies.contains(&handle)
+                || !binding.action_ids.contains(&node)
+            {
+                continue;
+            }
+            match &prepared[&action].3 {
+                crate::command::EntityTransform::Translate(delta) => point += *delta,
+                crate::command::EntityTransform::Mirror {
+                    p1,
+                    p2,
+                    working_normal,
+                } => {
+                    point =
+                        super::view::transform::reflected_point(point, *p1, *p2, *working_normal);
+                }
+                _ => unreachable!(),
+            }
+        }
+        let Some(ObjectType::DynamicBlock(object)) = staged.objects.get_mut(&handle) else {
+            unreachable!()
+        };
+        let DynamicBlockData::BasePointParameter(basepoint) = &mut object.data else {
+            unreachable!()
+        };
+        if !point.is_finite() {
+            return Err("The parameter value produces non-finite geometry.");
+        }
+        basepoint.point = native(point);
+    }
+    ordered_arrays.reserve_nested(
+        &all,
+        &order,
+        &geometric_targets,
+        &array_plans,
+        &mut remaining_array_entities,
+    )?;
+    let mut tags = (!array_plans.is_empty()).then(|| array::Tags::new(&staged, definition));
+    let apply = |entity: &mut EntityType,
+                 action_handle: Handle,
+                 kind: Kind|
+     -> Result<(), &'static str> {
+        let (q, base, end, transform) = &prepared[&action_handle];
+        let (base, end) = (*base, *end);
+        let ObjectType::DynamicBlock(object) = &baseline.objects[&action_handle] else {
+            unreachable!()
+        };
+        match &object.data {
+            DynamicBlockData::StretchAction(action) => {
+                let crate::command::EntityTransform::Translate(delta) = transform else {
+                    unreachable!()
+                };
+                stretch::apply(entity, action, *delta)?;
+            }
+            DynamicBlockData::PolarStretchAction(action) => {
+                if action.connections.iter().any(|c| c.code != q.id) {
+                    return Err("This Polar Stretch action uses a different parameter binding.");
+                }
+                stretch::apply_polar_frame(entity, action, q.base, q.end, base, end)?;
+            }
+            _ => super::view::dispatch::apply_transform(entity, transform),
+        }
+        if matches!(kind, Kind::Rotate | Kind::Scale)
+            && options::base(baseline, action_handle).is_some_and(|action| action.dependent)
+        {
+            let translation = if kind == Kind::Scale {
+                let action_opt = options::base(baseline, action_handle)
+                    .ok_or("The action base is unavailable.")?;
+                let pivot_def = options::pivot(action_opt, q.base)?;
+                let action_base = evaluation
+                    .action_bases
+                    .and_then(|m| m.get(&action_handle))
+                    .copied()
+                    .unwrap_or(base + (pivot_def - q.base));
+                action_base - pivot_def
+            } else {
+                base - q.base
+            };
+            super::view::dispatch::apply_transform(
+                entity,
+                &crate::command::EntityTransform::Translate(translation),
+            );
+        }
+        let bounds = entity.as_entity().bounding_box();
+        if !v(bounds.min).is_finite() || !v(bounds.max).is_finite() {
+            return Err("The parameter value produces non-finite geometry.");
+        }
+        Ok(())
+    };
     for h in affected {
         let mut entity = baseline
             .get_entity(h)
@@ -1559,82 +2184,92 @@ fn evaluate_impl(
         if let Some(e) = staged.get_entity(h) {
             entity.common_mut().invisible = e.common().invisible;
         }
-        for index in &order {
-            let (action_handle, a, kind, _id) = &all[*index];
-            if !a.dependencies.contains(&h) || *kind == Kind::Array {
+        let source_id = authoring::element_id(&entity).map_or(h.value(), |id| id as u64);
+        let mut copies: Vec<array::Copy> = Vec::new();
+        for &index in &order {
+            let (action_handle, a, kind, _) = all[index];
+            if !a.dependencies.contains(&h) {
                 continue;
             }
-            let (q, base, end, transform) = prepared.get(action_handle).unwrap();
-            let (base, end) = (*base, *end);
-            let ObjectType::DynamicBlock(o) = &baseline.objects[action_handle] else { unreachable!() };
-            if let DynamicBlockData::StretchAction(s) = &o.data {
-                let crate::command::EntityTransform::Translate(delta) = transform else { unreachable!() };
-                stretch::apply(&mut entity, s, *delta)?;
-            } else if let DynamicBlockData::PolarStretchAction(s) = &o.data {
-                if s.connections.iter().any(|c| c.code != q.id) {
-                    return Err("This Polar Stretch action uses a different parameter binding.");
+            if kind == Kind::Array {
+                if !ordered_arrays.contains(index)
+                    || !geometric_targets[&action_handle].contains(&h)
+                {
+                    continue;
                 }
-                let direction = q.end - q.base;
-                if direction.length() <= 1e-9 {
-                    return Err("The Polar parameter needs a nonzero distance.");
+                let tags = tags.as_mut().expect("array plans have a tag allocator");
+                let parents: Vec<_> = copies
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, copy)| ordered_arrays.follows(copy.producer, index))
+                    .map(|(i, _)| i)
+                    .collect();
+                for (cell, delta) in array_plans[&action_handle].displacements() {
+                    copies.push(array::Copy {
+                        entity: array::displaced(&entity, delta)?,
+                        producer: index,
+                        id: tags.ordered(source_id, action_handle, cell),
+                    });
+                    for &parent in &parents {
+                        let copy = &copies[parent];
+                        let generated = array::Copy {
+                            entity: array::displaced(&copy.entity, delta)?,
+                            producer: index,
+                            id: tags.ordered(copy.id as u64, action_handle, cell),
+                        };
+                        copies.push(generated);
+                    }
                 }
-                stretch::apply_polar_frame(&mut entity, s, q.base, q.end, base, end)?;
             } else {
-                super::view::dispatch::apply_transform(&mut entity, transform);
-            }
-            if matches!(kind, Kind::Rotate | Kind::Scale)
-                && options::base(baseline, *action_handle).is_some_and(|action| action.dependent)
-            {
-                super::view::dispatch::apply_transform(&mut entity,
-                    &crate::command::EntityTransform::Translate(base - q.base));
-            }
-            let bounds = entity.as_entity().bounding_box();
-            if !v(bounds.min).is_finite() || !v(bounds.max).is_finite() {
-                return Err("The parameter value produces non-finite geometry.");
+                apply(&mut entity, action_handle, kind)?;
+                for copy in copies
+                    .iter_mut()
+                    .filter(|copy| ordered_arrays.follows(copy.producer, index))
+                {
+                    apply(&mut copy.entity, action_handle, kind)?;
+                }
             }
         }
         *staged
             .get_entity_mut(h)
             .ok_or("An action target was removed.")? = entity;
+        for copy in copies {
+            array::publish(&mut staged, definition, copy.entity, Some(copy.id))?;
+        }
     }
-    for (action_handle, _, kind, _) in &all {
-        if *kind != Kind::Array {
+    for (index, (action_handle, _, kind, _)) in all.iter().enumerate() {
+        if *kind != Kind::Array || ordered_arrays.contains(index) {
             continue;
         }
-        for (k, disp) in array_plans[action_handle].displacements() {
-            for target_h in &geometric_targets[action_handle] {
-                let mut clone = staged
-                    .get_entity(*target_h)
-                    .cloned()
-                    .ok_or("An action target is unavailable.")?;
-                super::view::dispatch::apply_transform(
-                    &mut clone,
-                    &crate::command::EntityTransform::Translate(disp),
-                );
-                let bounds = clone.as_entity().bounding_box();
-                if !v(bounds.min).is_finite() || !v(bounds.max).is_finite() {
-                    return Err("The parameter value produces non-finite geometry.");
-                }
-                let new_h = staged.allocate_handle();
-                clone.common_mut().handle = new_h;
-                clone.common_mut().owner_handle = definition;
-                clone.common_mut().raw_record = None;
-                clone.common_mut().xdictionary_handle = None;
-                clone.common_mut().reactors.clear();
-                crate::scene::Scene::reset_clone_subhandles(&mut staged, &mut clone);
-                let base_id = authoring::element_id(&clone);
-                staged
-                    .add_entity(clone)
-                    .map_err(|_| "Could not add array item.")?;
-                if let Some(base_id) = base_id {
-                    let clone_id = base_id.wrapping_add((k as i32).wrapping_mul(100_000));
-                    authoring::set_entity_tag(
-                        &mut staged,
-                        new_h,
-                        authoring::element_tag(clone_id, new_h),
-                    );
-                }
+        for (cell, delta) in array_plans[action_handle].displacements() {
+            for target in &geometric_targets[action_handle] {
+                let source = staged
+                    .get_entity(*target)
+                    .ok_or("An array target is unavailable.")?;
+                let copy = array::displaced(source, delta)?;
+                let id = tags
+                    .as_mut()
+                    .expect("array plans have a tag allocator")
+                    .legacy(source, *action_handle, cell);
+                array::publish(&mut staged, definition, copy, id)?;
             }
+        }
+    }
+    for (p, frame) in detached_points {
+        if !p.flip {
+            set_value(&mut staged, &p, Value::Point(frame.end))?;
+        }
+        if let Some(frames) = evaluation.resolved_frames.as_deref_mut() {
+            frames.insert(p.handle, frame);
+        }
+    }
+    for (handle, frame) in chain_values {
+        if let Some(frames) = evaluation.resolved_frames.as_deref_mut() {
+            frames.insert(handle, frame);
+        }
+        let p = chain.parameter(handle);
+        if !p.flip {
+            set_value(&mut staged, p, Value::Point(frame.end))?;
         }
     }
     *doc = staged;
@@ -1645,7 +2280,7 @@ fn supported_parameter(doc: &Document, handle: Handle) -> bool {
     let Some(ObjectType::DynamicBlock(o)) = doc.objects.get(&handle) else {
         return false;
     };
-    let valid_value_set = |s: &codec::objects::BlockParameterValueSet| {
+    let valid_value_set = |s: &document::objects::BlockParameterValueSet| {
         s.flags & !0x0f == 0
             && !(s.flags & 4 != 0 && s.flags & 8 != 0)
             && s.minimum.is_finite()
@@ -1678,13 +2313,23 @@ fn supported_parameter(doc: &Document, handle: Handle) -> bool {
 /// order the operator chose and has to decide the sequence. A chain names its
 /// follow-up by the node the evaluation graph gives that action, the same id
 /// space the parameter's own element lists are read in. Actions no chain points
-/// at keep the order the evaluation graph lists. Every name is checked against
-/// this definition's actions before any ordering happens, so a chain that
-/// resolves to nothing, that two actions answer to, that names more than one
-/// follow-up, that joins two sequences, or that runs into an array action is
-/// refused. A chain that loops back on itself has no first action, so the loop is
-/// left in the order the graph lists rather than guessed at.
-fn chain_order(all: &[(Handle, &BlockAction, Kind, i32)]) -> Result<Vec<usize>, &'static str> {
+/// at keep the order the evaluation graph lists. Known non-action nodes and
+/// actions of other parameters are retained connections rather than follow-ups.
+/// Unresolved or ambiguous names are refused. Retained loops preserve graph
+/// order within each cycle.
+fn chain_order(
+    doc: &Document,
+    definition: Handle,
+    all: &[(Handle, &BlockAction, Kind, i32)],
+) -> Result<Vec<usize>, &'static str> {
+    action_schedule(doc, definition, all).map(|(order, _)| order)
+}
+
+fn action_schedule(
+    doc: &Document,
+    definition: Handle,
+    all: &[(Handle, &BlockAction, Kind, i32)],
+) -> Result<(Vec<usize>, Vec<Vec<usize>>), &'static str> {
     let mut by_chain_id = std::collections::BTreeMap::new();
     let mut shared_chain_ids = std::collections::BTreeSet::new();
     let mut listed = std::collections::BTreeSet::new();
@@ -1699,53 +2344,109 @@ fn chain_order(all: &[(Handle, &BlockAction, Kind, i32)]) -> Result<Vec<usize>, 
             shared_chain_ids.insert(node);
         }
     }
-    let mut followed_by = std::collections::BTreeMap::new();
-    for (index, (_, action, _, _)) in all.iter().enumerate() {
-        if action.action_ids.len() > 1 {
-            return Err("An action chain cannot name more than one follow-up action yet.");
-        }
+    let graph_nodes: std::collections::BTreeSet<_> = authoring::graph(doc, definition)?
+        .and_then(|h| match doc.objects.get(&h) {
+            Some(ObjectType::DynamicBlock(o)) => match &o.data {
+                DynamicBlockData::EvaluationGraph(g) => Some(
+                    g.nodes
+                        .iter()
+                        .filter_map(|n| match doc.objects.get(&n.expression)? {
+                            ObjectType::BlockVisibilityParameter(p) => Some(p.eval_node_id),
+                            ObjectType::DynamicBlock(o) => match &o.data {
+                                DynamicBlockData::ProxyNode(p) => Some(p.node_id),
+                                DynamicBlockData::BasePointParameter(p) => {
+                                    Some(p.parameter.parameter.element.eval.node_id)
+                                }
+                                DynamicBlockData::AlignmentParameter(p) => {
+                                    Some(p.parameter.parameter.element.eval.node_id)
+                                }
+                                DynamicBlockData::LookupParameter(p) => {
+                                    Some(p.parameter.parameter.element.eval.node_id)
+                                }
+                                DynamicBlockData::UserParameter(p) => {
+                                    Some(p.parameter.parameter.element.eval.node_id)
+                                }
+                                DynamicBlockData::LookupAction(p) => {
+                                    Some(p.action.element.eval.node_id)
+                                }
+                                DynamicBlockData::GripLocationComponent(p) => Some(p.eval.node_id),
+                                DynamicBlockData::AlignmentGrip(p)
+                                | DynamicBlockData::LinearGrip(p) => {
+                                    Some(p.grip.element.eval.node_id)
+                                }
+                                DynamicBlockData::FlipGrip(p) => Some(p.grip.element.eval.node_id),
+                                DynamicBlockData::LookupGrip(p)
+                                | DynamicBlockData::PolarGrip(p)
+                                | DynamicBlockData::RotationGrip(p)
+                                | DynamicBlockData::VisibilityGrip(p)
+                                | DynamicBlockData::XYGrip(p)
+                                | DynamicBlockData::PropertiesTableGrip(p) => {
+                                    Some(p.element.eval.node_id)
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .chain(all_parameters(doc, definition).into_iter().map(|p| p.id))
+                        .collect(),
+                ),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut predecessors = vec![0; all.len()];
+    let mut successors = vec![Vec::new(); all.len()];
+    for (index, (_, action, kind, owner)) in all.iter().enumerate() {
+        let mut seen = std::collections::BTreeSet::new();
         for id in &action.action_ids {
             if shared_chain_ids.contains(id) {
                 return Err("An action chain names more than one action.");
             }
             let Some(&next) = by_chain_id.get(id) else {
+                // Native Stretch records also carry binding codes in this list.
+                if graph_nodes.contains(id) || matches!(kind, Kind::Stretch | Kind::PolarStretch) {
+                    continue;
+                }
                 return Err("An action chain names an object outside this block.");
             };
-            if all[next].2 == Kind::Array {
-                return Err("An Array action cannot be the follow-up of a chain yet.");
+            if all[next].3 != *owner || !seen.insert(next) {
+                continue;
             }
-            if followed_by.insert(next, index).is_some() {
-                return Err("An action chain joins two sequences.");
-            }
+            successors[index].push(next);
+            predecessors[next] += 1;
         }
     }
     let mut order = Vec::with_capacity(all.len());
-    let mut placed = std::collections::BTreeSet::new();
-    for head in 0..all.len() {
-        if followed_by.contains_key(&head) {
-            continue;
-        }
+    let heads: Vec<_> = predecessors
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count == 0).then_some(index))
+        .collect();
+    for head in heads {
         let mut queue = std::collections::VecDeque::from([head]);
         while let Some(index) = queue.pop_front() {
-            if !placed.insert(index) {
-                continue;
-            }
             order.push(index);
-            for id in &all[index].1.action_ids {
-                queue.push_back(by_chain_id[id]);
+            // A join runs once all named predecessors have run. When a
+            // branch releases several actions together, keep its list order.
+            for &next in &successors[index] {
+                predecessors[next] -= 1;
+                if predecessors[next] == 0 {
+                    queue.push_back(next);
+                }
             }
         }
     }
-    // A cycle has no head, so whatever is left keeps the graph's own order.
-    for index in 0..all.len() {
-        if placed.insert(index) {
-            order.push(index);
-        }
+    if order.len() < all.len() {
+        chain::append_retained_cycles(&successors, &predecessors, &mut order);
     }
-    Ok(order)
+    Ok((order, successors))
 }
 
-pub(crate) fn constrain_value_set(value: f64, set: &codec::objects::BlockParameterValueSet) -> f64 {
+pub(crate) fn constrain_value_set(
+    value: f64,
+    set: &document::objects::BlockParameterValueSet,
+) -> f64 {
     let minimum = (set.flags & 1 != 0).then_some(set.minimum);
     let maximum = (set.flags & 2 != 0).then_some(set.maximum);
     let clamp = |value: f64| {
@@ -1779,7 +2480,7 @@ pub(crate) fn constrain_value_set(value: f64, set: &codec::objects::BlockParamet
     value
 }
 
-pub(crate) fn constrain_angle(value: f64, set: &codec::objects::BlockParameterValueSet) -> f64 {
+pub(crate) fn constrain_angle(value: f64, set: &document::objects::BlockParameterValueSet) -> f64 {
     if set.flags == 0 {
         return value;
     }

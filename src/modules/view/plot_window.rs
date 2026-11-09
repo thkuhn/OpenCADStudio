@@ -12,6 +12,12 @@ pub struct PlotWindowCommand {
     p1: Option<DVec3>,
 }
 
+impl Default for PlotWindowCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlotWindowCommand {
     pub fn new() -> Self {
         Self { p1: None }
@@ -70,7 +76,6 @@ impl CadCommand for PlotWindowCommand {
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,
-            dash_align_end: None,
             text_verts: Vec::new(),
             name: "plotwindow_preview".into(),
             points: vec![

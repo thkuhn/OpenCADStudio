@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
-use codec::xdata::ExtendedDataRecord;
-use codec::{Document, EntityType, Handle};
+use document::xdata::ExtendedDataRecord;
+use document::{Document, EntityType, Handle};
 use interprocess::local_socket::traits::Stream as StreamTrait;
 use interprocess::local_socket::{GenericNamespaced, Stream, ToNsName};
 
@@ -802,9 +802,11 @@ impl HostApi for PluginHostApi {
         // API v14: identity + design descriptor in, reference-only display
         // handles out. A staged write mutates the document: the cached
         // snapshot invalidates like every write path.
-        match self.client.request(PluginRequest::StagePluginClassInstance {
-            instance: instance.clone(),
-        }) {
+        match self
+            .client
+            .request(PluginRequest::StagePluginClassInstance {
+                instance: instance.clone(),
+            }) {
             Ok(PluginResponse::StagePluginClassInstanceResult(result)) => {
                 if result.is_ok() {
                     self.document_cache = OnceCell::new();
@@ -901,6 +903,25 @@ impl HostApi for PluginHostApi {
             }
         }
     }
+
+    fn validate_parametric_chain(
+        &self,
+        chain: &crate::host::ParametricChain,
+        tolerance: f64,
+    ) -> Result<(), String> {
+        // Pure validation: no document snapshot invalidation.
+        match self.client.request(PluginRequest::ValidateParametricChain {
+            chain: chain.clone(),
+            tolerance,
+        }) {
+            Ok(PluginResponse::ValidateParametricChainResult(result)) => result,
+            Ok(PluginResponse::Error(error)) => Err(error),
+            Ok(other) => Err(format!(
+                "unexpected parametric validation response: {other:?}"
+            )),
+            Err(error) => Err(error.to_string()),
+        }
+    }
 }
 
 /// Sentinel reader used when the shared-memory view could not be initialized.
@@ -924,8 +945,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
 
-    use codec::entities::Point;
-    use codec::{EntityType, Handle};
+    use document::entities::Point;
+    use document::{EntityType, Handle};
     use interprocess::local_socket::{
         traits::{Listener, Stream as StreamTrait},
         GenericNamespaced, ListenerOptions, Stream, ToNsName,
@@ -1003,6 +1024,46 @@ mod tests {
             .unwrap();
         });
         api.push_info("hello host");
+        peer_handle.join().unwrap();
+    }
+
+    #[test]
+    fn validate_parametric_chain_awaits_typed_responses() {
+        let (api, mut peer) = make_client();
+        let chain = crate::host::ParametricChain {
+            plane: crate::host::ParametricPlane::Plan,
+            segments: Vec::new(),
+            layer: String::new(),
+        };
+        let peer_handle = thread::spawn(move || {
+            for result in [Ok(()), Err("hard-corner seam".to_owned())] {
+                match recv::<PluginToHost>(&mut peer).unwrap() {
+                    PluginToHost::Request(req) => match *req {
+                        PluginRequest::ValidateParametricChain {
+                            chain: decoded,
+                            tolerance,
+                        } => {
+                            assert!(decoded.segments.is_empty());
+                            assert_eq!(tolerance, 1e-3);
+                        }
+                        other => panic!("unexpected: {other:?}"),
+                    },
+                    other => panic!("unexpected: {other:?}"),
+                }
+                send(
+                    &mut peer,
+                    &HostToPlugin::Response(Box::new(
+                        PluginResponse::ValidateParametricChainResult(result),
+                    )),
+                )
+                .unwrap();
+            }
+        });
+        assert_eq!(api.validate_parametric_chain(&chain, 1e-3), Ok(()));
+        assert_eq!(
+            api.validate_parametric_chain(&chain, 1e-3),
+            Err("hard-corner seam".to_owned())
+        );
         peer_handle.join().unwrap();
     }
 

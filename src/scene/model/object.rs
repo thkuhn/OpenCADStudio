@@ -1,6 +1,6 @@
 // Shared value types used by the dispatch and grip systems.
 
-use codec::types::{Color as AcadColor, Handle, LineWeight};
+use document::types::{Color as AcadColor, Handle, LineWeight};
 use glam::DVec3;
 use crate::command::LiveFieldValue;
 
@@ -10,6 +10,8 @@ pub struct BlockParameterKey {
     pub document: u64,
     pub definition: Handle,
     pub insert: Handle,
+    pub batch_generation: Option<u64>,
+    pub editor_session: Option<u64>,
     pub parameter: Handle,
     pub component: BlockParameterComponent,
 }
@@ -20,6 +22,7 @@ pub enum BlockParameterComponent {
     Distance,
     Angle,
     Flip,
+    Visibility(u64),
     TableRow(u64),
     LookupOutput { column: usize, revision: u64 },
 }
@@ -186,7 +189,13 @@ pub enum GripShape {
     Square,
     Rectangle,
     Triangle,
+    /// Directional toggle with a shaft and arrowhead.
+    Arrow,
     Circle,
+    /// Diamond (a table cell range's fill handle).
+    Diamond,
+    /// Downward-pointing tag: the alignment parameter's anchor grip.
+    Alignment,
     /// Screen-offset menu selector.
     Dropdown,
     /// Menu selector placed immediately beside its anchor grip.
@@ -264,6 +273,8 @@ pub enum GripMenuAction {
     AddLeader,
     RemoveLeader,
     ReverseArrows,
+    /// Turn the arrowhead at this end to the other side of its line.
+    FlipArrow,
     MoveWithDimLine,
     MoveWithLeader,
     MoveIndependent,

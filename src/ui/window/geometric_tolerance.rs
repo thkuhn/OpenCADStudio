@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use codec::Handle;
+use document::Handle;
 use iced::widget::{button, checkbox, column, container, row, text, text_input, Space};
 use iced::{Border, Element, Fill, Length, Theme};
 
@@ -389,7 +389,7 @@ impl State {
 
 fn muted(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.palette().background.base.text.scale_alpha(0.65)),
+        color: Some(crate::ui::style::readable::muted_text(theme)),
     }
 }
 
@@ -411,7 +411,7 @@ fn panel<'a>(title: String, body: Element<'a, Message>) -> Element<'a, Message> 
 fn material_picker<'a>(index: usize, datum: bool, code: &str) -> Element<'a, Message> {
     let options = choices(&MATERIALS);
     let selected = selected(&MATERIALS, code);
-    iced::widget::pick_list(selected, options, |choice| choice.to_string())
+    crate::ui::dropdown_list::pick_list(selected, options, |choice| choice.to_string())
         .on_select(move |choice| {
             if datum {
                 Message::ToleranceDialogField(Field::DatumMaterial(index, choice.code.to_string()))
@@ -436,14 +436,14 @@ pub fn view_window<'a>(
     let symbol_selected = selected(&SYMBOLS, &state.symbol);
     let symbol = panel(
         t!("Geometric characteristic").into_owned(),
-        iced::widget::pick_list(symbol_selected, symbol_options, |choice| choice.to_string())
-            .on_select(|choice| {
-                Message::ToleranceDialogField(Field::Symbol(choice.code.to_string()))
-            })
-            .text_size(12)
-            .padding([4, 6])
-            .width(Fill)
-            .into(),
+        crate::ui::dropdown_list::pick_list(symbol_selected, symbol_options, |choice| {
+            choice.to_string()
+        })
+        .on_select(|choice| Message::ToleranceDialogField(Field::Symbol(choice.code.to_string())))
+        .text_size(12)
+        .padding([4, 6])
+        .width(Fill)
+        .into(),
     );
 
     let tolerance_rows =

@@ -1,10 +1,10 @@
 //! Quick dimension creation from a selected set of drawing entities.
 
-use codec::entities::{
+use document::entities::{
     Dimension, DimensionDiameter, DimensionLinear, DimensionOrdinate, DimensionRadius,
 };
-use codec::types::Vector3;
-use codec::{EntityType, Handle};
+use document::types::Vector3;
+use document::{EntityType, Handle};
 use glam::DVec3;
 use kernel::geom2d::{characteristic_points, intersect, Curve, SnapKind, Tolerance};
 
@@ -341,7 +341,9 @@ impl QdimCommand {
         ]);
         (
             self.plane
-                .place_entity(EntityType::Dimension(Box::new(Dimension::Linear(dimension)))),
+                .place_entity(EntityType::Dimension(Box::new(Dimension::Linear(
+                    dimension,
+                )))),
             association,
         )
     }
@@ -366,7 +368,9 @@ impl QdimCommand {
         dimension.refresh_measurement();
         (
             self.plane
-                .place_entity(EntityType::Dimension(Box::new(Dimension::Ordinate(dimension)))),
+                .place_entity(EntityType::Dimension(Box::new(Dimension::Ordinate(
+                    dimension,
+                )))),
             DimensionAssociationInput::Explicit(vec![point.sources.first().copied()]),
         )
     }

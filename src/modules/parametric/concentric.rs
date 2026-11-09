@@ -1,4 +1,4 @@
-use codec::{EntityType, Handle};
+use document::{EntityType, Handle};
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
@@ -8,6 +8,12 @@ use crate::t;
 pub struct ConcentricConstraintCommand {
     first: Option<ParametricRef>,
     picked_entity: Option<EntityType>,
+}
+
+impl Default for ConcentricConstraintCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConcentricConstraintCommand {
@@ -168,11 +174,11 @@ mod tests {
     #[test]
     fn polyline_pick_keeps_the_selected_arc_center() {
         let handle = Handle::new(13);
-        let mut polyline = codec::entities::LwPolyline::new();
+        let mut polyline = document::entities::LwPolyline::new();
         polyline.vertices = vec![
-            codec::entities::LwVertex::from_coords(0.0, 0.0),
-            codec::entities::LwVertex::with_bulge(codec::types::Vector2::new(5.0, 0.0), 1.0),
-            codec::entities::LwVertex::from_coords(10.0, 0.0),
+            document::entities::LwVertex::from_coords(0.0, 0.0),
+            document::entities::LwVertex::with_bulge(document::types::Vector2::new(5.0, 0.0), 1.0),
+            document::entities::LwVertex::from_coords(10.0, 0.0),
         ];
 
         let reference = ConcentricConstraintCommand::picked_reference(

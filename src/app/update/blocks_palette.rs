@@ -322,10 +322,12 @@ impl OpenCADStudio {
             options.repeat = false;
         }
         let mut cmd = InsertBlockCommand::palette(name.to_string(), wires, &options);
-        if let Some(record)=self.tabs[i].scene.document.block_records.get(name) {
-            let doc=&self.tabs[i].scene.document;
-            cmd.set_insertion_points(crate::scene::render_graph::block_base_point(doc,name),
-                crate::scene::block_grips::insertion_points(doc,record.handle));
+        if let Some(record) = self.tabs[i].scene.document.block_records.get(name) {
+            let doc = &self.tabs[i].scene.document;
+            cmd.set_insertion_points(
+                crate::scene::render_graph::block_base_point(doc, name),
+                crate::scene::block_grips::insertion_points(doc, record.handle),
+            );
         }
         if let Some(point) = drop_at {
             cmd.set_point(point);
@@ -437,25 +439,23 @@ impl OpenCADStudio {
     /// drawing; with `redefine` an existing definition takes the source's.
     fn import_block_definition(
         &mut self,
-        source: &codec::Document,
+        source: &document::Document,
         name: &str,
         redefine: bool,
     ) -> Result<(), String> {
         if source.block_records.get(name).is_none() {
             return Err(crate::tf!("Block \"{}\" not found.", name).into_owned());
         }
-        let probe = codec::EntityType::Insert(codec::entities::Insert::new(
+        let probe = document::EntityType::Insert(document::entities::Insert::new(
             name.to_string(),
-            codec::types::Vector3::ZERO,
+            document::types::Vector3::ZERO,
         ));
         let deps = crate::app::ClipboardDeps::capture(source, std::slice::from_ref(&probe));
         let i = self.active_tab;
         self.push_undo_snapshot(i, "INSERT");
         self.merge_dependencies(i, &deps);
-        let apps = crate::app::command_driver::clipboard::eed_app_map(
-            &self.tabs[i].scene.document,
-            &deps,
-        );
+        let apps =
+            crate::app::command_driver::clipboard::eed_app_map(&self.tabs[i].scene.document, &deps);
         let mut created = Vec::new();
         for def in &deps.blocks {
             let scene = &mut self.tabs[i].scene;
@@ -562,7 +562,7 @@ impl OpenCADStudio {
                     .document
                     .entities()
                     .find_map(|e| match e {
-                        codec::EntityType::Insert(ins)
+                        document::EntityType::Insert(ins)
                             if ins.block_name.eq_ignore_ascii_case(&name) =>
                         {
                             Some(ins.common.handle)
@@ -582,12 +582,19 @@ impl OpenCADStudio {
                 Tab::Current => {
                     let name = item.name();
                     let i = self.active_tab;
-                    let open_edits: Vec<codec::Handle> = self.tabs[i]
+                    let open_edits: Vec<document::Handle> = self.tabs[i]
                         .block_edits
                         .iter()
                         .map(|session| session.br_handle)
                         .collect();
-                    self.push_undo_snapshot(i, format!("Delete block {name}"));
+                    self.push_undo_snapshot(
+                        i,
+                        crate::app::tab_document::HistoryLabel::formatted(
+                            format!("Delete block {name}"),
+                            "delete-block",
+                            name.to_owned().into(),
+                        ),
+                    );
                     let outcome = crate::scene::block_service::delete(
                         &mut self.tabs[i].scene,
                         &name,
@@ -913,10 +920,13 @@ impl OpenCADStudio {
                 ),
             );
             user.push(br.name.clone());
-            insertion_points.insert(br.name.to_ascii_uppercase(),(
-                crate::scene::render_graph::block_base_point(doc,&br.name),
-                crate::scene::block_grips::insertion_points(doc,br.handle),
-            ));
+            insertion_points.insert(
+                br.name.to_ascii_uppercase(),
+                (
+                    crate::scene::render_graph::block_base_point(doc, &br.name),
+                    crate::scene::block_grips::insertion_points(doc, br.handle),
+                ),
+            );
         }
         user.sort_by_key(|n| n.to_ascii_uppercase());
         let search_path = std::env::current_dir()
@@ -932,11 +942,15 @@ impl OpenCADStudio {
     }
 }
 
-/// The block records of `doc` the palette lists (as `custom_block_names`):
-/// not model space, paper space or a layout's, whose contents are the
-/// drawing itself and can be large.
-fn palette_records(doc: &codec::Document) -> impl Iterator<Item = &codec::tables::BlockRecord> {
-    use codec::TableEntry;
+/// The block records of `doc` whose contents the palette tracks for change
+/// propagation (as `changed_block_names`): not model space, paper space or a
+/// layout's, whose contents are the drawing itself and can be large. Unlike
+/// `Scene::custom_block_names`, this keeps anonymous records, because a
+/// generated record can hold a named one and so carries its changes.
+fn palette_records(
+    doc: &document::Document,
+) -> impl Iterator<Item = &document::tables::BlockRecord> {
+    use document::TableEntry;
     doc.block_records
         .iter()
         .filter(|br| !br.is_standard() && !br.is_layout())
@@ -945,7 +959,7 @@ fn palette_records(doc: &codec::Document) -> impl Iterator<Item = &codec::tables
 /// `changed` (upper-cased block names) plus every block of `doc` holding one
 /// of them, directly or through other blocks.
 fn with_holding_blocks(
-    doc: &codec::Document,
+    doc: &document::Document,
     mut changed: std::collections::HashSet<String>,
 ) -> std::collections::HashSet<String> {
     let uses: Vec<(String, Vec<String>)> = palette_records(doc)
@@ -953,7 +967,7 @@ fn with_holding_blocks(
             let used = doc
                 .entities_in_block(&br.name)
                 .filter_map(|e| match e {
-                    codec::EntityType::Insert(insert) => {
+                    document::EntityType::Insert(insert) => {
                         Some(insert.block_name.to_ascii_uppercase())
                     }
                     _ => None,
@@ -978,8 +992,8 @@ fn with_holding_blocks(
 /// The blocks of `after` the palette lists whose record or contents differ
 /// from `before`'s (new ones included).
 pub(crate) fn changed_block_names(
-    before: &codec::Document,
-    after: &codec::Document,
+    before: &document::Document,
+    after: &document::Document,
 ) -> Vec<String> {
     palette_records(after)
         .filter(|br| {

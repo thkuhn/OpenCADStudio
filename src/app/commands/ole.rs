@@ -4,7 +4,7 @@
 
 use crate::app::{Message, OpenCADStudio};
 use crate::entities::ole2frame::{self, FrameState};
-use codec::{EntityType, Handle};
+use document::{EntityType, Handle};
 use iced::Task;
 
 /// OLEQUALITY: the plot quality new OLE objects take (0 monochrome, 1 low
@@ -59,7 +59,7 @@ impl OpenCADStudio {
                     .entities()
                     .filter_map(|entity| match entity {
                         EntityType::Ole2Frame(ole)
-                            if ole.ole_object_type == codec::entities::OleObjectType::Link =>
+                            if ole.ole_object_type == document::entities::OleObjectType::Link =>
                         {
                             Some(ole.source_application.clone())
                         }
@@ -67,7 +67,8 @@ impl OpenCADStudio {
                     })
                     .collect();
                 for (n, source) in links.iter().enumerate() {
-                    self.command_line.push_output(&format!("{}.  {source}", n + 1));
+                    self.command_line
+                        .push_output(&format!("{}.  {source}", n + 1));
                 }
                 Some(Task::none())
             }
@@ -96,7 +97,7 @@ impl OpenCADStudio {
         let ask = |app: &mut Self| {
             let current = app.ole_variable(i, name);
             app.command_line
-                .push_output(&format!("Enter new value for {name} <{current}>:"));
+                .push_output(&crate::ui::command_line::value_prompt(name, &current));
             app.pending_setvar = Some(name.to_string());
         };
         let Some(value) = value else {
@@ -114,12 +115,12 @@ impl OpenCADStudio {
                 }
                 Ok(_) => {
                     self.command_line
-                        .push_error("Cannot set MSOLESCALE to that value.");
+                        .push_rejection("Cannot set MSOLESCALE to that value.");
                     self.command_line.push_output("*Invalid*");
                 }
                 Err(_) => {
                     self.command_line
-                        .push_error("Requires numeric distance or two points.");
+                        .push_rejection("Requires numeric distance or two points.");
                     ask(self);
                 }
             }
@@ -128,8 +129,12 @@ impl OpenCADStudio {
         let Some((min, max, message)) = integer_range(name) else {
             return Task::none();
         };
-        let Some(v) = value.parse::<i16>().ok().filter(|v| (min..=max).contains(v)) else {
-            self.command_line.push_error(message);
+        let Some(v) = value
+            .parse::<i16>()
+            .ok()
+            .filter(|v| (min..=max).contains(v))
+        else {
+            self.command_line.push_rejection(message);
             ask(self);
             return Task::none();
         };
@@ -181,7 +186,12 @@ impl OpenCADStudio {
         let handles: Vec<Handle> = handles
             .iter()
             .copied()
-            .filter(|h| matches!(self.tabs[i].scene.document.get_entity(*h), Some(EntityType::Ole2Frame(_))))
+            .filter(|h| {
+                matches!(
+                    self.tabs[i].scene.document.get_entity(*h),
+                    Some(EntityType::Ole2Frame(_))
+                )
+            })
             .collect();
         self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
             let state = app.tabs[i]
@@ -189,7 +199,8 @@ impl OpenCADStudio {
                 .get(&handle.value())
                 .copied()
                 .unwrap_or_default();
-            let Some(EntityType::Ole2Frame(ole)) = app.tabs[i].scene.document.get_entity_mut(handle)
+            let Some(EntityType::Ole2Frame(ole)) =
+                app.tabs[i].scene.document.get_entity_mut(handle)
             else {
                 return;
             };
@@ -218,9 +229,11 @@ impl OpenCADStudio {
                 }
             };
             ole2frame::set_size(ole, nw, nh);
-            let base = state
-                .base
-                .unwrap_or(if field.starts_with("ole_scale") { (w, h) } else { (nw, nh) });
+            let base = state.base.unwrap_or(if field.starts_with("ole_scale") {
+                (w, h)
+            } else {
+                (nw, nh)
+            });
             app.tabs[i].ole_frames.insert(
                 handle.value(),
                 FrameState {
@@ -235,7 +248,10 @@ impl OpenCADStudio {
     pub(in crate::app) fn set_ole_lock_aspect(&mut self, i: usize, value: &str) {
         let on = value == crate::t!("Yes").as_ref() || value.eq_ignore_ascii_case("yes");
         for handle in self.property_target_handles(i) {
-            if matches!(self.tabs[i].scene.document.get_entity(handle), Some(EntityType::Ole2Frame(_))) {
+            if matches!(
+                self.tabs[i].scene.document.get_entity(handle),
+                Some(EntityType::Ole2Frame(_))
+            ) {
                 self.tabs[i]
                     .ole_frames
                     .entry(handle.value())
@@ -251,7 +267,7 @@ impl OpenCADStudio {
         &self,
         i: usize,
         handle: Handle,
-        ole: &codec::entities::Ole2Frame,
+        ole: &document::entities::Ole2Frame,
         sections: &mut [crate::scene::model::object::PropSection],
     ) {
         use crate::scene::model::object::PropValue;
@@ -262,17 +278,27 @@ impl OpenCADStudio {
             .unwrap_or_default();
         let (_, w, h) = ole2frame::frame_box(ole);
         let scale = |size: f64, base: Option<f64>| match base {
-            Some(base) if base > 0.0 => crate::entities::underlay::plain_number(size / base * 100.0),
+            Some(base) if base > 0.0 => {
+                crate::entities::underlay::plain_number(size / base * 100.0)
+            }
             _ => "0".to_string(),
         };
         for prop in sections.iter_mut().flat_map(|s| s.props.iter_mut()) {
             match prop.field {
-                "ole_scale_width" => prop.value = PropValue::EditText(scale(w, state.base.map(|b| b.0))),
-                "ole_scale_height" => prop.value = PropValue::EditText(scale(h, state.base.map(|b| b.1))),
+                "ole_scale_width" => {
+                    prop.value = PropValue::EditText(scale(w, state.base.map(|b| b.0)))
+                }
+                "ole_scale_height" => {
+                    prop.value = PropValue::EditText(scale(h, state.base.map(|b| b.1)))
+                }
                 "ole_lock_aspect" => {
                     if let PropValue::Choice { selected, .. } = &mut prop.value {
-                        *selected = if state.lock_aspect { crate::t!("Yes") } else { crate::t!("No") }
-                            .into_owned();
+                        *selected = if state.lock_aspect {
+                            crate::t!("Yes")
+                        } else {
+                            crate::t!("No")
+                        }
+                        .into_owned();
                     }
                 }
                 _ => {}
@@ -282,12 +308,20 @@ impl OpenCADStudio {
 }
 
 /// MSOLESCALE of the drawing (1 when not set).
-fn ms_ole_scale(document: &codec::Document) -> f64 {
+fn ms_ole_scale(document: &document::Document) -> f64 {
     crate::io::drawing_variable(document, "MSOLESCALE")
         .and_then(|value| value.trim().parse::<f64>().ok())
         .unwrap_or(1.0)
 }
 
 inventory::submit!(crate::command::CommandRegistration {
-    names: &["INSERTOBJ", "OLELINKS", "OLEHIDE", "OLEQUALITY", "OLESTARTUP", "OLEFRAME", "MSOLESCALE"]
+    names: &[
+        "INSERTOBJ",
+        "OLELINKS",
+        "OLEHIDE",
+        "OLEQUALITY",
+        "OLESTARTUP",
+        "OLEFRAME",
+        "MSOLESCALE"
+    ]
 });

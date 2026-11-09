@@ -364,7 +364,7 @@ fn emit_wire(
         wire.world_width as f64 * s
     } else {
         let physical = if options.object_lineweights {
-            lw_override_mm.unwrap_or_else(|| wire.line_weight_px as f64 * PX_TO_MM)
+            lw_override_mm.unwrap_or(wire.line_weight_px as f64 * PX_TO_MM)
         } else {
             0.1 * PT_TO_MM
         }
@@ -548,7 +548,7 @@ fn emit_hatch(
     if matches!(hatch.pattern, HatchPattern::Pattern(_)) {
         let s = map.scale;
         let physical = if options.object_lineweights {
-            lw_override_mm.unwrap_or_else(|| hatch.line_weight_px as f64 * PX_TO_MM)
+            lw_override_mm.unwrap_or(hatch.line_weight_px as f64 * PX_TO_MM)
         } else {
             0.1 * PT_TO_MM
         }
@@ -671,8 +671,8 @@ fn emit_searchable_text(
         if run.text.is_empty() || run.height <= 0.0 || !run.height.is_finite() {
             continue;
         }
-        let rgb = ctb_color
-            .unwrap_or_else(|| adapt_to_paper([run.color[0], run.color[1], run.color[2]]));
+        let rgb =
+            ctb_color.unwrap_or_else(|| adapt_to_paper([run.color[0], run.color[1], run.color[2]]));
         let [r, g, b] = plotted_color(rgb, run.color[3], screening, options);
         let (sx, sy) = map.apply(run.origin[0] + ox, run.origin[1] + oy);
         if !sx.is_finite() || !sy.is_finite() {
@@ -738,7 +738,7 @@ fn emit_image(
     if image.width == 0 || image.height == 0 || expected != Some(image.pixels.len()) {
         return Err("Cannot plot bitmap: dimensions do not match its RGBA pixels.".into());
     }
-    if image.verts.len() < 3 || image.verts.len() % 3 != 0 {
+    if image.verts.len() < 3 || !image.verts.len().is_multiple_of(3) {
         return Err("Cannot plot bitmap: incomplete triangle geometry.".into());
     }
     if options.transparency && image.opacity <= 0.0 {

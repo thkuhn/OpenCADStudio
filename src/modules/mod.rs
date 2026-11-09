@@ -33,6 +33,7 @@ pub mod layout;
 pub mod manage;
 pub mod model;
 pub mod parametric;
+pub mod table_cell;
 pub mod view;
 
 // ── Core module registry ─────────────────────────────────────────────────

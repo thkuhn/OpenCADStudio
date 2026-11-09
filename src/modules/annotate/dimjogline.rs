@@ -1,7 +1,7 @@
 // DIMJOGLINE — add or remove a jog on a linear/aligned dimension.
 
-use codec::entities::Dimension;
-use codec::{EntityType, Handle};
+use document::entities::Dimension;
+use document::{EntityType, Handle};
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdOption, CmdResult, InputKind};
@@ -30,6 +30,12 @@ pub struct DimJogLineCommand {
     remove: bool,
     picked_entity: Option<EntityType>,
     dimension: Option<Dimension>,
+}
+
+impl Default for DimJogLineCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DimJogLineCommand {
@@ -104,9 +110,7 @@ impl CadCommand for DimJogLineCommand {
 
     fn prompt(&self) -> String {
         match self.step {
-            Step::PickDim if self.remove => {
-                t!("DIMJOGLINE  Select jog to remove:").into_owned()
-            }
+            Step::PickDim if self.remove => t!("DIMJOGLINE  Select jog to remove:").into_owned(),
             Step::PickDim => {
                 t!("DIMJOGLINE  Select dimension to add jog or [Remove]:").into_owned()
             }

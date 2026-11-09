@@ -241,8 +241,10 @@ impl OpenCADStudio {
                     && self.file_prompts_on_command_line() =>
             {
                 let name = self.drawing_file_name(i);
-                let prompt =
-                    crate::t!("CLOSE  Save changes to %{name}? [Yes/No] <Yes>:", name = name);
+                let prompt = crate::t!(
+                    "CLOSE  Save changes to %{name}? [Yes/No] <Yes>:",
+                    name = name
+                );
                 self.ask_save_changes("CLOSE", prompt.into_owned());
             }
             // The close runs as its own message: this arm may be reached from
@@ -312,7 +314,7 @@ impl OpenCADStudio {
                                         .map(PathBuf::from)
                                 };
                                 for e in doc.entities() {
-                                    if let codec::EntityType::RasterImage(img) = e {
+                                    if let document::EntityType::RasterImage(img) = e {
                                         let raw = img.file_path.trim();
                                         if !raw.is_empty() {
                                             note(raw, file(raw));
@@ -320,7 +322,8 @@ impl OpenCADStudio {
                                     }
                                 }
                                 for o in doc.objects.values() {
-                                    if let codec::objects::ObjectType::UnderlayDefinition(d) = o {
+                                    if let document::objects::ObjectType::UnderlayDefinition(d) = o
+                                    {
                                         let raw = d.file_path.trim();
                                         if !raw.is_empty() {
                                             note(raw, file(raw));
@@ -541,7 +544,10 @@ impl OpenCADStudio {
             "PERSP" => return Some(Task::done(Message::SetProjection(false))),
             // LAYERS opens the Layer Manager pallet (its close button or
             // the toggle message close it).
-            "LAYERS" => self.open_layers_pallet(),
+            "LAYERS" => {
+                self.pallet_as_window(crate::ui::dock::PanelId::Layers);
+                self.open_layers_pallet();
+            }
 
             // SCRIPT <path> — run a command script: each non-comment
             // line is fed through the same command path the `--script` startup
@@ -768,7 +774,10 @@ impl OpenCADStudio {
             return self.request_quit_with_block_edits();
         };
         let name = self.drawing_file_name(d);
-        let prompt = crate::t!("EXIT  Save changes to %{name}? [Yes/No] <Yes>:", name = name);
+        let prompt = crate::t!(
+            "EXIT  Save changes to %{name}? [Yes/No] <Yes>:",
+            name = name
+        );
         self.ask_save_changes("EXIT", prompt.into_owned());
         Task::none()
     }
@@ -878,7 +887,10 @@ impl OpenCADStudio {
                 let error = if quit {
                     crate::tf!("EXIT: \"{}\" has no file path yet; use SAVEAS first.", name)
                 } else {
-                    crate::tf!("CLOSE: \"{}\" has no file path yet; use SAVEAS first.", name)
+                    crate::tf!(
+                        "CLOSE: \"{}\" has no file path yet; use SAVEAS first.",
+                        name
+                    )
                 };
                 self.command_line.push_error(error.as_ref());
                 return Task::none();
@@ -1100,7 +1112,7 @@ impl OpenCADStudio {
         // Raster images — picked/dropped bytes registered for the reference
         // stand in for the file native would copy.
         for e in self.tabs[i].scene.document.entities() {
-            if let codec::EntityType::RasterImage(img) = e {
+            if let document::EntityType::RasterImage(img) = e {
                 if img.file_path.trim().is_empty() {
                     continue;
                 }
@@ -1117,8 +1129,8 @@ impl OpenCADStudio {
 
         // PDF underlays — bytes registered at attach time.
         for o in self.tabs[i].scene.document.objects.values() {
-            if let codec::objects::ObjectType::UnderlayDefinition(def) = o {
-                if !matches!(def.underlay_type, codec::entities::UnderlayType::Pdf)
+            if let document::objects::ObjectType::UnderlayDefinition(def) = o {
+                if !matches!(def.underlay_type, document::entities::UnderlayType::Pdf)
                     || def.file_path.trim().is_empty()
                 {
                     continue;
@@ -1143,7 +1155,7 @@ impl OpenCADStudio {
             .objects
             .values()
             .filter_map(|o| {
-                if let codec::objects::ObjectType::Layout(l) = o {
+                if let document::objects::ObjectType::Layout(l) = o {
                     Some(l.plot_style_sheet.clone())
                 } else {
                     None
@@ -1309,8 +1321,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ocs-batch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a 1.dxf");
-        let doc = codec::Document::new();
-        std::fs::write(&a, crate::io::save_to_bytes(&doc, "dxf", doc.version).unwrap()).unwrap();
+        let doc = document::Document::new();
+        std::fs::write(
+            &a,
+            crate::io::save_to_bytes(&doc, "dxf", doc.version).unwrap(),
+        )
+        .unwrap();
         let out = dir.join("out file.dwg");
         let _ = std::fs::remove_file(&out);
         let mut app = OpenCADStudio::new_for_test();
@@ -1325,7 +1341,10 @@ mod tests {
         let t = app.update(Message::ScriptPump);
         app.drive_headless_task(t).unwrap();
         assert!(out.is_file());
-        assert!(app.tabs.iter().all(|t| t.current_path.as_deref() != Some(out.as_path())));
+        assert!(app
+            .tabs
+            .iter()
+            .all(|t| t.current_path.as_deref() != Some(out.as_path())));
         let back = crate::io::load_file(&out).unwrap();
         assert_eq!(back.entities().count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1338,10 +1357,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ocs-batch-exit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.dxf");
-        let doc = codec::Document::new();
-        std::fs::write(&a, crate::io::save_to_bytes(&doc, "dxf", doc.version).unwrap()).unwrap();
+        let doc = document::Document::new();
+        std::fs::write(
+            &a,
+            crate::io::save_to_bytes(&doc, "dxf", doc.version).unwrap(),
+        )
+        .unwrap();
         let mut app = OpenCADStudio::new_for_test();
-        let text = format!("OPEN \"{}\"\nCIRCLE 0,0 5\nEXIT\nY\nCIRCLE 1,1 2\n", a.display());
+        let text = format!(
+            "OPEN \"{}\"\nCIRCLE 0,0 5\nEXIT\nY\nCIRCLE 1,1 2\n",
+            a.display()
+        );
         assert_eq!(app.run_batch(&text, &[]), 0);
         assert!(app.exit_requested);
         assert_eq!(crate::io::load_file(&a).unwrap().entities().count(), 1);

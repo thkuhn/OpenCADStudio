@@ -24,7 +24,7 @@ impl OpenCADStudio {
     pub(crate) fn apply_link_updates(
         &mut self,
         i: usize,
-        updates: Vec<(codec::Handle, codec::Handle, Vec<Vec<String>>, usize)>,
+        updates: Vec<(document::Handle, document::Handle, Vec<Vec<String>>, usize)>,
     ) -> usize {
         if updates.is_empty() {
             return 0;
@@ -33,7 +33,7 @@ impl OpenCADStudio {
         let mut changed = Vec::new();
         for (table_handle, link_handle, rows, first_linked_row) in updates {
             let document = &mut self.tabs[i].scene.document;
-            let Some(codec::EntityType::Table(table)) = document.get_entity_mut(table_handle)
+            let Some(document::EntityType::Table(table)) = document.get_entity_mut(table_handle)
             else {
                 continue;
             };
@@ -131,7 +131,7 @@ impl OpenCADStudio {
             self.extraction_outdated = Some(prompt);
             return Task::none();
         }
-        if self.active_modal == Some(ModalKind::ExtractionOutdated) {
+        if self.focus_dialog(ModalKind::ExtractionOutdated) {
             self.active_modal = None;
             self.reset_modal_geometry();
         }
@@ -149,7 +149,10 @@ impl OpenCADStudio {
     pub(super) fn dispatch_dxeval(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
         let rest = cmd.strip_prefix("SETVAR ").map(str::trim).unwrap_or(cmd);
         let (name, value) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-        if !name.trim_start_matches(['_', '.']).eq_ignore_ascii_case("DXEVAL") {
+        if !name
+            .trim_start_matches(['_', '.'])
+            .eq_ignore_ascii_case("DXEVAL")
+        {
             return None;
         }
         let current = annotation_data::dxeval(&self.tabs[i].scene.document);
@@ -168,12 +171,12 @@ impl OpenCADStudio {
             _ => {
                 if !value.is_empty() {
                     let (min, max) = (0, 511);
-                    self.command_line.push_error(&crate::tf!(
+                    self.command_line.push_rejection(&crate::tf!(
                         "Requires an integer between {min} and {max}."
                     ));
                 }
                 self.command_line
-                    .push_output(&format!("Enter new value for DXEVAL <{current}>:"));
+                    .push_output(&crate::ui::command_line::value_prompt("DXEVAL", &current));
                 self.pending_setvar = Some("DXEVAL".into());
             }
         }

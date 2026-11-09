@@ -83,7 +83,10 @@ impl OpenCADStudio {
         let Some(state) = self.pdf_shx_dialog.as_mut() else {
             return Task::none();
         };
-        if !matches!(message, ShxDialogMsg::DragDrop(_) | ShxDialogMsg::DragStart(_)) {
+        if !matches!(
+            message,
+            ShxDialogMsg::DragDrop(_) | ShxDialogMsg::DragStart(_)
+        ) {
             state.dragging = None;
         }
         let count = state.settings.fonts.len();
@@ -145,7 +148,9 @@ impl OpenCADStudio {
                         state.selected = index;
                     }
                     None => {
-                        let builtin = shx::FONT_NAMES.iter().any(|n| n.eq_ignore_ascii_case(&label));
+                        let builtin = shx::FONT_NAMES
+                            .iter()
+                            .any(|n| n.eq_ignore_ascii_case(&label));
                         state.settings.fonts.push(shx::ShxFontEntry {
                             name: if builtin { label } else { full },
                             enabled: true,
@@ -166,7 +171,12 @@ impl OpenCADStudio {
             ShxDialogMsg::ThresholdText(text) => {
                 // A value outside 1-100 or not a number is ignored, the box
                 // keeps what was typed until it is fixed.
-                if let Some(v) = text.trim().parse::<u8>().ok().filter(|v| (1..=100).contains(v)) {
+                if let Some(v) = text
+                    .trim()
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|v| (1..=100).contains(v))
+                {
                     state.settings.threshold = v;
                 }
                 state.threshold_text = text;
@@ -192,8 +202,7 @@ impl OpenCADStudio {
                 state.refresh_preview();
             }
             ShxDialogMsg::Help => {
-                self.command_line
-                    .push_info(&crate::tr!("pdf-shx", "help"));
+                self.command_line.push_info(&crate::tr!("pdf-shx", "help"));
             }
             ShxDialogMsg::Apply => {
                 let Some(state) = self.pdf_shx_dialog.take() else {
@@ -211,7 +220,11 @@ impl OpenCADStudio {
     }
 
     /// Recognise the text in `handles` and replace it with MTEXT.
-    pub(in crate::app) fn convert_pdf_shx_text(&mut self, i: usize, handles: Vec<codec::Handle>) {
+    pub(in crate::app) fn convert_pdf_shx_text(
+        &mut self,
+        i: usize,
+        handles: Vec<document::Handle>,
+    ) {
         let document = &self.tabs[i].scene.document;
         let mut strokes = Vec::new();
         for handle in handles {
@@ -231,13 +244,19 @@ impl OpenCADStudio {
         }
         let settings = shx::settings();
         let drawing = self.drawing_path(i);
-        self.command_line.push_output("Converting geometry to text...");
+        self.command_line
+            .push_output("Converting geometry to text...");
         let result = shx::recognize(&strokes, &settings, |name| {
             shx::resolve_font(name, drawing.as_deref())
         });
         for (n, group) in result.groups.iter().enumerate() {
             self.command_line.push_output(&if group.converted {
-                format!("Group {}: Succeeded - {} {}%", n + 1, group.font, group.percent)
+                format!(
+                    "Group {}: Succeeded - {} {}%",
+                    n + 1,
+                    group.font,
+                    group.percent
+                )
             } else {
                 format!(
                     "Group {}: Failed to meet success threshold - {} {}%",
@@ -268,11 +287,11 @@ impl OpenCADStudio {
             }
         };
         let scene = &mut self.tabs[i].scene;
-        let mut erase: Vec<codec::Handle> = Vec::new();
+        let mut erase: Vec<document::Handle> = Vec::new();
         for line in result.lines {
             // A style named after the font, made when the drawing lacks it.
             if !scene.document.text_styles.contains(&line.font) {
-                let mut style = codec::tables::TextStyle::new(line.font.as_str());
+                let mut style = document::tables::TextStyle::new(line.font.as_str());
                 style.handle = scene.document.allocate_handle();
                 style.font_file = if line.font_spec.to_ascii_lowercase().ends_with(".shx") {
                     line.font_spec.clone()
@@ -281,21 +300,21 @@ impl OpenCADStudio {
                 };
                 let _ = scene.document.text_styles.add(style);
             }
-            let mut mtext = codec::entities::MText::new();
+            let mut mtext = document::entities::MText::new();
             mtext.value = line.value;
             mtext.insertion_point =
-                codec::types::Vector3::new(line.insertion[0], line.insertion[1], 0.0);
+                document::types::Vector3::new(line.insertion[0], line.insertion[1], 0.0);
             mtext.height = line.height;
             mtext.rectangle_width = 0.0;
-            mtext.attachment_point = codec::entities::AttachmentPoint::BottomLeft;
-            mtext.drawing_direction = codec::entities::DrawingDirection::ByStyle;
+            mtext.attachment_point = document::entities::AttachmentPoint::BottomLeft;
+            mtext.drawing_direction = document::entities::DrawingDirection::ByStyle;
             mtext.style = line.font;
             mtext.common.layer = if settings.current_layer {
                 current_layer.clone()
             } else {
                 line.layer
             };
-            scene.add_entity(codec::EntityType::MText(Box::new(mtext)));
+            scene.add_entity(document::EntityType::MText(Box::new(mtext)));
             erase.extend(line.handles);
         }
         erase.sort();

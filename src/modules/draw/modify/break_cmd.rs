@@ -9,11 +9,11 @@
 
 use crate::modules::draw::modify::spline_ops::{spline_cut, spline_nearest_t, spline_range};
 use crate::t;
-use codec::entities::{
+use document::entities::{
     Arc as ArcEnt, Ellipse as EllipseEnt, Line as LineEnt, LwPolyline, Spline as SplineEnt,
 };
-use codec::types::Vector3;
-use codec::{EntityType, Handle};
+use document::types::Vector3;
+use document::{EntityType, Handle};
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
@@ -118,7 +118,7 @@ fn break_arc(arc: &ArcEnt, p1: DVec3, p2: DVec3) -> Vec<EntityType> {
         .collect()
 }
 
-fn break_circle(circle: &codec::entities::Circle, p1: DVec3, p2: DVec3) -> Vec<EntityType> {
+fn break_circle(circle: &document::entities::Circle, p1: DVec3, p2: DVec3) -> Vec<EntityType> {
     let curve = crate::entities::curve::circle_curve(circle);
     let Some(spans) = picked_spans(&curve, p1, p2) else {
         return vec![EntityType::Circle(circle.clone())];
@@ -169,7 +169,7 @@ fn break_lwpolyline(p: &LwPolyline, p1: DVec3, p2: DVec3) -> Vec<EntityType> {
             } else {
                 segment.source_index
             };
-            let mut output = p.vertices[source].clone();
+            let mut output = p.vertices[source];
             output.location.x = vertex.position[0];
             output.location.y = vertex.position[1];
             if !last || segment.to != 1.0 {
@@ -272,6 +272,12 @@ pub struct BreakInteractiveCommand {
     p1: Option<DVec3>,
 }
 
+impl Default for BreakInteractiveCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BreakInteractiveCommand {
     pub fn new() -> Self {
         Self {
@@ -300,6 +306,10 @@ impl CadCommand for BreakInteractiveCommand {
         self.target.is_none()
     }
 
+    fn typed_point_picks_entity(&self) -> bool {
+        true
+    }
+
     fn options(&self) -> Vec<crate::command::CmdOption> {
         if self.target.is_some() && self.p1.is_some() {
             vec![crate::command::CmdOption::new("First point", "F")]
@@ -326,7 +336,7 @@ impl CadCommand for BreakInteractiveCommand {
 
     fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
         if handle.is_null() {
-            return CmdResult::NeedPoint;
+            return CmdResult::ReportMeasurement(t!("No object found").into_owned());
         }
         self.target = Some(handle);
         self.p1 = Some(pt);
@@ -363,6 +373,12 @@ pub struct BreakAtPointCommand {
     target: Option<Handle>,
 }
 
+impl Default for BreakAtPointCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BreakAtPointCommand {
     pub fn new() -> Self {
         Self { target: None }
@@ -386,9 +402,13 @@ impl CadCommand for BreakAtPointCommand {
         self.target.is_none()
     }
 
+    fn typed_point_picks_entity(&self) -> bool {
+        true
+    }
+
     fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
         if handle.is_null() {
-            return CmdResult::NeedPoint;
+            return CmdResult::ReportMeasurement(t!("No object found").into_owned());
         }
         self.target = Some(handle);
         CmdResult::NeedPoint
@@ -419,8 +439,8 @@ inventory::submit!(crate::command::CommandRegistration { names: &["BREAK"] }); /
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::LwVertex;
-    use codec::types::Vector2;
+    use document::entities::LwVertex;
+    use document::types::Vector2;
 
     #[test]
     fn first_option_replaces_the_selection_point_and_at_reuses_it() {

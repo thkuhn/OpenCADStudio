@@ -130,7 +130,7 @@ fn group<'a>(
             text(title.into())
                 .size(11)
                 .style(|theme: &Theme| text::Style {
-                    color: Some(theme.palette().background.strongest.text.scale_alpha(0.75)),
+                    color: Some(crate::ui::style::readable::muted_text(theme)),
                 }),
             body.into(),
         ]
@@ -439,7 +439,7 @@ pub fn view_window<'a>(
                 ))
                 .size(10.5)
                 .style(|theme: &Theme| text::Style {
-                    color: Some(theme.palette().background.strongest.text.scale_alpha(0.7)),
+                    color: Some(crate::ui::style::readable::muted_text(theme)),
                 }),
             ]
             .spacing(6),
@@ -501,7 +501,7 @@ pub fn view_window<'a>(
 
         // Two columns of snap modes:
         let total = ALL_SNAP_MODES.len();
-        let mid = (total + 1) / 2;
+        let mid = total.div_ceil(2);
         let (first_half, second_half) = ALL_SNAP_MODES.split_at(mid);
 
         let mut col1 = column![].spacing(6).width(Fill);

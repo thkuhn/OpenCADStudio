@@ -49,7 +49,7 @@ pub(crate) fn draw_som_badge(
     if num_digits == 0 {
         return;
     }
-    let text_w = num_digits * 5 + (num_digits - 1) * 1;
+    let text_w = num_digits * 5 + (num_digits - 1);
     let badge_w = (text_w + 8) as i32;
     let badge_h = 13i32;
 
@@ -97,7 +97,7 @@ pub(crate) fn draw_som_badge(
                     let row_bits = DIGITS_5X7[d][r];
                     for c in 0..5 {
                         if (row_bits & (1 << (4 - c))) != 0 {
-                            let px = cur_x + c as i32;
+                            let px = cur_x + c;
                             let py = cur_y + r as i32;
                             if px >= 0 && px < img_w && py >= 0 && py < img_h {
                                 image.put_pixel(px as u32, py as u32, text_col);
@@ -223,10 +223,10 @@ pub(crate) fn compute_grounding(
     let img_h = image_height as f32;
 
     struct Candidate {
-        handle: codec::Handle,
+        handle: document::Handle,
         entity_type: &'static str,
         layer: String,
-        owner: codec::Handle,
+        owner: document::Handle,
         space: Option<String>,
         screen_pixel: [i32; 2],
         screen_bounds: [i32; 4],
@@ -235,9 +235,9 @@ pub(crate) fn compute_grounding(
         area: f32,
     }
 
-    let selected_set: std::collections::HashSet<codec::Handle> =
+    let selected_set: std::collections::HashSet<document::Handle> =
         tab.scene.selected_handles_in_order().into_iter().collect();
-    let space_names: rustc_hash::FxHashMap<codec::Handle, String> = tab
+    let space_names: rustc_hash::FxHashMap<document::Handle, String> = tab
         .scene
         .document
         .block_records
@@ -598,10 +598,7 @@ mod tests {
                 .iter()
                 .find(|entity| entity["space"] == space)
                 .unwrap_or_else(|| {
-                    panic!(
-                        "{space} is not grounded: {:?}",
-                        grounding.visible_entities
-                    )
+                    panic!("{space} is not grounded: {:?}", grounding.visible_entities)
                 })
                 .clone()
         };
@@ -736,5 +733,59 @@ mod tests {
         assert_eq!(point_to_tile(wb, 1, 175.0, 75.0), (1, 0));
         assert_eq!(point_to_tile(wb, 1, 25.0, 25.0), (0, 1));
         assert_eq!(point_to_tile(wb, 1, 175.0, 25.0), (1, 1));
+    }
+
+    /// A capture annotated a block reference as a single pixel at its
+    /// insertion point, so a block drawn forty units away from that point was
+    /// described as sitting where nothing of it paints.
+    #[test]
+    fn the_capture_annotation_covers_where_a_reference_draws() {
+        use document::entities::{EntityType, Insert, Line};
+        use document::types::Vector3;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.tabs[i].scene.define_block_raw(
+            "GROUND_REF",
+            Vector3::ZERO,
+            vec![EntityType::Line(Line::from_points(
+                Vector3::new(10.0, 5.0, 0.0),
+                Vector3::new(20.0, 10.0, 0.0),
+            ))],
+        );
+        app.tabs[i].scene.add_entity(EntityType::Insert(Insert::new(
+            "GROUND_REF".to_string(),
+            Vector3::new(-40.0, 0.0, 0.0),
+        )));
+
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        app.tabs[i].scene.fit_all();
+        let grounding = compute_grounding(&app, 800.0, 600.0, 800, 600);
+        let annotated = grounding
+            .visible_entities
+            .iter()
+            .find(|entity| entity["type"] == "Block Reference")
+            .expect("the reference is annotated");
+
+        let center = annotated["world_center"]
+            .as_array()
+            .expect("the annotated centre");
+        let [x, y]: [f64; 2] = [center[0].as_f64().unwrap(), center[1].as_f64().unwrap()];
+        assert!(
+            (x + 25.0).abs() < 1e-6 && (y - 7.5).abs() < 1e-6,
+            "the reference is described where it draws, not at its \
+             insertion point (-40, 0): {annotated}"
+        );
+
+        let bounds = annotated["screen_bounds"]
+            .as_array()
+            .expect("the annotated screen box");
+        let corners: Vec<i64> = bounds.iter().map(|v| v.as_i64().unwrap()).collect();
+        assert!(
+            corners[2] - corners[0] > 1 && corners[3] - corners[1] > 1,
+            "a reference with painted extent is annotated as a box, \
+             not a pixel: {annotated}"
+        );
     }
 }

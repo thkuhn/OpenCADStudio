@@ -6,8 +6,8 @@
 //   ELLIPSE_ARC  — Ellipse Arc   (shape as above, then start/end parametric angles)
 
 use crate::t;
-use codec::types::Vector3;
-use codec::{Ellipse, EntityType};
+use document::types::Vector3;
+use document::{Ellipse, EntityType};
 
 use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::IconKind;
@@ -134,8 +134,8 @@ fn ellipse_polyline(
     t_end: f64,
     plane: WorkingPlane,
 ) -> Option<EntityType> {
-    use codec::entities::{LwPolyline, LwVertex};
-    use codec::types::Vector2;
+    use document::entities::{LwPolyline, LwVertex};
+    use document::types::Vector2;
     let r_major = major.length();
     if r_major < 1e-9 {
         return None;
@@ -181,6 +181,12 @@ enum CtrStep {
 pub struct EllipseCommand {
     step: CtrStep,
     plane: WorkingPlane,
+}
+
+impl Default for EllipseCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EllipseCommand {
@@ -242,9 +248,7 @@ impl CadCommand for EllipseCommand {
             CtrStep::MinorRatio { center, major } => {
                 let (center, major) = (*center, *major);
                 let ratio = minor_ratio(center, major, pt);
-                CmdResult::CommitAndExit(make_ellipse(
-                    center, major, ratio, 0.0, TAU, self.plane,
-                ))
+                CmdResult::CommitAndExit(make_ellipse(center, major, ratio, 0.0, TAU, self.plane))
             }
         }
     }
@@ -326,6 +330,12 @@ pub struct EllipseAxisCommand {
     plane: WorkingPlane,
 }
 
+impl Default for EllipseAxisCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EllipseAxisCommand {
     pub fn new() -> Self {
         Self {
@@ -375,9 +385,7 @@ impl CadCommand for EllipseAxisCommand {
             AxisStep::MinorRatio { center, major } => {
                 let (center, major) = (*center, *major);
                 let ratio = minor_ratio(center, major, pt);
-                CmdResult::CommitAndExit(make_ellipse(
-                    center, major, ratio, 0.0, TAU, self.plane,
-                ))
+                CmdResult::CommitAndExit(make_ellipse(center, major, ratio, 0.0, TAU, self.plane))
             }
         }
     }
@@ -465,6 +473,12 @@ pub struct EllipseArcCommand {
     prev_pt: Option<DVec3>,
     cw: bool,
     plane: WorkingPlane,
+}
+
+impl Default for EllipseArcCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EllipseArcCommand {

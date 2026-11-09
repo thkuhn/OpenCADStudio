@@ -1,7 +1,7 @@
 // Dispatch entry points for entity editing.
 
-use codec::types::{Color as AcadColor, LineWeight, Transparency};
-use codec::{EntityType, Handle};
+use document::types::{Color as AcadColor, LineWeight, Transparency};
+use document::{EntityType, Handle};
 
 use crate::command::EntityTransform;
 use crate::entities::traits::EntityTypeOps;
@@ -70,6 +70,17 @@ pub fn properties_sectioned(
     entity: &EntityType,
     text_style_names: &[String],
 ) -> Vec<PropSection> {
+    // Picked table cells: General keeps only Transparency, then the cells.
+    if matches!(entity, EntityType::Table(_)) && crate::entities::table::prop_cell_range().is_some()
+    {
+        let mut general = properties::general_section(entity);
+        general
+            .props
+            .retain(|property| property.field == "transparency");
+        let mut sections = vec![general];
+        sections.extend(entity.geometry_properties(text_style_names));
+        return sections;
+    }
     let mut sections = vec![properties::general_section(entity)];
     if let Some(viz) = properties::visualization_section(entity) {
         sections.push(viz);
@@ -89,12 +100,13 @@ pub fn properties_sectioned(
                     || property.field == "sl_thickness"
                     || property.label == crate::t!("Thickness").as_ref()
             });
+        // The reference lists an object's thickness as the last General row.
         if !already_present {
-            if let Some(geometry) = sections
+            if let Some(general) = sections
                 .iter_mut()
-                .find(|section| section.title == crate::t!("Geometry").as_ref())
+                .find(|section| section.title == crate::t!("General").as_ref())
             {
-                geometry.props.push(crate::entities::common::edit_prop(
+                general.props.push(crate::entities::common::edit_prop(
                     crate::t!("Thickness").as_ref(),
                     "thickness",
                     thickness,
@@ -139,7 +151,9 @@ pub fn apply_geom_prop_in_working_plane(
 }
 
 pub fn apply_common_prop(entity: &mut EntityType, field: &str, value: &str) {
-    if matches!(field, "layer" | "linetype") && crate::scene::block_construction::is_construction(entity.common()) {
+    if matches!(field, "layer" | "linetype")
+        && crate::scene::block_construction::is_construction(entity.common())
+    {
         return;
     }
     let e = entity.as_entity_mut();
@@ -238,13 +252,13 @@ pub fn apply_common_prop(entity: &mut EntityType, field: &str, value: &str) {
 ///     stale verbatim block (matched by APPID handle) so the new value wins.
 /// Other applications' verbatim blocks are preserved for round-trip fidelity.
 pub fn set_entity_xdata(
-    doc: &mut codec::Document,
-    handle: codec::Handle,
+    doc: &mut document::Document,
+    handle: document::Handle,
     app: &str,
-    values: Option<Vec<codec::xdata::XDataValue>>,
+    values: Option<Vec<document::xdata::XDataValue>>,
 ) {
     if values.is_some() && !doc.app_ids.contains(app) {
-        let mut a = codec::tables::AppId::new(app);
+        let mut a = document::tables::AppId::new(app);
         a.handle = doc.allocate_handle();
         let _ = doc.app_ids.add(a);
     }
@@ -253,14 +267,14 @@ pub fn set_entity_xdata(
         return;
     };
     let common = entity.common_mut();
-    let mut rebuilt = codec::xdata::ExtendedData::new();
+    let mut rebuilt = document::xdata::ExtendedData::new();
     for r in common.extended_data.records() {
         if r.application_name != app {
             rebuilt.add_record(r.clone());
         }
     }
     if let Some(vals) = values {
-        let mut rec = codec::xdata::ExtendedDataRecord::new(app);
+        let mut rec = document::xdata::ExtendedDataRecord::new(app);
         for v in vals {
             rec.add_value(v);
         }
@@ -314,13 +328,17 @@ pub fn set_entity_thickness(entity: &mut EntityType, v: f64) {
 }
 
 pub fn toggle_invisible(entity: &mut EntityType) {
-    if crate::scene::block_construction::is_construction(entity.common()) { return }
+    if crate::scene::block_construction::is_construction(entity.common()) {
+        return;
+    }
     let cur = entity.as_entity_mut().is_invisible();
     entity.as_entity_mut().set_invisible(!cur);
 }
 
 pub fn apply_color(entity: &mut EntityType, color: AcadColor) {
-    if crate::scene::block_construction::is_construction(entity.common()) { return }
+    if crate::scene::block_construction::is_construction(entity.common()) {
+        return;
+    }
     entity.as_entity_mut().set_color(color);
     let common = entity.common_mut();
     common.color_name = None;
@@ -329,7 +347,9 @@ pub fn apply_color(entity: &mut EntityType, color: AcadColor) {
 
 /// Like [`apply_color`], but keeps a colour-book identity (`BOOK$NAME`).
 pub fn apply_named_color(entity: &mut EntityType, color: AcadColor, name: Option<String>) {
-    if crate::scene::block_construction::is_construction(entity.common()) { return }
+    if crate::scene::block_construction::is_construction(entity.common()) {
+        return;
+    }
     apply_color(entity, color);
     entity.common_mut().color_name = name;
 }
@@ -418,27 +438,22 @@ pub fn apply_transform(entity: &mut EntityType, t: &EntityTransform) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::types::Vector3;
+    use document::types::Vector3;
 
     #[test]
-    fn line_thickness_follows_the_entity_geometry_rows() {
-        let mut line = codec::entities::Line::from_points(Vector3::ZERO, Vector3::UNIT_X);
+    fn line_thickness_is_the_last_general_row() {
+        let mut line = document::entities::Line::from_points(Vector3::ZERO, Vector3::UNIT_X);
         line.thickness = 2.5;
         let sections = properties_sectioned(Handle::NULL, &EntityType::Line(line), &[]);
 
-        assert!(!sections[0]
-            .props
-            .iter()
-            .any(|property| property.field == "thickness"));
-        let geometry = sections
-            .iter()
-            .find(|section| {
-                section
-                    .props
-                    .iter()
-                    .any(|property| property.field == "start_x")
-            })
-            .unwrap();
-        assert_eq!(geometry.props.last().unwrap().field, "thickness");
+        assert_eq!(sections[0].props.last().unwrap().field, "thickness");
+        assert_eq!(
+            sections
+                .iter()
+                .flat_map(|section| &section.props)
+                .filter(|property| property.field == "thickness")
+                .count(),
+            1
+        );
     }
 }

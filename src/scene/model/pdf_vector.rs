@@ -205,8 +205,9 @@ pub fn page_content_by_layer(
     } else {
         groups_by_removal(&shown, &names, &visible, hidden, &read)?
     };
-    let mut groups: Vec<PageVectors> =
-        (0..=visible.len()).map(|_| PageVectors::default()).collect();
+    let mut groups: Vec<PageVectors> = (0..=visible.len())
+        .map(|_| PageVectors::default())
+        .collect();
     for (drawn, g) in shown.order.iter().zip(group_of) {
         let group = &mut groups[g];
         match *drawn {
@@ -462,10 +463,7 @@ fn read_page_with(path: &str, page: &str, images: bool) -> Option<PageVectors> {
 /// the same path. Nothing is merged when the drawn paths do not match the
 /// operators one for one (paths drawn by patterns or glyph procedures, or
 /// left out by a hidden layer).
-fn merge_fill_and_stroke(
-    page: &hayro::hayro_syntax::page::Page<'_>,
-    device: &mut Collector,
-) {
+fn merge_fill_and_stroke(page: &hayro::hayro_syntax::page::Page<'_>, device: &mut Collector) {
     let mut calls: Vec<usize> = Vec::new();
     walk_operators(page, &mut |op, _| {
         calls.push(match op {
@@ -537,14 +535,18 @@ fn oc_section_layers(path: &str, page: &str) -> Option<Vec<Option<String>>> {
     let bytes = super::pdf_raster::source_bytes(path)?;
     let pdf = super::pdf_password::open(path, bytes).ok()?;
     let xref = pdf.xref();
-    let page = pdf.pages().get(page.trim().parse::<usize>().ok()?.checked_sub(1)?)?;
+    let page = pdf
+        .pages()
+        .get(page.trim().parse::<usize>().ok()?.checked_sub(1)?)?;
     let group_name = |dict: &Dict<'_>| {
         dict.get::<hayro::hayro_syntax::object::String<'_>>(b"Name")
             .map(|s| super::pdf_layers::text_string(s.as_bytes()))
     };
     let mut out = Vec::new();
-    walk_operators(&page, &mut |op, resources| {
-        let TypedInstruction::BeginMarkedContentWithProperties(bdc) = op else { return };
+    walk_operators(page, &mut |op, resources| {
+        let TypedInstruction::BeginMarkedContentWithProperties(bdc) = op else {
+            return;
+        };
         if bdc.0.as_ref() != b"OC" {
             return;
         }
@@ -554,10 +556,16 @@ fn oc_section_layers(path: &str, page: &str) -> Option<Vec<Option<String>>> {
             _ => &page.resources().properties,
         };
         let name = bdc.1.clone().into_name();
-        let indirect = name.as_ref().and_then(|n| properties.get_ref(n.as_ref())).is_some();
+        let indirect = name
+            .as_ref()
+            .and_then(|n| properties.get_ref(n.as_ref()))
+            .is_some();
         let dict = name.and_then(|n| properties.get::<Dict<'_>>(n.as_ref()));
         let layer = dict.and_then(|dict| {
-            if dict.get::<Name<'_>>(b"Type").is_some_and(|t| t.as_ref() == b"OCMD") {
+            if dict
+                .get::<Name<'_>>(b"Type")
+                .is_some_and(|t| t.as_ref() == b"OCMD")
+            {
                 let groups: Vec<Dict<'_>> = match dict.get::<Array<'_>>(b"OCGs") {
                     Some(array) => array
                         .raw_iter()
@@ -566,7 +574,11 @@ fn oc_section_layers(path: &str, page: &str) -> Option<Vec<Option<String>>> {
                         .collect(),
                     None => dict.get::<Dict<'_>>(b"OCGs").into_iter().collect(),
                 };
-                let group = if indirect { groups.last() } else { groups.first() };
+                let group = if indirect {
+                    groups.last()
+                } else {
+                    groups.first()
+                };
                 group.and_then(group_name)
             } else {
                 group_name(&dict)
@@ -616,13 +628,21 @@ fn walk_steps<'a>(
         let mut ops = TypedIter::new(data);
         while let Some(op) = ops.next() {
             visit(Step::Op(&op), resources);
-            let TypedInstruction::XObject(x) = &op else { continue };
+            let TypedInstruction::XObject(x) = &op else {
+                continue;
+            };
             // Nested forms are followed a few levels deep.
             if depth >= 8 {
                 continue;
             }
-            let Some(stream) = resources.get_x_object(&x.0) else { continue };
-            if !stream.dict().get::<Name<'_>>(b"Subtype").is_some_and(|t| t.as_ref() == b"Form") {
+            let Some(stream) = resources.get_x_object(x.0) else {
+                continue;
+            };
+            if stream
+                .dict()
+                .get::<Name<'_>>(b"Subtype")
+                .is_none_or(|t| t.as_ref() != b"Form")
+            {
                 continue;
             }
             let own = match stream.dict().get::<Dict<'_>>(b"Resources") {
@@ -726,7 +746,7 @@ fn assign_pens(
             Step::Op(op) => op,
             Step::FormStart(matrix) => {
                 let mut state = stack[stack.len() - 1].clone();
-                state.ctm = state.ctm * matrix;
+                state.ctm *= matrix;
                 floors.push(stack.len());
                 stack.push(state);
                 return;
@@ -749,12 +769,12 @@ fn assign_pens(
             }
             TypedInstruction::Transform(t) => {
                 let m = Affine::new([f(&t.0), f(&t.1), f(&t.2), f(&t.3), f(&t.4), f(&t.5)]);
-                stack[top].ctm = stack[top].ctm * m;
+                stack[top].ctm *= m;
             }
             TypedInstruction::LineWidth(w) => stack[top].width = f(&w.0),
             TypedInstruction::SetGraphicsState(gs) => {
                 let width = resources
-                    .get_ext_g_state(&gs.0)
+                    .get_ext_g_state(gs.0)
                     .and_then(|d: Dict<'_>| d.get::<f64>(b"LW"));
                 if let Some(width) = width {
                     stack[top].width = width;
@@ -764,8 +784,7 @@ fn assign_pens(
                 (stack[top].rgb, stack[top].components) = (to_rgb(&[f(&g.0)]), 1)
             }
             TypedInstruction::StrokeColorDeviceRgb(c) => {
-                (stack[top].rgb, stack[top].components) =
-                    (to_rgb(&[f(&c.0), f(&c.1), f(&c.2)]), 3)
+                (stack[top].rgb, stack[top].components) = (to_rgb(&[f(&c.0), f(&c.1), f(&c.2)]), 3)
             }
             TypedInstruction::StrokeColorCmyk(c) => {
                 (stack[top].rgb, stack[top].components) =
@@ -801,7 +820,11 @@ fn assign_pens(
             }
             TypedInstruction::CubicTo(c) => {
                 let p = Point::new(f(&c.4), f(&c.5));
-                path.curve_to(Point::new(f(&c.0), f(&c.1)), Point::new(f(&c.2), f(&c.3)), p);
+                path.curve_to(
+                    Point::new(f(&c.0), f(&c.1)),
+                    Point::new(f(&c.2), f(&c.3)),
+                    p,
+                );
                 current = p;
             }
             TypedInstruction::CubicStartTo(c) => {
@@ -1140,10 +1163,13 @@ impl<'a> Device<'a> for Collector {
             return;
         }
         let points = || {
-            subpaths.iter().flat_map(|sp| &sp.segments).flat_map(|seg| match seg {
-                Segment::Line(a, b) => vec![*a, *b],
-                Segment::Cubic(a, b, c, d) => vec![*a, *b, *c, *d],
-            })
+            subpaths
+                .iter()
+                .flat_map(|sp| &sp.segments)
+                .flat_map(|seg| match seg {
+                    Segment::Line(a, b) => vec![*a, *b],
+                    Segment::Cubic(a, b, c, d) => vec![*a, *b, *c, *d],
+                })
         };
         // A path reaching out of a polygon clip is clipped to it on import.
         let clip = match self.clips.last() {
@@ -1415,19 +1441,19 @@ static UNDERLAY_OSNAP: [AtomicBool; 3] = [
     AtomicBool::new(true),
 ];
 
-fn osnap_slot(kind: codec::entities::UnderlayType) -> &'static AtomicBool {
+fn osnap_slot(kind: document::entities::UnderlayType) -> &'static AtomicBool {
     match kind {
-        codec::entities::UnderlayType::Pdf => &UNDERLAY_OSNAP[0],
-        codec::entities::UnderlayType::Dwf => &UNDERLAY_OSNAP[1],
-        codec::entities::UnderlayType::Dgn => &UNDERLAY_OSNAP[2],
+        document::entities::UnderlayType::Pdf => &UNDERLAY_OSNAP[0],
+        document::entities::UnderlayType::Dwf => &UNDERLAY_OSNAP[1],
+        document::entities::UnderlayType::Dgn => &UNDERLAY_OSNAP[2],
     }
 }
 
-pub fn underlay_osnap(kind: codec::entities::UnderlayType) -> bool {
+pub fn underlay_osnap(kind: document::entities::UnderlayType) -> bool {
     osnap_slot(kind).load(Ordering::Relaxed)
 }
 
-pub fn set_underlay_osnap(kind: codec::entities::UnderlayType, on: bool) {
+pub fn set_underlay_osnap(kind: document::entities::UnderlayType, on: bool) {
     osnap_slot(kind).store(on, Ordering::Relaxed);
 }
 
@@ -1459,12 +1485,14 @@ const MAX_SNAP_POINTS: usize = 20_000;
 /// Endpoint and midpoint snaps of the underlay's PDF geometry, in world
 /// space, when PDFOSNAP is on and the page is shown.
 pub fn underlay_snap_points(
-    u: &codec::entities::Underlay,
-    document: &codec::Document,
+    u: &document::entities::Underlay,
+    document: &document::Document,
 ) -> Vec<(glam::DVec3, crate::scene::model::wire_model::SnapHint)> {
     use crate::scene::model::wire_model::SnapHint;
     if !underlay_osnap(u.underlay_type)
-        || !u.flags.contains(codec::entities::UnderlayDisplayFlags::ON)
+        || !u
+            .flags
+            .contains(document::entities::UnderlayDisplayFlags::ON)
     {
         return Vec::new();
     }
@@ -1509,12 +1537,12 @@ pub fn underlay_snap_points(
 /// The page's vectors in page units: PDF through its layer overrides, DWF
 /// and DGN from their sheet.
 fn underlay_vectors(
-    u: &codec::entities::Underlay,
-    def: &codec::entities::UnderlayDefinition,
+    u: &document::entities::Underlay,
+    def: &document::entities::UnderlayDefinition,
 ) -> Option<Arc<PageVectors>> {
     let page = crate::entities::underlay::page_of(def);
     match def.underlay_type {
-        codec::entities::UnderlayType::Pdf => {
+        document::entities::UnderlayType::Pdf => {
             page_vectors(&super::pdf_layers::underlay_source(u, &def.file_path), page)
         }
         kind => super::underlay_vector::page_vectors(
@@ -1542,11 +1570,13 @@ pub struct SnapPiece {
 /// piece, so pieces cross each other as separate objects do. Empty when
 /// PDFOSNAP is off or the page is not shown.
 pub fn underlay_snap_geometry(
-    u: &codec::entities::Underlay,
-    document: &codec::Document,
+    u: &document::entities::Underlay,
+    document: &document::Document,
 ) -> Vec<SnapPiece> {
     if !underlay_osnap(u.underlay_type)
-        || !u.flags.contains(codec::entities::UnderlayDisplayFlags::ON)
+        || !u
+            .flags
+            .contains(document::entities::UnderlayDisplayFlags::ON)
     {
         return Vec::new();
     }
