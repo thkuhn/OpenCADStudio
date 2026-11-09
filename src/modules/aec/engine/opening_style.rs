@@ -1284,7 +1284,10 @@ pub fn project_division(grid: &ConstructionGrid) -> DivisionGrid {
 
 pub fn project_division_sized(grid: &ConstructionGrid, width: f64, height: f64) -> DivisionGrid {
     if grid.columns.is_empty() && grid.rows.is_empty() && grid.cells.is_empty() {
-        return DivisionGrid::default();
+        return DivisionGrid {
+            profile_id: grid.muntin_profile_id.clone(),
+            ..DivisionGrid::default()
+        };
     }
     let resolved = resolve_grid(grid, width.max(0.0), height.max(0.0));
     let mut vertical: Vec<f64> = resolved

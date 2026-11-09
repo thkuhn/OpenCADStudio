@@ -753,11 +753,16 @@ fn collect_plan_divisions(
         if edge.axis != BarAxis::Vertical || edge.meeting != TrackMeeting::Mullion {
             continue;
         }
-        let section = section_for_profile(library, edge.profile_id.as_deref(), fallback);
+        let section = named_division_section(
+            library,
+            edge.profile_id.as_deref(),
+            resolved.muntin_profile_id.as_deref(),
+            fallback,
+        );
         paths.push(bake_plan_division_path(
             edge.position + offset_x - origin,
             params,
-            Some(&section),
+            section.as_ref(),
         ));
     }
     for edge in &resolved.edges {
@@ -1065,10 +1070,19 @@ fn bake_grid_elevation_schema(grid: &ConstructionGrid, params: OpeningBakeParams
             continue;
         }
         let hinge = cell.cell.hinge.unwrap_or(params.hinge);
-        let left = cell.left;
-        let right = cell.right;
-        let bottom = cell.bottom;
-        let top = cell.top;
+        let inset = params.frame_thickness.max(0.0);
+        let bottom_inset = if params.kind == OpeningKind::Door {
+            0.0
+        } else {
+            inset
+        };
+        let left = cell.left + inset;
+        let right = cell.right - inset;
+        let bottom = cell.bottom + bottom_inset;
+        let top = cell.top - inset;
+        if right - left <= 1e-9 || top - bottom <= 1e-9 {
+            continue;
+        }
         let mid_x = (left + right) * 0.5;
         let mid_z = (bottom + top) * 0.5;
         use crate::modules::aec::engine::construction_grid::TrackEnd;
@@ -1240,7 +1254,12 @@ fn collect_elevation_divisions(
         if edge.meeting != TrackMeeting::Mullion {
             continue;
         }
-        let section = section_for_profile(library, edge.profile_id.as_deref(), fallback);
+        let section = named_division_section(
+            library,
+            edge.profile_id.as_deref(),
+            resolved.muntin_profile_id.as_deref(),
+            fallback,
+        );
         push_elevation_bar(
             edge.axis,
             edge.position,
@@ -1250,7 +1269,7 @@ fn collect_elevation_divisions(
             offset_z,
             origin,
             params,
-            Some(&section),
+            section.as_ref(),
             paths,
         );
     }
@@ -1361,6 +1380,25 @@ fn section_for_profile(
         resolve_component_section(library, profile_id, fallback.face, fallback.depth)
     } else {
         fallback.clone()
+    }
+}
+
+/// A closed bar only when a named profile actually resolves. Otherwise the
+/// post is the shared grid axis, not a copy of the frame section.
+fn named_division_section(
+    library: Option<&StyleLibrary>,
+    edge_profile: Option<&str>,
+    muntin_profile: Option<&str>,
+    fallback: &ResolvedSection,
+) -> Option<ResolvedSection> {
+    let id = edge_profile.or(muntin_profile)?;
+    let resolved = library
+        .and_then(|lib| lib.find_section_profile(id))
+        .is_some_and(|profile| profile.is_valid());
+    if resolved || edge_profile.is_some() {
+        Some(section_for_profile(library, Some(id), fallback))
+    } else {
+        None
     }
 }
 
