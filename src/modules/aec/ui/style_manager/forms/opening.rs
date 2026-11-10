@@ -15,15 +15,16 @@ use crate::modules::aec::engine::opening_style::{
     FamilyPlacement, OpeningCellKind, OpeningEditorGroup, OpeningLookRole, OpeningProfilePart,
     construction_from_division, OpeningStyle, LeafOperation,
 };
-use crate::modules::aec::engine::openings::OpeningKind;
+use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::message::AecMessage;
 use crate::modules::aec::state::{
-    AecOpeningCellBuffer, AecOpeningLookBuffer, AecOpeningPreviewMode,
+    AecOpeningCellBuffer, AecOpeningIsometric, AecOpeningLookBuffer, AecOpeningPreviewMode,
     StylePickerTarget,
 };
 use crate::modules::aec::styles::opening_style_manager::{
-    preview_baked_paths_for_mode_with_library, PreviewCamera3d, PREVIEW_WALL_THICKNESS,
+    cached_preview_baked_paths_for_mode, format_dim, preview_project, PreviewCamera3d,
+    PREVIEW_WALL_THICKNESS,
 };
 use crate::modules::aec::engine::style_common::StyleOrigin;
 use crate::modules::aec::ui::aec_ui_util::muted;
@@ -102,13 +103,18 @@ pub struct OpeningStyleFormState<'a> {
     pub angle: &'a str,
     pub spring: &'a str,
     pub hinge: LeafOperation,
+    pub swing_side: SwingSide,
     pub authored_grid: Option<&'a crate::modules::aec::engine::construction_grid::ConstructionGrid>,
     pub grid_path: &'a [(u32, u32)],
-    pub preview_azimuth: f64,
-    pub preview_elevation: f64,
+    pub selected_grid_edge: Option<(bool, usize)>,
+    pub grid_measure: Option<&'a str>,
+    pub preview_isometric: AecOpeningIsometric,
     pub preview_zoom: f64,
     pub preview_pan_x: f64,
     pub preview_pan_y: f64,
+    pub(crate) preview_model_cache: &'a std::cell::RefCell<
+        crate::modules::aec::styles::opening_style_manager::OpeningPreviewModelCache,
+    >,
 }
 
 pub fn parts<'a>(
@@ -215,10 +221,6 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         .iter()
         .map(|s| s.as_str().to_string())
         .collect();
-    let hinges: Vec<String> = vec![
-        LeafOperation::left().as_str().to_string(),
-        LeafOperation::right().as_str().to_string(),
-    ];
     let height_locked = matches!(
         form.shape,
         OpeningShape::Circle | OpeningShape::Triangle(crate::modules::aec::engine::opening_shape::TriangleVariant::Equilateral)
@@ -243,7 +245,7 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         ]
         .spacing(8),
         row![
-            text(t!("Kind")).size(10).style(muted).width(100),
+            text(t!("Kind")).size(10).style(muted).width(48),
             pick_list(
                 Some(form.kind.as_str().to_string()),
                 kinds,
@@ -251,11 +253,8 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             )
             .on_select(|v| Message::Aec(AecMessage::AecOpeningStyleManagerKindChanged(v)))
             .text_size(11)
-            .width(180),
-        ]
-        .spacing(8),
-        row![
-            text(tr!("aec", "opening-shape")).size(10).style(muted).width(100),
+            .width(140),
+            text(tr!("aec", "opening-shape")).size(10).style(muted).width(48),
             pick_list(
                 Some(form.shape.as_str().to_string()),
                 shapes,
@@ -263,60 +262,41 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             )
             .on_select(|v| Message::Aec(AecMessage::AecOpeningStyleManagerShapeChanged(v)))
             .text_size(11)
-            .width(220),
+            .width(170),
         ]
         .spacing(8),
         row![
-            text(t!("Width")).size(10).style(muted).width(100),
+            text(t!("Width")).size(10).style(muted).width(50),
             text_input("", form.width)
                 .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerWidthChanged(v)))
                 .size(11)
                 .padding([4, 6])
-                .width(120),
-            text(t!("Height")).size(10).style(muted).width(60),
+                .width(95),
+            text(t!("Height")).size(10).style(muted).width(52),
             {
-                let mut h = text_input("", form.height).size(11).padding([4, 6]).width(120);
+                let mut h = text_input("", form.height).size(11).padding([4, 6]).width(95);
                 if !height_locked {
                     h = h.on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerHeightChanged(v)));
                 }
                 h
             },
-        ]
-        .spacing(8),
-        row![
-            text(tr!("aec", "opening-sill")).size(10).style(muted).width(100),
+            text(tr!("aec", "opening-sill")).size(10).style(muted).width(55),
             text_input("", form.sill)
                 .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerSillChanged(v)))
                 .size(11)
                 .padding([4, 6])
-                .width(120),
+                .width(95),
+            text(tr!("aec", "opening-angle")).size(10).style(muted).width(66),
+            text_input("", form.angle)
+                .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerAngleChanged(v)))
+                .size(11)
+                .padding([4, 6])
+                .width(95),
         ]
         .spacing(8),
     ]
     .spacing(7);
 
-    if form.kind != OpeningKind::Breakthrough {
-        detail_col = detail_col.push(
-            row![
-                text(tr!("aec", "opening-hinge")).size(10).style(muted).width(100),
-                pick_list(
-                    Some(form.hinge.as_str().to_string()),
-                    hinges,
-                    |v: &String| v.clone(),
-                )
-                .on_select(|v| Message::Aec(AecMessage::AecOpeningStyleManagerHingeChanged(v)))
-                .text_size(11)
-                .width(120),
-                text(tr!("aec", "opening-angle")).size(10).style(muted).width(70),
-                text_input("", form.angle)
-                    .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerAngleChanged(v)))
-                    .size(11)
-                    .padding([4, 6])
-                    .width(120),
-            ]
-            .spacing(8),
-        );
-    }
 
     if form.shape == OpeningShape::Arch {
         detail_col = detail_col.push(
@@ -377,17 +357,12 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         .unwrap_or(preview_style.default_height);
     let preview_sill = crate::modules::aec::styles::opening_style_manager::parse_dim(form.sill)
         .unwrap_or(preview_style.default_sill);
-    let frame = crate::modules::aec::styles::opening_style_manager::parse_dim(form.frame)
-        .unwrap_or(0.06);
-    let paths = preview_baked_paths_for_mode_with_library(
+    let paths = cached_preview_baked_paths_for_mode(
+        form.preview_model_cache,
         &preview_style,
         preview_width,
         form.preview_mode,
         Some(library),
-        PreviewCamera3d {
-            azimuth: form.preview_azimuth,
-            elevation: form.preview_elevation,
-        },
     );
     let look_styles = preview_look_styles(&preview_style, library);
 
@@ -426,6 +401,30 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
     ]
     .spacing(4)
     .align_y(iced::Center);
+    let isometric_buttons = row![
+        button(text(tr!("aec", "opening-isometric-front-left")).size(9))
+            .style(if form.preview_isometric == AecOpeningIsometric::FrontLeft { button::primary } else { button::secondary })
+            .padding([2, 4])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::FrontLeft))),
+        button(text(tr!("aec", "opening-isometric-front-right")).size(9))
+            .style(if form.preview_isometric == AecOpeningIsometric::FrontRight { button::primary } else { button::secondary })
+            .padding([2, 4])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::FrontRight))),
+        button(text(tr!("aec", "opening-isometric-back-left")).size(9))
+            .style(if form.preview_isometric == AecOpeningIsometric::BackLeft { button::primary } else { button::secondary })
+            .padding([2, 4])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::BackLeft))),
+        button(text(tr!("aec", "opening-isometric-back-right")).size(9))
+            .style(if form.preview_isometric == AecOpeningIsometric::BackRight { button::primary } else { button::secondary })
+            .padding([2, 4])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::BackRight))),
+    ]
+    .spacing(3);
+    let preview_toolbar = if is_3d {
+        column![preview_header, isometric_buttons].spacing(4)
+    } else {
+        column![preview_header]
+    };
 
     let preview_canvas = container(
         canvas(OpeningPreviewCanvas {
@@ -435,11 +434,9 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             height: preview_height.max(1e-6),
             sill: preview_sill.max(0.0),
             thickness: PREVIEW_WALL_THICKNESS,
-            frame: frame.max(0.0),
             look_styles,
             selected_role: form.selected_look_role,
-            azimuth: form.preview_azimuth,
-            elevation: form.preview_elevation,
+            isometric: form.preview_isometric,
             zoom: form.preview_zoom,
             pan_x: form.preview_pan_x,
             pan_y: form.preview_pan_y,
@@ -466,7 +463,7 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         },
         ..Default::default()
     });
-    let preview_col = column![preview_header, preview_canvas]
+    let preview_col = column![preview_toolbar, preview_canvas]
         .spacing(8)
         .width(360)
         .height(FillLen);
@@ -478,7 +475,8 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
     let editor = row![component_group_list(&form), properties, preview_col]
         .spacing(12)
         .height(FillLen);
-    column![detail_col, editor]
+    let raster = divisions_tab(&form);
+    column![detail_col, editor, raster]
         .spacing(10)
         .height(FillLen)
         .into()
@@ -505,6 +503,7 @@ fn form_preview_style(form: &OpeningStyleFormState<'_>) -> OpeningStyle {
         height.max(1e-6),
         sill,
         form.hinge,
+        form.swing_side,
         frame,
         angle,
         form.shape,
@@ -670,14 +669,23 @@ fn opening_group_label(group: OpeningEditorGroup) -> String {
 }
 
 fn component_group_list<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
+    let active_group = if form.editor_tab == OpeningEditorGroup::Divisions {
+        OpeningEditorGroup::FixedFrame
+    } else {
+        form.editor_tab
+    };
     let mut list = column![text(tr!("aec", "opening-components")).size(11).style(muted)]
         .spacing(4);
     for group in OpeningEditorGroup::all()
         .iter()
         .copied()
-        .filter(|group| *group != OpeningEditorGroup::Ratings && group.applies_to(form.kind))
+        .filter(|group| {
+            *group != OpeningEditorGroup::Ratings
+                && *group != OpeningEditorGroup::Divisions
+                && group.applies_to(form.kind)
+        })
     {
-        let selected = form.editor_tab == group;
+        let selected = active_group == group;
         let mut item = row![
             button(text(opening_group_label(group)).size(11))
                 .style(if selected { button::primary } else { button::secondary })
@@ -781,7 +789,11 @@ fn opening_editor_tab_content<'a>(
     form: &OpeningStyleFormState<'a>,
     library: &'a StyleLibrary,
 ) -> Element<'a, Message> {
-    let group = form.editor_tab;
+    let group = if form.editor_tab == OpeningEditorGroup::Divisions {
+        OpeningEditorGroup::FixedFrame
+    } else {
+        form.editor_tab
+    };
     if optional_group(group) && !form.component_enabled.get(&group).copied().unwrap_or(true) {
         return column![
             text(opening_group_label(group)).size(12),
@@ -875,11 +887,7 @@ fn opening_editor_tab_content<'a>(
                 .push(dim_row("opening-lintel-left", "lintel_left", form.lintel_left))
                 .push(dim_row("opening-lintel-right", "lintel_right", form.lintel_right));
         }
-        OpeningEditorGroup::Divisions => {
-            col = col
-                .push(profile_picker(form, library, OpeningProfilePart::Division))
-                .push(divisions_tab(form));
-        }
+        OpeningEditorGroup::Divisions => {}
         OpeningEditorGroup::Symbol => col = col.push(symbol_tab(form)),
         OpeningEditorGroup::Ratings => {}
     }
@@ -1058,9 +1066,7 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     let selected_kind = selected_resolved
         .map(|cell| fill_to_kind(&cell.cell.fill))
         .unwrap_or(OpeningCellKind::Glass);
-    let selected_hinge = selected_resolved
-        .and_then(|cell| cell.cell.operation)
-        .unwrap_or(LeafOperation::left());
+    let selected_hinge = selected_resolved.and_then(|cell| cell.cell.operation);
     let kind_options: Vec<String> = OpeningCellKind::catalogue()
         .iter()
         .map(|kind| kind.as_str().to_string())
@@ -1078,72 +1084,228 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     })
     .text_size(11)
     .width(130);
-    let hinge_selector: Element<'a, Message> = if selected_kind.permits_hinge() {
-        pick_list(
-            Some(selected_hinge.as_str().to_string()),
-            vec!["Left".to_string(), "Right".to_string()],
-            |value: &String| value.clone(),
-        )
-        .on_select(move |value| {
-            Message::Aec(AecMessage::AecOpeningStyleManagerCellHingeChanged(
-                selected_index,
-                value,
-            ))
-        })
-        .text_size(11)
-        .width(130)
+    let edge_properties: Element<'a, Message> = if let Some((vertical, index)) = form.selected_grid_edge {
+        use crate::modules::aec::engine::construction_grid::{
+            format_track_measure, TrackEnd, TrackMeeting,
+        };
+        let axis = if vertical { "vertical" } else { "horizontal" };
+        let tracks = if vertical { &level.columns } else { &level.rows };
+        let resolved_tracks = if vertical { &resolved.columns } else { &resolved.rows };
+        if let (Some(track), Some(resolved_track)) =
+            (tracks.get(index), resolved_tracks.get(index))
+        {
+            let edge_label = tr!("aec", "opening-grid-edge");
+            let selected_meeting = match track.meeting {
+                TrackMeeting::Mullion => "mullion",
+                TrackMeeting::Stulp {
+                    bearer: TrackEnd::Start,
+                } => "stulp-left",
+                TrackMeeting::Stulp {
+                    bearer: TrackEnd::End,
+                } => "stulp-right",
+                TrackMeeting::Flush => "flush",
+            };
+            let meeting_options = vec![
+                ("mullion".to_string(), tr!("aec", "opening-grid-mullion")),
+                ("stulp-left".to_string(), tr!("aec", "opening-grid-stulp-left")),
+                ("stulp-right".to_string(), tr!("aec", "opening-grid-stulp-right")),
+                ("flush".to_string(), tr!("aec", "opening-grid-no-bar")),
+            ];
+            let meeting_value = meeting_options
+                .iter()
+                .find(|(value, _)| value == selected_meeting)
+                .cloned();
+            let measure = form
+                .grid_measure
+                .map(str::to_string)
+                .unwrap_or_else(|| format_track_measure(track.measure));
+            column![
+                text(edge_label).size(10).style(muted),
+                row![
+                    text(tr!("aec", "opening-grid-edge-kind")).size(10).width(78),
+                    pick_list(meeting_value, meeting_options, |item: &(String, String)| item.1.clone())
+                        .on_select(move |(value, _)| {
+                            Message::Aec(AecMessage::AecOpeningStyleManagerGridMeeting(
+                                axis.to_string(), index, value,
+                            ))
+                        })
+                        .text_size(11)
+                        .width(150),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+                row![
+                    text(tr!("aec", "opening-grid-measure")).size(10).width(78),
+                    text_input("", &measure)
+                        .on_input(move |value| {
+                            Message::Aec(AecMessage::AecOpeningStyleManagerGridMeasure(
+                                axis.to_string(), index, value,
+                            ))
+                        })
+                        .size(11)
+                        .padding([3, 5])
+                        .width(100),
+                    text(tr!("aec", "opening-grid-measure-example")).size(9),
+                    text(format!(
+                        "{} m",
+                        crate::modules::aec::styles::opening_style_manager::format_dim(
+                            resolved_track.end - resolved_track.start
+                        )
+                    ))
+                    .size(10),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            ]
+            .spacing(5)
+            .into()
+        } else {
+            text(tr!("aec", "opening-grid-select-edge")).size(10).style(muted).into()
+        }
+    } else if let Some(cell) = selected_resolved {
+        let hinge_options = vec![
+            ("".to_string(), tr!("aec", "opening-cell-style-default")),
+            ("Left".to_string(), t!("Left").to_string()),
+            ("Right".to_string(), t!("Right").to_string()),
+        ];
+        let hinge_value = hinge_options
+            .iter()
+            .find(|(value, _)| value == selected_hinge.map_or("", LeafOperation::as_str))
+            .cloned();
+        let hinge_selector: Element<'a, Message> = if selected_kind.permits_hinge() {
+            pick_list(hinge_value, hinge_options, |item: &(String, String)| item.1.clone())
+                .on_select(move |(value, _)| {
+                    Message::Aec(AecMessage::AecOpeningStyleManagerCellHingeChanged(
+                        selected_index,
+                        value,
+                    ))
+                })
+                .text_size(11)
+                .width(130)
+                .into()
+        } else {
+            text(tr!("aec", "opening-cell-hinge-not-applicable"))
+                .size(11)
+                .style(muted)
+                .into()
+        };
+        let swing_options = vec![
+            ("".to_string(), tr!("aec", "opening-cell-style-default")),
+            (
+                SwingSide::Exterior.as_str().to_string(),
+                tr!("aec", "opening-swing-exterior"),
+            ),
+            (
+                SwingSide::Interior.as_str().to_string(),
+                tr!("aec", "opening-swing-interior"),
+            ),
+        ];
+        let swing_value = swing_options
+            .iter()
+            .find(|(value, _)| {
+                value == cell.cell.swing.map_or("", SwingSide::as_str)
+            })
+            .cloned();
+        let swing_selector = pick_list(swing_value, swing_options, |item: &(String, String)| item.1.clone())
+            .on_select(move |(value, _)| {
+                Message::Aec(AecMessage::AecOpeningStyleManagerCellSwingChanged(
+                    selected_index,
+                    value,
+                ))
+            })
+            .text_size(11)
+            .width(130);
+        let angle_default = tr!("aec", "opening-cell-style-default");
+        let angle_value = cell.cell.angle_deg.map(format_dim).unwrap_or_default();
+        column![
+            text(tr!("aec", "opening-selected-cell")).size(10).style(muted),
+            row![text(opening_label("opening-cell-kind")).size(10).width(55), kind_selector]
+                .spacing(4)
+                .align_y(iced::Center),
+            row![text(opening_label("opening-cell-hinge")).size(10).width(55), hinge_selector]
+                .spacing(4)
+                .align_y(iced::Center),
+            row![text(tr!("aec", "opening-cell-swing")).size(10).width(55), swing_selector]
+                .spacing(4)
+                .align_y(iced::Center),
+            row![
+                text(tr!("aec", "opening-cell-angle")).size(10).width(55),
+                text_input(&angle_default, &angle_value)
+                .on_input(move |value| {
+                    Message::Aec(AecMessage::AecOpeningStyleManagerCellAngleChanged(
+                        selected_index,
+                        value,
+                    ))
+                })
+                .size(11)
+                .padding([3, 5])
+                .width(130),
+            ]
+            .spacing(4)
+            .align_y(iced::Center),
+        ]
+        .spacing(5)
+        .width(245)
         .into()
     } else {
-        text(tr!("aec", "opening-cell-hinge-not-applicable"))
-            .size(11)
-            .style(muted)
-            .into()
+        text(tr!("aec", "opening-grid-select-cell")).size(10).style(muted).into()
     };
-
-    let presets = row![
-        button(text(t!("Doppelflügel")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDivisionPreset(
-                "double".to_string(),
-            )))
-            .style(button::secondary),
-        button(text(t!("Falten")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDivisionPreset(
-                "fold".to_string(),
-            )))
-            .style(button::secondary),
-        button(text(t!("Schieben")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDivisionPreset(
-                "slide".to_string(),
-            )))
-            .style(button::secondary),
-        button(text(t!("Verbinden")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellSpan(
-                "join".to_string(),
-            )))
-            .style(button::secondary),
-        button(text(t!("Trennen")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellSpan(
-                "split".to_string(),
-            )))
-            .style(button::secondary),
-        button(text(t!("Kindraster")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellSpan(
-                "nest".to_string(),
-            )))
-            .style(button::secondary),
-        button(text(t!("Öffnen")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerGridEnter(
-                selected_index,
-            )))
-            .style(button::secondary),
-        button(text(t!("Zurück")).size(12))
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerGridBack))
-            .style(button::secondary),
+    let mut grid_heading = row![text(opening_label("opening-grid")).size(11).style(muted), Space::new()];
+    let path_label = form
+        .grid_path
+        .iter()
+        .map(|(column, row)| {
+            let column = char::from(b'A' + (*column as u8).min(25));
+            format!("{column}{}", row + 1)
+        })
+        .collect::<Vec<_>>()
+        .join(" > ");
+    if !path_label.is_empty() {
+        grid_heading = grid_heading.push(text(path_label).size(10).style(muted));
+    }
+    if !form.grid_path.is_empty() {
+        grid_heading = grid_heading.push(
+            button(text(tr!("aec", "opening-grid-up")).size(10))
+                .padding([3, 8])
+                .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerGridBack)),
+        );
+    }
+    let style_hinge = pick_list(
+        Some(form.hinge.as_str().to_string()),
+        vec!["Left".to_string(), "Right".to_string()],
+        |value: &String| value.clone(),
+    )
+    .on_select(|value| {
+        Message::Aec(AecMessage::AecOpeningStyleManagerHingeChanged(value))
+    })
+    .text_size(10)
+    .width(100);
+    let style_swing = pick_list(
+        Some(form.swing_side.as_str().to_string()),
+        vec![
+            SwingSide::Exterior.as_str().to_string(),
+            SwingSide::Interior.as_str().to_string(),
+        ],
+        |value: &String| match value.as_str() {
+            "Interior" => tr!("aec", "opening-swing-interior"),
+            _ => tr!("aec", "opening-swing-exterior"),
+        },
+    )
+    .on_select(|value| Message::Aec(AecMessage::AecOpeningStyleManagerSwingChanged(value)))
+    .text_size(10)
+    .width(120);
+    let leaf_defaults = row![
+        text(t!("Default")).size(10).style(muted),
+        text(opening_label("opening-cell-hinge")).size(10),
+        style_hinge,
+        text(tr!("aec", "opening-cell-swing")).size(10),
+        style_swing,
     ]
-    .spacing(6);
+    .spacing(5)
+    .align_y(iced::Center);
     column![
-        text(opening_label("opening-grid")).size(11).style(muted),
-        presets,
+        grid_heading,
+        leaf_defaults,
         text(tr!("aec", "opening-division-sketch-hint")).size(10).style(muted),
         row![
             crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
@@ -1152,49 +1314,13 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
                 level_height,
                 style.kind,
                 form.selected_cell,
+                form.selected_grid_edge,
+                form.hinge,
             ),
-            column![
-                text(tr!("aec", "opening-selected-cell")).size(10).style(muted),
-                row![text(opening_label("opening-cell-kind")).size(10).width(55), kind_selector]
-                    .spacing(4)
-                    .align_y(iced::Center),
-                row![text(opening_label("opening-cell-hinge")).size(10).width(55), hinge_selector]
-                    .spacing(4)
-                    .align_y(iced::Center),
-                meter_list_editor(
-                    "opening-vertical-from-left",
-                    "vertical",
-                    "vertical_position",
-                    form.vertical_positions,
-                ),
-                meter_list_editor(
-                    "opening-horizontal-above-sill",
-                    "horizontal",
-                    "horizontal_position",
-                    form.horizontal_positions,
-                ),
-            ]
-            .spacing(6)
-            .width(220)
+            edge_properties
         ]
         .spacing(8)
         .height(210),
-        text(tr!("aec", "opening-muntins-every-cell")).size(10).style(muted),
-        row![
-            meter_list_editor(
-                "opening-vertical-muntin-in-cell",
-                "vertical_muntin",
-                "vertical_muntin_position",
-                form.vertical_muntin_positions,
-            ),
-            meter_list_editor(
-                "opening-horizontal-muntin-above-sill",
-                "horizontal_muntin",
-                "horizontal_muntin_position",
-                form.horizontal_muntin_positions,
-            ),
-        ]
-        .spacing(8),
     ]
     .spacing(6)
     .into()
@@ -1609,11 +1735,9 @@ struct OpeningPreviewCanvas {
     height: f64,
     sill: f64,
     thickness: f64,
-    frame: f64,
     look_styles: HashMap<OpeningLookRole, PreviewLookColors>,
     selected_role: Option<OpeningLookRole>,
-    azimuth: f64,
-    elevation: f64,
+    isometric: AecOpeningIsometric,
     zoom: f64,
     pan_x: f64,
     pan_y: f64,
@@ -1621,15 +1745,38 @@ struct OpeningPreviewCanvas {
 
 struct PreviewGesture {
     origin: Point,
-    last: Point,
     dragging: bool,
 }
 
 impl OpeningPreviewCanvas {
-    fn camera(&self, bounds: Rectangle) -> PreviewCamera {
+    fn projected_paths(&self) -> Vec<BakedPath> {
+        if self.mode != AecOpeningPreviewMode::Model3D {
+            return self.paths.clone();
+        }
+        let (azimuth, elevation) = self.isometric.camera_angles();
+        let camera = PreviewCamera3d {
+            azimuth,
+            elevation,
+        };
+        self.paths
+            .iter()
+            .cloned()
+            .map(|mut path| {
+                if let Some(points) = &path.points_3d {
+                    path.points = points
+                        .iter()
+                        .map(|point| preview_project(camera, point[0], point[1], point[2]))
+                        .collect();
+                }
+                path
+            })
+            .collect()
+    }
+
+    fn camera(&self, bounds: Rectangle, paths: &[BakedPath]) -> PreviewCamera {
         PreviewCamera::fit(
             bounds,
-            &self.paths,
+            paths,
             self.mode,
             self.width,
             self.height,
@@ -1650,7 +1797,8 @@ impl Program<Message> for OpeningPreviewCanvas {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        let cam = self.camera(bounds);
+        let paths = self.projected_paths();
+        let cam = self.camera(bounds, &paths);
         match event {
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 if self.mode != AecOpeningPreviewMode::Model3D {
@@ -1669,7 +1817,7 @@ impl Program<Message> for OpeningPreviewCanvas {
                 let (wx, wy) = cam.to_local(pos);
                 let fitted = PreviewCamera::fit(
                     bounds,
-                    &self.paths,
+                    &paths,
                     self.mode,
                     self.width,
                     self.height,
@@ -1684,9 +1832,7 @@ impl Program<Message> for OpeningPreviewCanvas {
                     + wy * fitted.scale as f64 * new_zoom;
                 return Some(
                     canvas::Action::publish(Message::Aec(
-                        AecMessage::AecOpeningStyleManagerPreviewCamera(
-                            self.azimuth,
-                            self.elevation,
+                        AecMessage::AecOpeningStyleManagerPreviewView(
                             new_zoom,
                             new_pan_x,
                             new_pan_y,
@@ -1700,7 +1846,6 @@ impl Program<Message> for OpeningPreviewCanvas {
                 if self.mode == AecOpeningPreviewMode::Model3D {
                     *state = Some(PreviewGesture {
                         origin: pos,
-                        last: pos,
                         dragging: false,
                     });
                     return Some(canvas::Action::capture());
@@ -1709,7 +1854,7 @@ impl Program<Message> for OpeningPreviewCanvas {
                 return Some(
                     canvas::Action::publish(Message::Aec(
                         AecMessage::AecOpeningStyleManagerPreviewSlotSelect(hit_role(
-                            &self.paths,
+                            &paths,
                             x,
                             y,
                             8.0 / cam.scale.max(1e-6) as f64,
@@ -1726,21 +1871,7 @@ impl Program<Message> for OpeningPreviewCanvas {
                     return Some(canvas::Action::capture());
                 }
                 gesture.dragging = true;
-                let dx = (pos.x - gesture.last.x) as f64;
-                let dy = (pos.y - gesture.last.y) as f64;
-                gesture.last = pos;
-                return Some(
-                    canvas::Action::publish(Message::Aec(
-                        AecMessage::AecOpeningStyleManagerPreviewCamera(
-                            self.azimuth + dx * 0.01,
-                            (self.elevation + dy * 0.01).clamp(-1.2, 1.2),
-                            self.zoom,
-                            self.pan_x,
-                            self.pan_y,
-                        ),
-                    ))
-                    .and_capture(),
-                );
+                return Some(canvas::Action::capture());
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 let gesture = state.take()?;
@@ -1751,7 +1882,7 @@ impl Program<Message> for OpeningPreviewCanvas {
                 return Some(
                     canvas::Action::publish(Message::Aec(
                         AecMessage::AecOpeningStyleManagerPreviewSlotSelect(hit_role(
-                            &self.paths,
+                            &paths,
                             x,
                             y,
                             8.0 / cam.scale.max(1e-6) as f64,
@@ -1780,9 +1911,10 @@ impl Program<Message> for OpeningPreviewCanvas {
         let Some(pos) = cursor.position_in(bounds) else {
             return mouse::Interaction::default();
         };
-        let cam = self.camera(bounds);
+        let paths = self.projected_paths();
+        let cam = self.camera(bounds, &paths);
         let (x, y) = cam.to_local(pos);
-        if hit_path(&self.paths, x, y, 8.0 / cam.scale.max(1e-6) as f64).is_some() {
+        if hit_path(&paths, x, y, 8.0 / cam.scale.max(1e-6) as f64).is_some() {
             mouse::Interaction::Pointer
         } else {
             mouse::Interaction::default()
@@ -1798,12 +1930,12 @@ impl Program<Message> for OpeningPreviewCanvas {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let cam = self.camera(bounds);
+        let paths = self.projected_paths();
+        let cam = self.camera(bounds, &paths);
 
         if self.mode == AecOpeningPreviewMode::Plan2D {
             let hw = self.width * 0.5;
             let ht = self.thickness * 0.5;
-            let ft = self.frame.max(0.0);
             let guide = theme.palette().background.neutral.color;
             let outer = Path::new(|p| {
                 p.move_to(cam.to_screen(-hw, -ht));
@@ -1816,23 +1948,6 @@ impl Program<Message> for OpeningPreviewCanvas {
                 &outer,
                 Stroke::default().with_width(1.0).with_color(guide),
             );
-            let iw = (hw - ft).max(0.0);
-            let it = (ht - ft).max(0.0);
-            if iw > 1e-9 && it > 1e-9 {
-                let inner = Path::new(|p| {
-                    p.move_to(cam.to_screen(-iw, -it));
-                    p.line_to(cam.to_screen(iw, -it));
-                    p.line_to(cam.to_screen(iw, it));
-                    p.line_to(cam.to_screen(-iw, it));
-                    p.close();
-                });
-                frame.stroke(
-                    &inner,
-                    Stroke::default()
-                        .with_width(1.0)
-                        .with_color(guide.scale_alpha(0.6)),
-                );
-            }
         }
 
         if self.mode == AecOpeningPreviewMode::Elevation2D {
@@ -1854,7 +1969,7 @@ impl Program<Message> for OpeningPreviewCanvas {
 
         let fallback_stroke_color = theme.palette().background.base.text;
         let fallback_fill_color = fallback_stroke_color.scale_alpha(0.18);
-        for path in &self.paths {
+        for path in &paths {
             if path.points.len() < 2 {
                 continue;
             }
@@ -1926,6 +2041,7 @@ mod hit_tests {
             slot,
             look_role: None,
             points: vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+            points_3d: None,
             closed: true,
             filled: false,
         }
@@ -1948,6 +2064,7 @@ mod hit_tests {
             slot: OpeningComponentSlot::Frame2D,
             look_role: Some(OpeningLookRole::ShutterBox),
             points: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            points_3d: None,
             closed: true,
             filled: true,
         };
@@ -2009,5 +2126,55 @@ mod hit_tests {
             assert_eq!(a.ox, b.ox);
             assert_eq!(a.oy, b.oy);
         }
+    }
+
+    #[test]
+    fn isometric_presets_reproject_cached_model_points_without_geometry_changes() {
+        let camera = PreviewCamera3d::default();
+        let points_3d = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 1.0]];
+        let path = BakedPath {
+            slot: OpeningComponentSlot::Frame3D,
+            look_role: Some(OpeningLookRole::FixedFrame),
+            points: points_3d
+                .iter()
+                .map(|point| preview_project(camera, point[0], point[1], point[2]))
+                .collect(),
+            points_3d: Some(points_3d.clone()),
+            closed: false,
+            filled: false,
+        };
+        let make_canvas = |isometric, zoom| OpeningPreviewCanvas {
+            paths: vec![path.clone()],
+            mode: AecOpeningPreviewMode::Model3D,
+            width: 1.0,
+            height: 1.0,
+            sill: 0.0,
+            thickness: PREVIEW_WALL_THICKNESS,
+            look_styles: HashMap::new(),
+            selected_role: None,
+            isometric,
+            zoom,
+            pan_x: 0.0,
+            pan_y: 0.0,
+        };
+        let front_left = make_canvas(AecOpeningIsometric::FrontLeft, 1.0).projected_paths();
+        let front_right = make_canvas(AecOpeningIsometric::FrontRight, 1.0).projected_paths();
+        let back_left = make_canvas(AecOpeningIsometric::BackLeft, 1.0).projected_paths();
+        let back_right = make_canvas(AecOpeningIsometric::BackRight, 1.0).projected_paths();
+        let projections = [
+            &front_left[0].points,
+            &front_right[0].points,
+            &back_left[0].points,
+            &back_right[0].points,
+        ];
+        for first in 0..projections.len() {
+            for second in first + 1..projections.len() {
+                assert_ne!(projections[first], projections[second]);
+            }
+        }
+        assert_eq!(front_left[0].points_3d.as_deref(), Some(points_3d.as_slice()));
+        let zoomed = make_canvas(AecOpeningIsometric::FrontLeft, 2.0).projected_paths();
+        assert_eq!(front_left[0].points, zoomed[0].points);
+        assert_eq!(front_left[0].points_3d, zoomed[0].points_3d);
     }
 }

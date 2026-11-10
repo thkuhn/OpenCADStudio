@@ -54,6 +54,8 @@ pub struct BakedPath {
     /// Optional role override for view-specific preview geometry.
     pub look_role: Option<OpeningLookRole>,
     pub points: Vec<(f64, f64)>,
+    /// Unprojected wire points used by the opening style manager's 3D canvas.
+    pub points_3d: Option<Vec<[f64; 3]>>,
     pub closed: bool,
     /// When true the closed path is also emitted as a solid hatch.
     pub filled: bool,
@@ -92,12 +94,20 @@ pub struct OpeningBakeParams {
 
 impl OpeningBakeParams {
     pub fn from_opening(opening: &Opening, thickness: f64, style: Option<&OpeningStyle>) -> Self {
-        let (frame_thickness, angle) = if let Some(style) = style {
-            (style.parts.fixed_frame.face_width, style.opening_angle_deg)
+        let (frame_thickness, angle, swing_side) = if let Some(style) = style {
+            (
+                style.parts.fixed_frame.face_width,
+                style.opening_angle_deg,
+                style.swing_side,
+            )
         } else if opening.kind == OpeningKind::Breakthrough {
-            (0.0, 0.0)
+            (0.0, 0.0, opening.swing_side)
         } else {
-            (DEFAULT_FRAME_THICKNESS, DEFAULT_OPENING_ANGLE_DEG)
+            (
+                DEFAULT_FRAME_THICKNESS,
+                DEFAULT_OPENING_ANGLE_DEG,
+                opening.swing_side,
+            )
         };
         let ht = thickness * 0.5;
         Self {
@@ -110,7 +120,7 @@ impl OpeningBakeParams {
             wall_y_min: -ht,
             wall_y_max: ht,
             hinge: opening.hinge,
-            swing_side: opening.swing_side,
+            swing_side,
             shape: opening.shape,
             spring_height: opening.spring_height,
             opening_angle_deg: angle,
@@ -671,11 +681,15 @@ fn bake_grid_leaf_lines(grid: &ConstructionGrid, params: OpeningBakeParams) -> V
         let cell_width = cell.right - cell.left;
         if params.kind == OpeningKind::Door {
             let hinge = cell.cell.operation.unwrap_or(params.hinge);
+            let mut cell_params = params;
+            cell_params.swing_side = cell.cell.swing.unwrap_or(params.swing_side);
+            cell_params.opening_angle_deg =
+                cell.cell.angle_deg.unwrap_or(params.opening_angle_deg);
             let (_, end) = leaf_segment(
                 hinge,
-                params.swing_side,
+                cell_params.swing_side,
                 cell_width * 0.5,
-                params.opening_angle_deg,
+                cell_params.opening_angle_deg,
                 params.frame_thickness,
             );
             let start_x = match hinge.bearing() {
@@ -878,24 +892,34 @@ fn bake_grid_swing_glyphs(
     let Ok(cells) = projected.layout(params.width, params.height, params.kind) else {
         return Vec::new();
     };
-    let chained = chain_cells(&resolve_grid(grid, params.width, params.height), params.hinge);
+    let resolved = resolve_grid(grid, params.width, params.height);
+    let chained = chain_cells(&resolved, params.hinge);
     let mut paths = Vec::new();
     for cell in &cells {
         if chained.contains(&(cell.column, cell.row)) {
             continue;
         }
         let hinge = cell.cell.hinge.unwrap_or(params.hinge);
+        let source = resolved
+            .cells
+            .iter()
+            .find(|source| source.column == cell.column && source.row == cell.row);
+        let mut cell_params = params;
+        if let Some(source) = source {
+            cell_params.swing_side = source.cell.swing.unwrap_or(params.swing_side);
+            cell_params.opening_angle_deg =
+                source.cell.angle_deg.unwrap_or(params.opening_angle_deg);
+        }
         let is_door = cell.cell.kind
             == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
             || params.kind == OpeningKind::Door;
         if !is_door && matches!(hinge, LeafOperation::Turn { .. }) && glyph == SwingGlyph::Arc {
             continue;
         }
-        paths.extend(plan_operation_schema(cell, hinge, params, glyph));
+        paths.extend(plan_operation_schema(cell, hinge, cell_params, glyph));
     }
-    let root = resolve_grid(grid, params.width, params.height);
     for cell in flatten_resolved_cells(grid, params.width, params.height) {
-        let is_root = root.cells.iter().any(|root_cell| {
+        let is_root = resolved.cells.iter().any(|root_cell| {
             (root_cell.left - params.width * 0.5 - cell.left).abs() < 1e-6
                 && (root_cell.right - params.width * 0.5 - cell.right).abs() < 1e-6
                 && (root_cell.bottom - cell.bottom).abs() < 1e-6
@@ -905,6 +929,24 @@ fn bake_grid_swing_glyphs(
             continue;
         }
         let hinge = cell.cell.operation.unwrap_or(params.hinge);
+        let mut cell_params = params;
+        cell_params.swing_side = cell.cell.swing.unwrap_or(params.swing_side);
+        cell_params.opening_angle_deg = cell.cell.angle_deg.unwrap_or(params.opening_angle_deg);
+        let kind = match cell.cell.fill {
+            crate::modules::aec::engine::construction_grid::CellFill::Opaque => {
+                crate::modules::aec::engine::opening_style::OpeningCellKind::Opaque
+            }
+            crate::modules::aec::engine::construction_grid::CellFill::Door => {
+                crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
+            }
+            crate::modules::aec::engine::construction_grid::CellFill::Fixed => {
+                crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+            }
+            crate::modules::aec::engine::construction_grid::CellFill::Glass
+            | crate::modules::aec::engine::construction_grid::CellFill::Nested(_) => {
+                crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+            }
+        };
         let layout = crate::modules::aec::engine::opening_style::DivisionCellLayout {
             column: cell.column,
             row: cell.row,
@@ -913,12 +955,12 @@ fn bake_grid_swing_glyphs(
             bottom: cell.bottom,
             top: cell.top,
             cell: crate::modules::aec::engine::opening_style::OpeningCell {
-                kind: crate::modules::aec::engine::opening_style::OpeningCellKind::Glass,
+                kind,
                 hinge: cell.cell.operation,
                 sill: cell.cell.sill,
             },
         };
-        paths.extend(plan_operation_schema(&layout, hinge, params, glyph));
+        paths.extend(plan_operation_schema(&layout, hinge, cell_params, glyph));
     }
     let free_y = match params.swing_side {
         SwingSide::Exterior => params.wall_y_min,
@@ -1256,7 +1298,7 @@ fn bake_elevation_frame_level(
     }
 }
 
-fn arch_height_at_x(params: OpeningBakeParams, x: f64) -> f64 {
+pub(crate) fn arch_height_at_x(params: OpeningBakeParams, x: f64) -> f64 {
     if params.shape != OpeningShape::Arch {
         return params.height;
     }
@@ -1547,6 +1589,275 @@ pub(crate) fn glass_edge_into_bar(edge: f64, inward: f64, bar: f64, inset: f64) 
     let bar = bar.max(0.0);
     let bite = inset.max(0.0).min(bar);
     edge + inward * (bar - bite)
+}
+
+#[derive(Clone, Copy)]
+struct LeafBarBoundary {
+    low: f64,
+    high: f64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct LeafCellBoundaries {
+    left: Option<LeafBarBoundary>,
+    right: Option<LeafBarBoundary>,
+    bottom: Option<LeafBarBoundary>,
+    top: Option<LeafBarBoundary>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LeafCellGeometry {
+    pub cell: crate::modules::aec::engine::construction_grid::ResolvedCell,
+    pub left: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub top: f64,
+    pub pivot_start: f64,
+    pub pivot_end: f64,
+}
+
+pub(crate) fn leaf_cells_with_bar_offsets(
+    grid: &ConstructionGrid,
+    width: f64,
+    height: f64,
+    frame_face: f64,
+    division_face: Option<f64>,
+    leaf_face: f64,
+    overlap: f64,
+    frame_visible: bool,
+    door_opening: bool,
+) -> Vec<LeafCellGeometry> {
+    let width = width.max(0.0);
+    let height = height.max(0.0);
+    let half_width = width * 0.5;
+    let frame_face = if frame_visible { frame_face.max(0.0) } else { 0.0 };
+    let root = LeafCellBoundaries {
+        left: (frame_face > 0.0).then_some(LeafBarBoundary {
+            low: -half_width,
+            high: -half_width + frame_face,
+        }),
+        right: (frame_face > 0.0).then_some(LeafBarBoundary {
+            low: half_width - frame_face,
+            high: half_width,
+        }),
+        bottom: (frame_face > 0.0 && !door_opening).then_some(LeafBarBoundary {
+            low: 0.0,
+            high: frame_face,
+        }),
+        top: (frame_face > 0.0).then_some(LeafBarBoundary {
+            low: height - frame_face,
+            high: height,
+        }),
+    };
+    let mut cells = Vec::new();
+    collect_leaf_cells_with_bar_offsets(
+        &resolve_grid(grid, width, height),
+        -half_width,
+        0.0,
+        width,
+        height,
+        root,
+        division_face.filter(|face| *face > 0.0),
+        leaf_face.max(0.0),
+        overlap.max(0.0),
+        &mut cells,
+    );
+    cells
+}
+
+fn collect_leaf_cells_with_bar_offsets(
+    resolved: &ResolvedGrid,
+    offset_x: f64,
+    offset_z: f64,
+    width: f64,
+    height: f64,
+    inherited: LeafCellBoundaries,
+    division_face: Option<f64>,
+    leaf_face: f64,
+    overlap: f64,
+    cells: &mut Vec<LeafCellGeometry>,
+) {
+    for cell in &resolved.cells {
+        let left_bar = leaf_cell_side_bar(
+            resolved,
+            BarAxis::Vertical,
+            cell.left,
+            cell.bottom,
+            cell.top,
+            true,
+            width,
+            height,
+            offset_x,
+            offset_z,
+            inherited.left,
+            division_face,
+            leaf_face,
+        );
+        let right_bar = leaf_cell_side_bar(
+            resolved,
+            BarAxis::Vertical,
+            cell.right,
+            cell.bottom,
+            cell.top,
+            false,
+            width,
+            height,
+            offset_x,
+            offset_z,
+            inherited.right,
+            division_face,
+            leaf_face,
+        );
+        let bottom_bar = leaf_cell_side_bar(
+            resolved,
+            BarAxis::Horizontal,
+            cell.bottom,
+            cell.left,
+            cell.right,
+            true,
+            width,
+            height,
+            offset_x,
+            offset_z,
+            inherited.bottom,
+            division_face,
+            leaf_face,
+        );
+        let top_bar = leaf_cell_side_bar(
+            resolved,
+            BarAxis::Horizontal,
+            cell.top,
+            cell.left,
+            cell.right,
+            false,
+            width,
+            height,
+            offset_x,
+            offset_z,
+            inherited.top,
+            division_face,
+            leaf_face,
+        );
+        let boundaries = LeafCellBoundaries {
+            left: left_bar,
+            right: right_bar,
+            bottom: bottom_bar,
+            top: top_bar,
+        };
+        let left = leaf_edge_inside_bar(
+            cell.left + offset_x,
+            left_bar,
+            true,
+            overlap,
+        );
+        let right = leaf_edge_inside_bar(
+            cell.right + offset_x,
+            right_bar,
+            false,
+            overlap,
+        );
+        let bottom = leaf_edge_inside_bar(
+            cell.bottom + offset_z,
+            bottom_bar,
+            true,
+            overlap,
+        );
+        let top = leaf_edge_inside_bar(
+            cell.top + offset_z,
+            top_bar,
+            false,
+            overlap,
+        );
+        if let Some(nested) = &cell.nested {
+            collect_leaf_cells_with_bar_offsets(
+                nested,
+                offset_x + cell.left,
+                offset_z + cell.bottom,
+                cell.right - cell.left,
+                cell.top - cell.bottom,
+                boundaries,
+                division_face,
+                leaf_face,
+                overlap,
+                cells,
+            );
+        } else if right > left && top > bottom {
+            let mut leaf = cell.clone();
+            leaf.nested = None;
+            cells.push(LeafCellGeometry {
+                cell: leaf,
+                left,
+                right,
+                bottom,
+                top,
+                pivot_start: left_bar.map_or(cell.left + offset_x, |bar| bar.high),
+                pivot_end: right_bar.map_or(cell.right + offset_x, |bar| bar.low),
+            });
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn leaf_cell_side_bar(
+    resolved: &ResolvedGrid,
+    axis: BarAxis,
+    position: f64,
+    span_start: f64,
+    span_end: f64,
+    positive_side: bool,
+    width: f64,
+    height: f64,
+    offset_x: f64,
+    offset_z: f64,
+    inherited: Option<LeafBarBoundary>,
+    division_face: Option<f64>,
+    leaf_face: f64,
+) -> Option<LeafBarBoundary> {
+    let midpoint = (span_start + span_end) * 0.5;
+    let edge = resolved.edges.iter().find(|edge| {
+        edge.axis == axis
+            && (edge.position - position).abs() <= 1e-6
+            && edge.start <= midpoint + 1e-6
+            && edge.end >= midpoint - 1e-6
+    });
+    if let Some(edge) = edge {
+        let face = match edge.meeting {
+            TrackMeeting::Mullion => division_face?,
+            TrackMeeting::Stulp { .. } => leaf_face,
+            TrackMeeting::Flush => 0.0,
+        };
+        if face > 0.0 {
+            let center = edge.position + stulp_shift(edge.meeting, face).unwrap_or(0.0);
+            return Some(LeafBarBoundary {
+                low: center - face * 0.5 + if axis == BarAxis::Vertical { offset_x } else { offset_z },
+                high: center + face * 0.5 + if axis == BarAxis::Vertical { offset_x } else { offset_z },
+            });
+        }
+    }
+
+    let at_outer = match axis {
+        BarAxis::Vertical if positive_side => position.abs() <= 1e-6,
+        BarAxis::Vertical => (position - width).abs() <= 1e-6,
+        BarAxis::Horizontal if positive_side => position.abs() <= 1e-6,
+        BarAxis::Horizontal => (position - height).abs() <= 1e-6,
+    };
+    at_outer.then_some(inherited).flatten()
+}
+
+fn leaf_edge_inside_bar(
+    cell_edge: f64,
+    bar: Option<LeafBarBoundary>,
+    positive_side: bool,
+    overlap: f64,
+) -> f64 {
+    let Some(bar) = bar else {
+        return cell_edge;
+    };
+    if positive_side {
+        (bar.high - overlap.min(bar.high - bar.low)).clamp(bar.low, bar.high)
+    } else {
+        (bar.low + overlap.min(bar.high - bar.low)).clamp(bar.low, bar.high)
+    }
 }
 
 fn bake_elevation_vertical_division_path(
@@ -1843,6 +2154,7 @@ fn path(
         slot,
         look_role: None,
         points,
+        points_3d: None,
         closed,
         filled,
     }
@@ -2755,11 +3067,52 @@ pub fn build_opening_leaf_ring(
     let grown = (width + lateral_overlap * 2.0).max(width);
     let hw = grown * 0.5;
     let ft = frame_thickness.max(0.02).min(hw * 0.45);
-    let (outer, inner) =
-        opening_elevation_loops(shape, grown, height, spring_height, ft, is_door);
-    let leaf_ht = leaf_depth.max(0.001) * 0.5;
-    let y0 = -leaf_ht + depth_offset;
-    let y1 = leaf_ht + depth_offset;
+    let hinge_x = match hinge.bearing() {
+        crate::modules::aec::engine::construction_grid::TrackEnd::Start => -hw + ft,
+        crate::modules::aec::engine::construction_grid::TrackEnd::End => hw - ft,
+    };
+    build_opening_leaf_components_3d(
+        grown,
+        height,
+        frame_thickness,
+        leaf_depth,
+        depth_offset,
+        hinge_x,
+        opening_angle_deg,
+        hinge,
+        swing,
+        is_door,
+        shape,
+        spring_height,
+        None,
+    )
+    .map(|(leaf, _)| leaf)
+}
+
+pub(crate) fn build_opening_leaf_components_3d(
+    width: f64,
+    height: f64,
+    frame_thickness: f64,
+    leaf_depth: f64,
+    depth_offset: f64,
+    pivot_x: f64,
+    opening_angle_deg: f64,
+    hinge: LeafOperation,
+    swing: SwingSide,
+    is_door: bool,
+    shape: OpeningShape,
+    spring_height: f64,
+    glazing_thickness: Option<f64>,
+) -> Option<(cadkernel::brep::Body, Option<cadkernel::brep::Body>)> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let hw = width * 0.5;
+    let ft = frame_thickness.max(0.02).min(hw * 0.45);
+    let (outer, inner) = opening_elevation_loops(shape, width, height, spring_height, ft, is_door);
+    let leaf_half_depth = leaf_depth.max(0.001) * 0.5;
+    let y0 = -leaf_half_depth + depth_offset;
+    let y1 = leaf_half_depth + depth_offset;
     let closed = inner.len() < 3
         || inner.iter().all(|(x, z)| {
             outer
@@ -2767,29 +3120,46 @@ pub fn build_opening_leaf_ring(
                 .map(|(ox, oz)| (x - ox).abs() < 1e-6 && (z - oz).abs() < 1e-6)
                 .unwrap_or(true)
         });
-    let cub = if closed || is_door {
+    let leaf = if closed || is_door {
         build_faceted_prism(&outer, y0, y1)?
     } else {
         build_faceted_hollow_prism(&outer, &inner, y0, y1)?
     };
-
-    let hinge_x = match hinge.bearing() {
-        crate::modules::aec::engine::construction_grid::TrackEnd::Start => -hw + ft,
-        crate::modules::aec::engine::construction_grid::TrackEnd::End => hw - ft,
+    let glass = if !is_door && inner.len() >= 3 {
+        glazing_thickness.and_then(|thickness| {
+            let half_glass = thickness.max(0.001).min(leaf_depth.max(0.001)) * 0.5;
+            build_faceted_prism(
+                &inner,
+                depth_offset - half_glass,
+                depth_offset + half_glass,
+            )
+        })
+    } else {
+        None
     };
+
     let swing_sign = swing_toward_exterior(swing);
     let ang = match hinge.bearing() {
         crate::modules::aec::engine::construction_grid::TrackEnd::Start => swing_sign * opening_angle_deg.to_radians(),
         crate::modules::aec::engine::construction_grid::TrackEnd::End => -swing_sign * opening_angle_deg.to_radians(),
     };
-    if ang.abs() > 1e-6 {
-        crate::scene::model::solid_model::turned(&cub, 2, ang, [hinge_x, 0.0, 0.0])
+    let pivot = [pivot_x, depth_offset, 0.0];
+    let leaf = if ang.abs() > 1e-6 {
+        crate::scene::model::solid_model::turned(&leaf, 2, ang, pivot)?
     } else {
-        Some(cub)
-    }
+        leaf
+    };
+    let glass = glass.and_then(|glass| {
+        if ang.abs() > 1e-6 {
+            crate::scene::model::solid_model::turned(&glass, 2, ang, pivot)
+        } else {
+            Some(glass)
+        }
+    });
+    Some((leaf, glass))
 }
 
-fn build_opening_box_3d(
+pub(crate) fn build_opening_box_3d(
     width: f64,
     height: f64,
     depth: f64,
@@ -3263,6 +3633,7 @@ fn transform_paths(
                         .iter()
                         .map(|&(u, v)| (origin.0 + tangent.0 * u, origin.1 + tangent.1 * u + v))
                         .collect(),
+                    points_3d: p.points_3d.clone(),
                 }
             } else {
                 BakedPath {
@@ -3275,6 +3646,7 @@ fn transform_paths(
                         .iter()
                         .map(|&(x, y)| local_to_world(x, y, origin, tangent, normal))
                         .collect(),
+                    points_3d: p.points_3d.clone(),
                 }
             }
         })
@@ -4136,57 +4508,100 @@ pub fn regenerate_opening_display(
         .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Leaf3D))
         && (slots.contains_key(&OpeningComponentSlot::Leaf3D)
             || slots.contains_key(&OpeningComponentSlot::Solid3D));
-
-    if leaf_3d_vis
+    let leaf_component_visible = leaf_3d_vis
         && opening_component_should_render_with_library(
             &style.parts,
             opening.kind,
             OpeningLookRole::Leaf,
             library,
-        )
-    {
+        );
+    let glazing_3d_vis = merged_rules
+        .as_ref()
+        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Glazing3D))
+        && (slots.contains_key(&OpeningComponentSlot::Glazing3D)
+            || slots.contains_key(&OpeningComponentSlot::Solid3D));
+    let leaf_glazing_visible = glazing_3d_vis
+        && opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::Glazing,
+            library,
+        );
+
+    if leaf_component_visible {
         {
-            for cell in flatten_resolved_cells(grid, opening.width, opening.height) {
+            let divisions_visible = levels.divisions != DivisionLevel::Off
+                && opening_component_should_render_with_library(
+                    &style.parts,
+                    opening.kind,
+                    OpeningLookRole::Division,
+                    library,
+                );
+            let overlap = (style.parts.leaf_frame.rebate_overlap.max(0.0)
+                + style.parts.leaf_frame.lateral_overlap.max(0.0))
+                .max(0.0);
+            let cells = leaf_cells_with_bar_offsets(
+                grid,
+                opening.width,
+                opening.height,
+                fixed_frame_section.face,
+                divisions_visible.then_some(division_post_width),
+                leaf_frame_section.face,
+                overlap,
+                frame_3d_vis
+                    && opening_component_should_render_with_library(
+                        &style.parts,
+                        opening.kind,
+                        OpeningLookRole::FixedFrame,
+                        library,
+                    ),
+                opening.kind == OpeningKind::Door,
+            );
+            for cell in cells {
                 if !matches!(
-                    cell.cell.fill,
+                    cell.cell.cell.fill,
                     crate::modules::aec::engine::construction_grid::CellFill::Door
                         | crate::modules::aec::engine::construction_grid::CellFill::Glass
                 ) {
                     continue;
                 }
-                let top = cell
-                    .top
-                    .min(arch_height_at_x(params, cell.left))
-                    .min(arch_height_at_x(params, cell.right));
+                let top = cell.top.min(arch_height_at_x(params, cell.left)).min(arch_height_at_x(params, cell.right));
                 let height = top - cell.bottom;
                 let width = cell.right - cell.left;
                 if width <= 0.0 || height <= 0.0 {
                     continue;
                 }
-                let is_door =
-                    matches!(cell.cell.fill, crate::modules::aec::engine::construction_grid::CellFill::Door);
-                let frame = leaf_frame_section.face.max(0.0);
-                let bite = (style.parts.leaf_frame.rebate_overlap
-                    + style.parts.leaf_frame.lateral_overlap)
-                    .max(0.0)
-                    .min(frame);
-                let into = (frame - bite).max(0.0);
-                let bottom_inset = if is_door { 0.0 } else { into };
-                let width = (width - into * 2.0).max(0.0);
-                let height = (height - into - bottom_inset).max(0.0);
-                if let Some(body) = build_opening_leaf_ring(
+                let is_door = matches!(
+                    cell.cell.cell.fill,
+                    crate::modules::aec::engine::construction_grid::CellFill::Door
+                );
+                let center_x = (cell.left + cell.right) * 0.5;
+                let operation = cell.cell.cell.operation.unwrap_or(opening.hinge);
+                let pivot_x = match operation.bearing() {
+                    TrackEnd::Start => cell.pivot_start - center_x,
+                    TrackEnd::End => cell.pivot_end - center_x,
+                };
+                let swing = cell.cell.cell.swing.unwrap_or(params.swing_side);
+                let angle = cell
+                    .cell
+                    .cell
+                    .angle_deg
+                    .unwrap_or(style.opening_angle_deg);
+                if let Some((body, glass)) = build_opening_leaf_components_3d(
                     width,
                     height,
-                    frame,
+                    leaf_frame_section.face,
                     leaf_frame_section.depth,
-                    0.0,
                     style.parts.leaf_frame.depth_offset,
-                    style.opening_angle_deg,
-                    cell.cell.operation.unwrap_or(opening.hinge),
-                    opening.swing_side,
+                    pivot_x,
+                    angle,
+                    operation,
+                    swing,
                     is_door,
                     OpeningShape::Rectangle,
                     0.0,
+                    (!is_door && leaf_glazing_visible)
+                        .then_some(style.parts.glazing.thickness),
                 ) {
                     emit_opening_solid_3d(
                         scene,
@@ -4198,46 +4613,64 @@ pub fn regenerate_opening_display(
                         (tx, ty),
                         normal,
                         wall_base_z + opening.sill_height,
-                        (cell.left + cell.right) * 0.5,
-                        cell.bottom + bottom_inset,
+                        center_x,
+                        cell.bottom,
                         OpeningComponentSlot::Leaf3D,
                         OpeningLookRole::Leaf,
                         &style,
                         library,
                         merged_rules.as_ref(),
                     );
+                    if let Some(glass) = glass {
+                        emit_opening_solid_3d(
+                            scene,
+                            glass,
+                            opening_handle,
+                            opening_owner_handle,
+                            default_opening_layer.as_deref(),
+                            origin,
+                            (tx, ty),
+                            normal,
+                            wall_base_z + opening.sill_height,
+                            center_x,
+                            cell.bottom,
+                            OpeningComponentSlot::Glazing3D,
+                            OpeningLookRole::Glazing,
+                            &style,
+                            library,
+                            merged_rules.as_ref(),
+                        );
+                    }
                 }
             }
         }
     }
 
-    let glazing_3d_vis = merged_rules
-        .as_ref()
-        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Glazing3D))
-        && (slots.contains_key(&OpeningComponentSlot::Glazing3D)
-            || slots.contains_key(&OpeningComponentSlot::Solid3D));
-
     if glazing_3d_vis
-        && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Glazing)
+        && opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::Glazing,
+            library,
+        )
     {
         {
             for cell in flatten_resolved_cells(grid, opening.width, opening.height) {
-                if !matches!(
+                let is_leaf_glass = matches!(
                     cell.cell.fill,
                     crate::modules::aec::engine::construction_grid::CellFill::Glass
-                        | crate::modules::aec::engine::construction_grid::CellFill::Fixed
-                ) {
+                );
+                if (!is_leaf_glass
+                    && !matches!(
+                        cell.cell.fill,
+                        crate::modules::aec::engine::construction_grid::CellFill::Fixed
+                    ))
+                    || (is_leaf_glass && leaf_component_visible)
+                {
                     continue;
                 }
                 let inset = style.parts.glazing.inset.max(0.0);
-                let leaf_here = matches!(
-                    cell.cell.fill,
-                    crate::modules::aec::engine::construction_grid::CellFill::Glass
-                ) && opening_component_should_render(
-                    &style.parts,
-                    opening.kind,
-                    OpeningLookRole::Leaf,
-                );
+                let leaf_here = is_leaf_glass && leaf_component_visible;
                 let bar = if leaf_here {
                     leaf_frame_section.face
                 } else {
@@ -4660,6 +5093,81 @@ mod tests {
     }
 
     #[test]
+    fn leaf_cell_offsets_reach_all_rendered_frame_sides_and_keep_band_pivots() {
+        let cells = leaf_cells_with_bar_offsets(
+            &ConstructionGrid::default(),
+            1.2,
+            1.5,
+            0.08,
+            None,
+            0.05,
+            0.03,
+            true,
+            false,
+        );
+        assert_eq!(cells.len(), 1);
+        let cell = &cells[0];
+        assert!((cell.left - -0.55).abs() < 1e-9);
+        assert!((cell.right - 0.55).abs() < 1e-9);
+        assert!((cell.bottom - 0.05).abs() < 1e-9);
+        assert!((cell.top - 1.45).abs() < 1e-9);
+        assert!((cell.pivot_start - -0.52).abs() < 1e-9);
+        assert!((cell.pivot_end - 0.52).abs() < 1e-9);
+
+        let door = leaf_cells_with_bar_offsets(
+            &ConstructionGrid::default(),
+            1.2,
+            1.5,
+            0.08,
+            None,
+            0.05,
+            0.03,
+            true,
+            true,
+        );
+        assert_eq!(door.len(), 1);
+        assert!(door[0].bottom.abs() < 1e-9);
+    }
+
+    #[test]
+    fn leaf_glazing_rotates_about_the_same_band_side_in_the_leaf_depth() {
+        let depth_offset = 0.07;
+        let pivot_x = -0.31;
+        let (leaf, glass) = build_opening_leaf_components_3d(
+            0.8,
+            1.0,
+            0.06,
+            0.05,
+            depth_offset,
+            pivot_x,
+            90.0,
+            LeafOperation::left(),
+            SwingSide::Exterior,
+            false,
+            OpeningShape::Rectangle,
+            0.0,
+            Some(0.02),
+        )
+        .expect("leaf and glass bodies");
+        let glass = glass.expect("leaf glazing");
+        let leaf_bounds = crate::scene::model::solid_model::extent(&leaf).expect("leaf extent");
+        let glass_bounds = crate::scene::model::solid_model::extent(&glass).expect("glass extent");
+        let center = |bounds: ([f64; 3], [f64; 3])| {
+            std::array::from_fn::<_, 3, _>(|axis| (bounds.0[axis] + bounds.1[axis]) * 0.5)
+        };
+        let leaf_center = center(leaf_bounds);
+        let glass_center = center(glass_bounds);
+        for axis in 0..3 {
+            assert!((leaf_center[axis] - glass_center[axis]).abs() < 1e-5);
+        }
+        assert!((leaf_center[1] - depth_offset).abs() > 0.1);
+        let radius = ((leaf_center[0] - pivot_x).powi(2)
+            + (leaf_center[1] - depth_offset).powi(2))
+        .sqrt();
+        assert!((radius - 0.31).abs() < 1e-5);
+    }
+
+    #[test]
     fn unstyled_opening_resolves_to_standard_style_parts() {
         let opening = Opening::window(
             acadrust::Handle::new(1),
@@ -4671,6 +5179,19 @@ mod tests {
         assert_eq!(style.style.id, SEED_WINDOW_STYLE_ID);
         assert_eq!(style.parts.fixed_frame.face_width, DEFAULT_FRAME_THICKNESS);
         assert!(slots.contains_key(&OpeningComponentSlot::Frame2D));
+    }
+
+    #[test]
+    fn opening_style_swing_is_the_fallback_for_cell_overrides() {
+        let opening = Opening::window(
+            acadrust::Handle::new(1),
+            acadrust::Handle::new(2),
+            1.2,
+        );
+        let mut style = OpeningStyle::standard_window();
+        style.swing_side = SwingSide::Interior;
+        let params = OpeningBakeParams::from_opening(&opening, 0.3, Some(&style));
+        assert_eq!(params.swing_side, SwingSide::Interior);
     }
 
     #[test]

@@ -2,6 +2,7 @@ use iced::mouse;
 use iced::widget::canvas as canvas_widget;
 use iced::widget::canvas::{self, Frame, Path, Program, Stroke};
 use iced::{Color, Element, Fill, Point, Rectangle, Size, Theme};
+use std::time::{Duration, Instant};
 
 use crate::app::Message;
 use crate::modules::aec::engine::construction_grid::{
@@ -28,6 +29,14 @@ struct OpeningDivisionCanvas {
     height: f64,
     kind: OpeningKind,
     selected_cell: Option<usize>,
+    selected_edge: Option<(bool, usize)>,
+    default_hinge: LeafOperation,
+}
+
+#[derive(Default)]
+struct OpeningDivisionCanvasState {
+    drag: Option<DividerDrag>,
+    last_cell_click: Option<(usize, Instant)>,
 }
 
 pub fn view<'a>(
@@ -36,6 +45,8 @@ pub fn view<'a>(
     height: f64,
     kind: OpeningKind,
     selected_cell: Option<usize>,
+    selected_edge: Option<(bool, usize)>,
+    default_hinge: LeafOperation,
 ) -> Element<'a, Message> {
     canvas_widget(OpeningDivisionCanvas {
         grid: grid.clone(),
@@ -43,6 +54,8 @@ pub fn view<'a>(
         height: height.max(1e-6),
         kind,
         selected_cell,
+        selected_edge,
+        default_hinge,
     })
     .width(Fill)
     .height(210)
@@ -99,18 +112,18 @@ impl OpeningDivisionCanvas {
             .collect()
     }
 
-    fn cell_at(&self, x: f64, z: f64) -> Option<(usize, CellFill, Option<LeafOperation>)> {
+    fn cell_at(&self, x: f64, z: f64) -> Option<(usize, CellFill)> {
         self.resolved()
             .cells
             .into_iter()
             .enumerate()
             .find(|(_, cell)| x >= cell.left && x <= cell.right && z >= cell.bottom && z <= cell.top)
-            .map(|(index, cell)| (index, cell.cell.fill, cell.cell.operation))
+            .map(|(index, cell)| (index, cell.cell.fill))
     }
 }
 
 impl Program<Message> for OpeningDivisionCanvas {
-    type State = Option<DividerDrag>;
+    type State = OpeningDivisionCanvasState;
 
     fn update(
         &self,
@@ -119,7 +132,7 @@ impl Program<Message> for OpeningDivisionCanvas {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        if let Some(drag) = *state {
+        if let Some(drag) = state.drag {
             match event {
                 canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                     let point = cursor.position_in(bounds)?;
@@ -140,7 +153,7 @@ impl Program<Message> for OpeningDivisionCanvas {
                     );
                 }
                 canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                    *state = None;
+                    state.drag = None;
                     return Some(canvas::Action::capture());
                 }
                 _ => return None,
@@ -150,7 +163,7 @@ impl Program<Message> for OpeningDivisionCanvas {
         let canvas::Event::Mouse(mouse::Event::ButtonPressed(button)) = event else {
             return None;
         };
-        if !matches!(button, mouse::Button::Left | mouse::Button::Right) {
+        if *button != mouse::Button::Left {
             return None;
         }
         let point = cursor.position_in(bounds)?;
@@ -159,33 +172,70 @@ impl Program<Message> for OpeningDivisionCanvas {
         let tolerance = 9.0;
 
         if *button == mouse::Button::Left {
-            if let Some((index, _)) = self
+            let resolved = self.resolved();
+            if let Some(index) = self
                 .vertical_split_screen_positions(bounds)
                 .iter()
                 .enumerate()
-                .map(|(index, split)| (index, (point.x - split).abs()))
-                .filter(|(_, distance)| *distance <= tolerance)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .filter(|(_, split)| (point.x - **split).abs() <= tolerance)
+                .find_map(|(index, _)| {
+                    let edge_x = resolved.columns[index].end;
+                    resolved
+                        .cells
+                        .iter()
+                        .any(|cell| {
+                            z >= cell.bottom - 1e-6
+                                && z <= cell.top + 1e-6
+                                && ((cell.left - edge_x).abs() <= 1e-6
+                                    || (cell.right - edge_x).abs() <= 1e-6)
+                        })
+                        .then_some(index)
+                })
             {
-                *state = Some(DividerDrag {
+                state.drag = Some(DividerDrag {
                     axis: DividerAxis::Vertical,
                     index,
                 });
-                return Some(canvas::Action::capture());
+                state.last_cell_click = None;
+                return Some(canvas::Action::publish(Message::Aec(
+                    AecMessage::AecOpeningStyleManagerGridEdgeSelect(
+                        "vertical".to_string(),
+                        index,
+                    ),
+                ))
+                .and_capture());
             }
-            if let Some((index, _)) = self
+            if let Some(index) = self
                 .horizontal_split_screen_positions(bounds)
                 .iter()
                 .enumerate()
-                .map(|(index, split)| (index, (point.y - split).abs()))
-                .filter(|(_, distance)| *distance <= tolerance)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .filter(|(_, split)| (point.y - **split).abs() <= tolerance)
+                .find_map(|(index, _)| {
+                    let edge_z = resolved.rows[index].end;
+                    resolved
+                        .cells
+                        .iter()
+                        .any(|cell| {
+                            x >= cell.left - 1e-6
+                                && x <= cell.right + 1e-6
+                                && ((cell.bottom - edge_z).abs() <= 1e-6
+                                    || (cell.top - edge_z).abs() <= 1e-6)
+                        })
+                        .then_some(index)
+                })
             {
-                *state = Some(DividerDrag {
+                state.drag = Some(DividerDrag {
                     axis: DividerAxis::Horizontal,
                     index,
                 });
-                return Some(canvas::Action::capture());
+                state.last_cell_click = None;
+                return Some(canvas::Action::publish(Message::Aec(
+                    AecMessage::AecOpeningStyleManagerGridEdgeSelect(
+                        "horizontal".to_string(),
+                        index,
+                    ),
+                ))
+                .and_capture());
             }
 
             let canvas_left = origin_x;
@@ -216,21 +266,16 @@ impl Program<Message> for OpeningDivisionCanvas {
             }
         }
 
-        let (index, fill, hinge) = self.cell_at(x, z)?;
-        let message = if *button == mouse::Button::Left {
-            if matches!(fill, CellFill::Nested(_)) {
-                AecMessage::AecOpeningStyleManagerGridEnter(index)
-            } else {
-                AecMessage::AecOpeningStyleManagerCellSelect(index)
-            }
-        } else if fill_permits_hinge(&fill) {
-            let next = match hinge.map(|operation| operation.bearing()) {
-                Some(TrackEnd::Start) => "Right",
-                _ => "Left",
-            };
-            AecMessage::AecOpeningStyleManagerCellHingeChanged(index, next.to_string())
+        let (index, _) = self.cell_at(x, z)?;
+        let now = Instant::now();
+        let enter_nested = state.last_cell_click.is_some_and(|(last_index, last_time)| {
+                last_index == index && now.duration_since(last_time) <= Duration::from_millis(450)
+            });
+        state.last_cell_click = (!enter_nested).then_some((index, now));
+        let message = if enter_nested {
+            AecMessage::AecOpeningStyleManagerGridEnter(index)
         } else {
-            return None;
+            AecMessage::AecOpeningStyleManagerCellSelect(index)
         };
         Some(canvas::Action::publish(Message::Aec(message)).and_capture())
     }
@@ -241,7 +286,7 @@ impl Program<Message> for OpeningDivisionCanvas {
         _bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if state.is_some() {
+        if state.drag.is_some() {
             mouse::Interaction::Grabbing
         } else {
             mouse::Interaction::Pointer
@@ -294,7 +339,8 @@ impl Program<Message> for OpeningDivisionCanvas {
                             .with_color(theme.palette().primary.base.color),
                     );
                 }
-                if let Some(hinge) = cell.cell.operation {
+                if fill_permits_hinge(&cell.cell.fill) {
+                    let hinge = cell.cell.operation.unwrap_or(self.default_hinge);
                     let marker_x = match hinge.bearing() {
                         TrackEnd::Start => x + 3.0,
                         TrackEnd::End => x + size.width - 3.0,
@@ -305,6 +351,32 @@ impl Program<Message> for OpeningDivisionCanvas {
                         theme.palette().primary.base.color,
                     );
                 }
+            }
+        }
+        if let Some((vertical, index)) = self.selected_edge {
+            let splits = if vertical {
+                self.vertical_split_screen_positions(bounds)
+            } else {
+                self.horizontal_split_screen_positions(bounds)
+            };
+            if let Some(position) = splits.get(index).copied() {
+                let path = if vertical {
+                    Path::line(
+                        Point::new(position, origin_y),
+                        Point::new(position, origin_y + self.height as f32 * scale),
+                    )
+                } else {
+                    Path::line(
+                        Point::new(origin_x, position),
+                        Point::new(origin_x + self.width as f32 * scale, position),
+                    )
+                };
+                frame.stroke(
+                    &path,
+                    Stroke::default()
+                        .with_width(3.0)
+                        .with_color(theme.palette().primary.base.color),
+                );
             }
         }
         let _ = self.kind;
@@ -352,6 +424,8 @@ mod tests {
             height: 1.4,
             kind: OpeningKind::Window,
             selected_cell: None,
+            selected_edge: None,
+            default_hinge: LeafOperation::left(),
         };
         assert_eq!(canvas.cell_at(0.9, 0.7).map(|cell| cell.0), Some(1));
     }

@@ -241,6 +241,8 @@ fn load_part_buffers(app: &mut OpenCADStudio, style: &OpeningStyle) {
         Some(style.grid.clone())
     };
     app.aec.styles.opening_grid_path.clear();
+    app.aec.styles.opening_selected_grid_edge = None;
+    app.aec.styles.opening_grid_measure = None;
     app.aec.styles.opening_vertical = format_vertical_weights(&division.vertical);
     app.aec.styles.opening_horizontal = format_list(&division.horizontal);
     app.aec.styles.opening_vertical_muntins = format_list(&division.vertical_muntins);
@@ -537,23 +539,32 @@ fn horizontal_muntin_position_fields(values: &[f64], cell_bottom: f64) -> Vec<St
         .collect()
 }
 
-fn sync_authored_cell(app: &mut OpenCADStudio, index: usize) {
+fn mutate_current_grid_cell(
+    app: &mut OpenCADStudio,
+    index: usize,
+    mut update: impl FnMut(&mut crate::modules::aec::engine::construction_grid::GridCell),
+) {
     use crate::modules::aec::engine::construction_grid::{
-        resolve_grid, with_grid_at_path, CellFill,
-    };
-    let Some(buffer) = app.aec.styles.opening_cells.get(index).cloned() else {
-        return;
+        ensure_explicit_cells, resolve_grid, with_grid_at_path,
     };
     let width = parse_dim(&app.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
     let height = parse_dim(&app.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
+    let mut grid = app.aec.styles.opening_authored_grid.clone().unwrap_or_else(|| {
+        let division = opening_grid_from_fields(
+            &app.aec.styles.opening_vertical,
+            &app.aec.styles.opening_horizontal,
+            &app.aec.styles.opening_vertical_muntins,
+            &app.aec.styles.opening_horizontal_muntins,
+            &app.aec.styles.opening_cells,
+        );
+        construction_from_division(&division, width, height)
+    });
     let path = app.aec.styles.opening_grid_path.clone();
-    let Some(grid) = app.aec.styles.opening_authored_grid.as_mut() else {
-        return;
-    };
-    let _ = with_grid_at_path(grid, width, height, &path, |level, level_width, level_height| {
-        let resolved = resolve_grid(level, level_width, level_height);
+    let changed = with_grid_at_path(&mut grid, width, height, &path, |level, w, h| {
+        ensure_explicit_cells(level);
+        let resolved = resolve_grid(level, w, h);
         let Some(resolved_cell) = resolved.cells.get(index) else {
-            return;
+            return false;
         };
         let column = resolved_cell.column as u32;
         let row = resolved_cell.row as u32;
@@ -562,19 +573,52 @@ fn sync_authored_cell(app: &mut OpenCADStudio, index: usize) {
             .iter_mut()
             .find(|cell| cell.column == column && cell.row == row)
         else {
-            return;
+            return false;
         };
-        let fill = match buffer.kind {
-            crate::modules::aec::engine::opening_style::OpeningCellKind::Opaque => CellFill::Opaque,
-            crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf => CellFill::Door,
-            crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed => CellFill::Fixed,
-            crate::modules::aec::engine::opening_style::OpeningCellKind::Glass => CellFill::Glass,
+        update(cell);
+        true
+    })
+    .unwrap_or(false);
+    if changed {
+        app.aec.styles.opening_authored_grid = Some(grid);
+    }
+}
+
+fn refresh_opening_grid_measure(app: &mut OpenCADStudio) {
+    use crate::modules::aec::engine::construction_grid::{
+        format_track_measure, grid_at_path,
+    };
+    let Some((vertical, index)) = app.aec.styles.opening_selected_grid_edge else {
+        app.aec.styles.opening_grid_measure = None;
+        return;
+    };
+    let width = parse_dim(&app.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
+    let height = parse_dim(&app.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
+    let grid = app.aec.styles.opening_authored_grid.clone().unwrap_or_else(|| {
+        let division = opening_grid_from_fields(
+            &app.aec.styles.opening_vertical,
+            &app.aec.styles.opening_horizontal,
+            &app.aec.styles.opening_vertical_muntins,
+            &app.aec.styles.opening_horizontal_muntins,
+            &app.aec.styles.opening_cells,
+        );
+        construction_from_division(&division, width, height)
+    });
+    app.aec.styles.opening_grid_measure = grid_at_path(
+        &grid,
+        width,
+        height,
+        &app.aec.styles.opening_grid_path,
+    )
+    .and_then(|(level, _, _)| {
+        let tracks = if vertical {
+            &level.columns
+        } else {
+            &level.rows
         };
-        if !(matches!(cell.fill, CellFill::Nested(_)) && matches!(fill, CellFill::Glass)) {
-            cell.fill = fill;
-        }
-        cell.operation = buffer.hinge;
-        cell.sill = parse_dim(&buffer.sill).unwrap_or(0.0);
+        tracks
+            .get(index)
+            .map(|track| format_track_measure(track.measure))
     });
 }
 
@@ -591,7 +635,27 @@ fn refresh_opening_division_measure_buffers(app: &mut OpenCADStudio) {
     );
     let columns = grid.vertical.len().max(1);
     let rows = grid.horizontal.len() + 1;
-    let cell_count = columns * rows;
+    let authored_resolved = s
+        .opening_authored_grid
+        .as_ref()
+        .and_then(|grid| {
+            crate::modules::aec::engine::construction_grid::grid_at_path(
+                grid,
+                width,
+                height,
+                &s.opening_grid_path,
+            )
+        })
+        .map(|(level, level_width, level_height)| {
+            crate::modules::aec::engine::construction_grid::resolve_grid(
+                level,
+                level_width,
+                level_height,
+            )
+        });
+    let cell_count = authored_resolved
+        .as_ref()
+        .map_or(columns * rows, |resolved| resolved.cells.len());
     let selected_cell = s
         .opening_selected_cell
         .unwrap_or(0)
@@ -610,34 +674,21 @@ fn refresh_opening_division_measure_buffers(app: &mut OpenCADStudio) {
     let horizontal_muntin_positions =
         horizontal_muntin_position_fields(&grid.horizontal_muntins, selected_bottom);
 
-    let authored_positions = app.aec.styles.opening_authored_grid.as_ref().and_then(|grid| {
-        crate::modules::aec::engine::construction_grid::grid_at_path(
-            grid,
-            width,
-            height,
-            &app.aec.styles.opening_grid_path,
+    let authored_positions = authored_resolved.as_ref().map(|resolved| {
+        (
+            resolved
+                .columns
+                .iter()
+                .take(resolved.columns.len().saturating_sub(1))
+                .map(|track| format_dim(track.end))
+                .collect::<Vec<_>>(),
+            resolved
+                .rows
+                .iter()
+                .take(resolved.rows.len().saturating_sub(1))
+                .map(|track| format_dim(track.end))
+                .collect::<Vec<_>>(),
         )
-        .map(|(level, level_width, level_height)| {
-            let resolved = crate::modules::aec::engine::construction_grid::resolve_grid(
-                level,
-                level_width,
-                level_height,
-            );
-            (
-                resolved
-                    .columns
-                    .iter()
-                    .take(resolved.columns.len().saturating_sub(1))
-                    .map(|track| format_dim(track.end))
-                    .collect::<Vec<_>>(),
-                resolved
-                    .rows
-                    .iter()
-                    .take(resolved.rows.len().saturating_sub(1))
-                    .map(|track| format_dim(track.end))
-                    .collect::<Vec<_>>(),
-            )
-        })
     });
     let s = &mut app.aec.styles;
     s.opening_selected_cell = Some(selected_cell);
@@ -870,6 +921,7 @@ pub fn draft_opening_style(
     height: f64,
     sill: f64,
     hinge: LeafOperation,
+    swing_side: SwingSide,
     frame_thickness: f64,
     opening_angle_deg: f64,
     shape: OpeningShape,
@@ -909,6 +961,7 @@ pub fn draft_opening_style(
         default_height: height,
         default_sill: sill.max(0.0),
         hinge,
+        swing_side,
         parts: OpeningParts {
             fixed_frame: crate::modules::aec::engine::opening_style::FixedFrameDimensions {
                 face_width: frame_thickness.max(0.0),
@@ -949,6 +1002,56 @@ impl Default for PreviewCamera3d {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct OpeningPreviewModelCache {
+    key: Option<OpeningPreviewModelCacheKey>,
+    paths: Vec<BakedPath>,
+}
+
+#[derive(Debug, PartialEq)]
+struct OpeningPreviewModelCacheKey {
+    style: OpeningStyle,
+    width: f64,
+    library_address: usize,
+}
+
+pub(crate) fn cached_preview_baked_paths_for_mode(
+    cache: &std::cell::RefCell<OpeningPreviewModelCache>,
+    style: &OpeningStyle,
+    preview_width: f64,
+    mode: AecOpeningPreviewMode,
+    library: Option<&StyleLibrary>,
+) -> Vec<BakedPath> {
+    if mode != AecOpeningPreviewMode::Model3D {
+        return preview_baked_paths_for_mode_with_library(
+            style,
+            preview_width,
+            mode,
+            library,
+            PreviewCamera3d::default(),
+        );
+    }
+    let key = OpeningPreviewModelCacheKey {
+        style: style.clone(),
+        width: preview_width,
+        library_address: library.map_or(0, |library| library as *const StyleLibrary as usize),
+    };
+    let mut cache = cache.borrow_mut();
+    if cache.key.as_ref() == Some(&key) {
+        return cache.paths.clone();
+    }
+    let paths = preview_baked_paths_for_mode_with_library(
+        style,
+        preview_width,
+        mode,
+        library,
+        PreviewCamera3d::default(),
+    );
+    cache.key = Some(key);
+    cache.paths.clone_from(&paths);
+    paths
+}
+
 pub fn preview_project(camera: PreviewCamera3d, x: f64, y: f64, z: f64) -> (f64, f64) {
     let (sin_a, cos_a) = camera.azimuth.sin_cos();
     let x1 = x * cos_a - y * sin_a;
@@ -974,6 +1077,7 @@ fn push_preview_edge(
             project(start[0], start[1], start[2]),
             project(end[0], end[1], end[2]),
         ],
+        points_3d: Some(vec![start, end]),
         closed: false,
         filled: false,
     });
@@ -1120,7 +1224,7 @@ pub fn preview_baked_paths_for_mode_with_library(
         wall_y_min: -PREVIEW_WALL_THICKNESS * 0.5,
         wall_y_max: PREVIEW_WALL_THICKNESS * 0.5,
         hinge: style.hinge,
-        swing_side: SwingSide::Exterior,
+        swing_side: style.swing_side,
         shape: style.shape,
         spring_height: style.spring_height,
         opening_angle_deg: style.opening_angle_deg,
@@ -1381,7 +1485,6 @@ pub fn preview_baked_paths_for_mode_with_library(
             let h = style.default_height;
             let sh = style.spring_height;
             let shape = style.shape;
-            let is_door = style.kind == OpeningKind::Door;
             let angle = style.opening_angle_deg;
             let hinge = style.hinge;
             let project_opening = |x: f64, y: f64, z: f64| iso_proj(x, y, z + sill_z);
@@ -1406,73 +1509,280 @@ pub fn preview_baked_paths_for_mode_with_library(
                     OpeningLookRole::FixedFrame,
                 );
             }
-            if let Some(glazing_solid) =
-                crate::modules::aec::engine::opening_display::build_opening_glazing_3d(
-                    width, h, ft, shape, sh,
-                )
-            {
-                push_preview_body_edges(
-                    &mut paths,
-                    &glazing_solid,
-                    &project_opening,
-                    0.0,
-                    0.0,
-                    OpeningComponentSlot::Glazing3D,
-                    OpeningLookRole::Glazing,
+            let division_visible = style.suggested_levels.divisions
+                != crate::modules::aec::engine::opening_style::DivisionLevel::Off
+                && crate::modules::aec::engine::opening_display::opening_component_should_render_with_library(
+                    &style.parts,
+                    style.kind,
+                    OpeningLookRole::Division,
+                    library,
                 );
-            }
-            if let Some(leaf_solid) =
-                crate::modules::aec::engine::opening_display::build_opening_leaf_3d_with_depth(
-                    width,
-                    h,
-                    leaf_frame_section.face,
-                    leaf_frame_section.depth,
-                    angle,
-                    hinge,
-                    SwingSide::Exterior,
-                    is_door,
-                    shape,
-                    sh,
-                )
-            {
-                push_preview_body_edges(
-                    &mut paths,
-                    &leaf_solid,
-                    &project_opening,
-                    0.0,
-                    0.0,
-                    OpeningComponentSlot::Leaf3D,
-                    OpeningLookRole::Leaf,
-                );
+            let division_face = if division_profile_valid {
+                division_section.face
+            } else {
+                fixed_frame_section.face
+            };
+            let overlap = style.parts.leaf_frame.rebate_overlap.max(0.0)
+                + style.parts.leaf_frame.lateral_overlap.max(0.0);
+            let leaf_cells = crate::modules::aec::engine::opening_display::leaf_cells_with_bar_offsets(
+                &style.grid,
+                width,
+                h,
+                ft,
+                division_visible.then_some(division_face),
+                leaf_frame_section.face,
+                overlap,
+                crate::modules::aec::engine::opening_display::opening_component_should_render_with_library(
+                    &style.parts,
+                    style.kind,
+                    OpeningLookRole::FixedFrame,
+                    library,
+                ),
+                style.kind == OpeningKind::Door,
+            );
+            let leaf_glass_visible = crate::modules::aec::engine::opening_display::opening_component_should_render_with_library(
+                &style.parts,
+                style.kind,
+                OpeningLookRole::Glazing,
+                library,
+            );
+            let leaf_component_visible = crate::modules::aec::engine::opening_display::opening_component_should_render_with_library(
+                &style.parts,
+                style.kind,
+                OpeningLookRole::Leaf,
+                library,
+            );
+            for cell in leaf_cells.iter() {
+                let fill = cell.cell.cell.fill.clone();
+                if matches!(fill, crate::modules::aec::engine::construction_grid::CellFill::Glass) {
+                    let top = cell
+                        .top
+                        .min(crate::modules::aec::engine::opening_display::arch_height_at_x(
+                            params,
+                            cell.left,
+                        ))
+                        .min(crate::modules::aec::engine::opening_display::arch_height_at_x(
+                            params,
+                            cell.right,
+                        ));
+                    let leaf_width = cell.right - cell.left;
+                    let leaf_height = top - cell.bottom;
+                    if leaf_width <= 0.0 || leaf_height <= 0.0 {
+                        continue;
+                    }
+                    let center_x = (cell.left + cell.right) * 0.5;
+                    let operation = cell.cell.cell.operation.unwrap_or(hinge);
+                    let swing = cell
+                        .cell
+                        .cell
+                        .swing
+                        .unwrap_or(style.swing_side);
+                    let cell_angle = cell
+                        .cell
+                        .cell
+                        .angle_deg
+                        .unwrap_or(angle);
+                    let pivot_x = match operation.bearing() {
+                        crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
+                            cell.pivot_start - center_x
+                        }
+                        crate::modules::aec::engine::construction_grid::TrackEnd::End => {
+                            cell.pivot_end - center_x
+                        }
+                    };
+                    if let Some((leaf, glass)) = crate::modules::aec::engine::opening_display::build_opening_leaf_components_3d(
+                        leaf_width,
+                        leaf_height,
+                        leaf_frame_section.face,
+                        leaf_frame_section.depth,
+                        style.parts.leaf_frame.depth_offset,
+                        pivot_x,
+                        cell_angle,
+                        operation,
+                        swing,
+                        false,
+                        OpeningShape::Rectangle,
+                        0.0,
+                        (leaf_glass_visible)
+                            .then_some(style.parts.glazing.thickness),
+                    ) {
+                        push_preview_body_edges(
+                            &mut paths,
+                            &leaf,
+                            &project_opening,
+                            center_x,
+                            cell.bottom,
+                            OpeningComponentSlot::Leaf3D,
+                            OpeningLookRole::Leaf,
+                        );
+                        if let Some(glass) = glass {
+                            push_preview_body_edges(
+                                &mut paths,
+                                &glass,
+                                &project_opening,
+                                center_x,
+                                cell.bottom,
+                                OpeningComponentSlot::Glazing3D,
+                                OpeningLookRole::Glazing,
+                            );
+                        }
+                    }
+                } else if matches!(fill, crate::modules::aec::engine::construction_grid::CellFill::Door) {
+                    let top = cell
+                        .top
+                        .min(crate::modules::aec::engine::opening_display::arch_height_at_x(
+                            params,
+                            cell.left,
+                        ))
+                        .min(crate::modules::aec::engine::opening_display::arch_height_at_x(
+                            params,
+                            cell.right,
+                        ));
+                    let leaf_width = cell.right - cell.left;
+                    let leaf_height = top - cell.bottom;
+                    if leaf_width <= 0.0 || leaf_height <= 0.0 {
+                        continue;
+                    }
+                    let center_x = (cell.left + cell.right) * 0.5;
+                    let operation = cell.cell.cell.operation.unwrap_or(hinge);
+                    let swing = cell
+                        .cell
+                        .cell
+                        .swing
+                        .unwrap_or(style.swing_side);
+                    let cell_angle = cell
+                        .cell
+                        .cell
+                        .angle_deg
+                        .unwrap_or(angle);
+                    let pivot_x = match operation.bearing() {
+                        crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
+                            cell.pivot_start - center_x
+                        }
+                        crate::modules::aec::engine::construction_grid::TrackEnd::End => {
+                            cell.pivot_end - center_x
+                        }
+                    };
+                    if let Some((leaf, _)) = crate::modules::aec::engine::opening_display::build_opening_leaf_components_3d(
+                        leaf_width,
+                        leaf_height,
+                        leaf_frame_section.face,
+                        leaf_frame_section.depth,
+                        style.parts.leaf_frame.depth_offset,
+                        pivot_x,
+                        cell_angle,
+                        operation,
+                        swing,
+                        true,
+                        OpeningShape::Rectangle,
+                        0.0,
+                        None,
+                    ) {
+                        push_preview_body_edges(
+                            &mut paths,
+                            &leaf,
+                            &project_opening,
+                            center_x,
+                            cell.bottom,
+                            OpeningComponentSlot::Leaf3D,
+                            OpeningLookRole::Leaf,
+                        );
+                    }
+                }
             }
 
-            for (bar, center_x, center_z) in
-                crate::modules::aec::engine::opening_display::build_opening_grid_bars_3d(
-                    &style.grid,
-                    params,
-                    if division_profile_valid {
-                        division_section.face
-                    } else {
-                        fixed_frame_section.face
-                    },
-                    if division_profile_valid {
-                        division_section.depth
-                    } else {
-                        fixed_frame_section.depth
-                    },
+            let fixed_cells = crate::modules::aec::engine::opening_display::leaf_cells_with_bar_offsets(
+                &style.grid,
+                width,
+                h,
+                ft,
+                division_visible.then_some(division_face),
+                leaf_frame_section.face,
+                0.0,
+                crate::modules::aec::engine::opening_display::opening_component_should_render_with_library(
+                    &style.parts,
+                    style.kind,
+                    OpeningLookRole::FixedFrame,
                     library,
-                    &leaf_frame_section,
-                )
-            {
-                push_preview_body_edges(
-                    &mut paths,
-                    &bar,
-                    &project_opening,
-                    center_x,
-                    center_z,
-                    OpeningComponentSlot::Frame3D,
-                    OpeningLookRole::Division,
-                );
+                ),
+                style.kind == OpeningKind::Door,
+            );
+            if leaf_glass_visible {
+                for cell in fixed_cells {
+                    let is_leaf_glass = matches!(
+                        cell.cell.cell.fill,
+                        crate::modules::aec::engine::construction_grid::CellFill::Glass
+                    );
+                    if (!is_leaf_glass
+                        && !matches!(
+                            cell.cell.cell.fill,
+                            crate::modules::aec::engine::construction_grid::CellFill::Fixed
+                        ))
+                        || (is_leaf_glass && leaf_component_visible)
+                    {
+                        continue;
+                    }
+                    let inset = style.parts.glazing.inset.max(0.0);
+                    let left = cell.left + inset;
+                    let right = cell.right - inset;
+                    let bottom = cell.bottom + inset;
+                    let top = cell
+                        .top
+                        .min(crate::modules::aec::engine::opening_display::arch_height_at_x(
+                            params,
+                            left,
+                        ))
+                        .min(crate::modules::aec::engine::opening_display::arch_height_at_x(
+                            params,
+                            right,
+                        ))
+                        - inset;
+                    if right <= left || top <= bottom {
+                        continue;
+                    }
+                    if let Some(glass) = crate::modules::aec::engine::opening_display::build_opening_box_3d(
+                        right - left,
+                        top - bottom,
+                        style.parts.glazing.thickness,
+                    ) {
+                        push_preview_body_edges(
+                            &mut paths,
+                            &glass,
+                            &project_opening,
+                            (left + right) * 0.5,
+                            (bottom + top) * 0.5,
+                            OpeningComponentSlot::Glazing3D,
+                            OpeningLookRole::Glazing,
+                        );
+                    }
+                }
+            }
+
+            if division_visible {
+                for (bar, center_x, center_z) in
+                    crate::modules::aec::engine::opening_display::build_opening_grid_bars_3d(
+                        &style.grid,
+                        params,
+                        division_face,
+                        if division_profile_valid {
+                            division_section.depth
+                        } else {
+                            fixed_frame_section.depth
+                        },
+                        library,
+                        &leaf_frame_section,
+                    )
+                {
+                    push_preview_body_edges(
+                        &mut paths,
+                        &bar,
+                        &project_opening,
+                        center_x,
+                        center_z,
+                        OpeningComponentSlot::Frame3D,
+                        OpeningLookRole::Division,
+                    );
+                }
             }
 
             paths.retain(|path| {
@@ -1538,6 +1848,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
                 (wall_half, sill_z),
                 (-wall_half, sill_z),
             ],
+            points_3d: None,
             closed: true,
             filled: true,
         });
@@ -1551,6 +1862,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
             (wall_half, top_z),
             (-wall_half, top_z),
         ],
+        points_3d: None,
         closed: true,
         filled: true,
     });
@@ -1558,6 +1870,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         slot: OpeningComponentSlot::HostCut2D,
         look_role: None,
         points: vec![(-wall_half, 0.0), (-wall_half, top_z), (wall_half, top_z), (wall_half, 0.0)],
+        points_3d: None,
         closed: false,
         filled: false,
     });
@@ -1573,6 +1886,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
                 slot,
                 look_role: Some(role),
                 points: vec![(x0, z0), (x1, z0), (x1, z1), (x0, z1)],
+                points_3d: None,
                 closed: true,
                 filled: true,
             });
@@ -1594,7 +1908,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         } else {
             &frame_section.outline
         };
-        for origin_z in [sill_z - frame_face, head_z] {
+        for origin_z in [sill_z, head_z - frame_face] {
             profile_frame_paths.push(BakedPath {
                 slot: OpeningComponentSlot::Frame2D,
                 look_role: Some(OpeningLookRole::FixedFrame),
@@ -1602,6 +1916,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
                     .iter()
                     .map(|(face, depth)| (frame_x0 + depth, origin_z + face))
                     .collect(),
+                points_3d: None,
                 closed: true,
                 filled: true,
             });
@@ -1614,23 +1929,21 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         style.kind,
         OpeningLookRole::ExteriorSill,
     ) {
-        // The sill seats on the frame's exterior face, not the wall face.
-        let frame_outer = frame_x0.min(frame_x1);
         push_rect(
             OpeningLookRole::ExteriorSill,
             OpeningComponentSlot::Sill2D,
-            frame_outer - exterior_sill.overhang,
+            -wall_half - exterior_sill.overhang,
             sill_z - exterior_sill.thickness,
-            frame_outer + exterior_sill.thickness,
+            -wall_half,
             sill_z,
         );
         if exterior_sill.upstand > 0.0 {
             push_rect(
                 OpeningLookRole::ExteriorSill,
                 OpeningComponentSlot::Sill2D,
-                frame_outer,
+                -wall_half,
                 sill_z,
-                frame_outer + exterior_sill.thickness,
+                -wall_half + exterior_sill.thickness,
                 sill_z + exterior_sill.upstand,
             );
         }
@@ -1645,7 +1958,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         push_rect(
             OpeningLookRole::InteriorBoard,
             OpeningComponentSlot::Sill2D,
-            wall_half - interior_board.thickness,
+            wall_half,
             sill_z - interior_board.thickness,
             wall_half + interior_board.overhang,
             sill_z,
@@ -1728,6 +2041,7 @@ fn load_buffers_from_style(app: &mut OpenCADStudio, style: &OpeningStyle) {
         String::new()
     };
     app.aec.styles.opening_hinge = style.hinge;
+    app.aec.styles.opening_swing_side = style.swing_side;
     app.aec.styles.opening_shape = style.shape;
     app.aec.styles.opening_default_slots = default_slots_for_kind(style.kind);
     app.aec.styles.opening_default_profile = None;
@@ -1913,6 +2227,7 @@ impl OpenCADStudio {
         {
             self.aec.styles.opening_authored_grid = None;
             self.aec.styles.opening_grid_path.clear();
+            self.aec.styles.opening_selected_grid_edge = None;
         }
         for (prefix, axis) in [
             ("vertical_position", "vertical"),
@@ -2129,9 +2444,33 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_cell_select(&mut self, index: usize) {
-        let columns = parse_list(&self.aec.styles.opening_vertical).len().max(1);
-        let rows = parse_list(&self.aec.styles.opening_horizontal).len() + 1;
-        self.aec.styles.opening_selected_cell = Some(index.min(columns * rows - 1));
+        use crate::modules::aec::engine::construction_grid::{grid_at_path, resolve_grid};
+        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
+        let height = parse_dim(&self.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
+        let grid = self.aec.styles.opening_authored_grid.clone().unwrap_or_else(|| {
+            let division = opening_grid_from_fields(
+                &self.aec.styles.opening_vertical,
+                &self.aec.styles.opening_horizontal,
+                &self.aec.styles.opening_vertical_muntins,
+                &self.aec.styles.opening_horizontal_muntins,
+                &self.aec.styles.opening_cells,
+            );
+            construction_from_division(&division, width, height)
+        });
+        let count = grid_at_path(
+            &grid,
+            width,
+            height,
+            &self.aec.styles.opening_grid_path,
+        )
+        .map(|(level, level_width, level_height)| {
+            resolve_grid(level, level_width, level_height).cells.len()
+        })
+        .unwrap_or(1)
+        .max(1);
+        self.aec.styles.opening_selected_cell = Some(index.min(count - 1));
+        self.aec.styles.opening_selected_grid_edge = None;
+        self.aec.styles.opening_grid_measure = None;
         refresh_opening_division_measure_buffers(self);
     }
 
@@ -2149,6 +2488,8 @@ impl OpenCADStudio {
         let division = project_division_sized(&grid, width, height);
         self.aec.styles.opening_authored_grid = Some(grid);
         self.aec.styles.opening_grid_path.clear();
+        self.aec.styles.opening_selected_grid_edge = None;
+        self.aec.styles.opening_grid_measure = None;
         self.aec.styles.opening_vertical = format_vertical_weights(&division.vertical);
         self.aec.styles.opening_horizontal = format_list(&division.horizontal);
         self.aec.styles.opening_vertical_muntins = format_list(&division.vertical_muntins);
@@ -2233,6 +2574,8 @@ impl OpenCADStudio {
                 height,
             )
         });
+        self.aec.styles.opening_selected_grid_edge = None;
+        self.aec.styles.opening_grid_measure = None;
     }
 
     pub(crate) fn aec_opening_style_manager_grid_divider(
@@ -2254,51 +2597,148 @@ impl OpenCADStudio {
                 height,
             )
         });
+        refresh_opening_grid_measure(self);
+    }
+
+    pub(crate) fn aec_opening_style_manager_grid_edge_select(
+        &mut self,
+        axis: &str,
+        index: usize,
+    ) {
+        self.aec.styles.opening_selected_grid_edge = Some((axis == "vertical", index));
+        refresh_opening_grid_measure(self);
+    }
+
+    pub(crate) fn aec_opening_style_manager_grid_measure(
+        &mut self,
+        axis: &str,
+        index: usize,
+        value: &str,
+    ) {
+        self.aec.styles.opening_grid_measure = Some(value.to_string());
+        let Some(measure) = crate::modules::aec::engine::construction_grid::parse_track_measure(value)
+        else {
+            return;
+        };
+        self.mutate_current_grid(|level, _, _| {
+            let tracks = if axis == "vertical" {
+                &mut level.columns
+            } else {
+                &mut level.rows
+            };
+            let Some(track) = tracks.get_mut(index) else {
+                return false;
+            };
+            track.measure = measure;
+            true
+        });
+    }
+
+    pub(crate) fn aec_opening_style_manager_grid_meeting(
+        &mut self,
+        axis: &str,
+        index: usize,
+        value: &str,
+    ) {
+        use crate::modules::aec::engine::construction_grid::{TrackEnd, TrackMeeting};
+        let meeting = match value {
+            "stulp-left" => TrackMeeting::Stulp {
+                bearer: TrackEnd::Start,
+            },
+            "stulp-right" => TrackMeeting::Stulp {
+                bearer: TrackEnd::End,
+            },
+            "flush" => TrackMeeting::Flush,
+            _ => TrackMeeting::Mullion,
+        };
+        self.mutate_current_grid(|level, _, _| {
+            let tracks = if axis == "vertical" {
+                &mut level.columns
+            } else {
+                &mut level.rows
+            };
+            let Some(track) = tracks.get_mut(index) else {
+                return false;
+            };
+            track.meeting = meeting;
+            true
+        });
     }
 
     pub(crate) fn aec_opening_style_manager_grid_enter(&mut self, index: usize) {
         if self.aec.styles.opening_grid_path.len() >= 2 {
             return;
         }
+        use crate::modules::aec::engine::construction_grid::{
+            ensure_explicit_cells, grid_at_path, resolve_grid, with_grid_at_path, CellFill,
+            ConstructionGrid, GridCell,
+        };
         let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
         let height = parse_dim(&self.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
-        let Some(grid) = self.aec.styles.opening_authored_grid.as_ref() else {
+        let mut grid = self.aec.styles.opening_authored_grid.clone().unwrap_or_else(|| {
+            let division = opening_grid_from_fields(
+                &self.aec.styles.opening_vertical,
+                &self.aec.styles.opening_horizontal,
+                &self.aec.styles.opening_vertical_muntins,
+                &self.aec.styles.opening_horizontal_muntins,
+                &self.aec.styles.opening_cells,
+            );
+            construction_from_division(&division, width, height)
+        });
+        let path = self.aec.styles.opening_grid_path.clone();
+        let child_path = with_grid_at_path(&mut grid, width, height, &path, |level, w, h| {
+            ensure_explicit_cells(level);
+            let resolved = resolve_grid(level, w, h);
+            let cell = resolved.cells.get(index)?;
+            let column = cell.column as u32;
+            let row = cell.row as u32;
+            let target = level
+                .cells
+                .iter_mut()
+                .find(|cell| cell.column == column && cell.row == row)?;
+            if !matches!(target.fill, CellFill::Nested(_)) {
+                let nested_cell = GridCell {
+                    fill: target.fill.clone(),
+                    operation: target.operation,
+                    swing: target.swing,
+                    angle_deg: target.angle_deg,
+                    sill: target.sill,
+                    ..GridCell::default()
+                };
+                target.fill = CellFill::Nested(ConstructionGrid {
+                    cells: vec![nested_cell],
+                    ..ConstructionGrid::default()
+                });
+            }
+            Some((column, row))
+        })
+        .flatten();
+        let Some(child_path) = child_path else {
             return;
         };
-        let Some((level, level_width, level_height)) =
-            crate::modules::aec::engine::construction_grid::grid_at_path(
-                grid,
-                width,
-                height,
-                &self.aec.styles.opening_grid_path,
-            )
-        else {
+        let Some(_) = grid_at_path(
+            &grid,
+            width,
+            height,
+            &[path.as_slice(), std::slice::from_ref(&child_path)].concat(),
+        ) else {
             return;
         };
-        let resolved = crate::modules::aec::engine::construction_grid::resolve_grid(
-            level,
-            level_width,
-            level_height,
-        );
-        let Some(cell) = resolved.cells.get(index) else {
-            return;
-        };
-        if !matches!(
-            cell.cell.fill,
-            crate::modules::aec::engine::construction_grid::CellFill::Nested(_)
-        ) {
-            return;
-        }
+        self.aec.styles.opening_authored_grid = Some(grid);
         self.aec
             .styles
             .opening_grid_path
-            .push((cell.column as u32, cell.row as u32));
+            .push(child_path);
         self.aec.styles.opening_selected_cell = Some(0);
+        self.aec.styles.opening_selected_grid_edge = None;
+        self.aec.styles.opening_grid_measure = None;
     }
 
     pub(crate) fn aec_opening_style_manager_grid_back(&mut self) {
         self.aec.styles.opening_grid_path.pop();
         self.aec.styles.opening_selected_cell = Some(0);
+        self.aec.styles.opening_selected_grid_edge = None;
+        self.aec.styles.opening_grid_measure = None;
     }
 
     fn mutate_current_grid(&mut self, action: impl FnMut(&mut crate::modules::aec::engine::construction_grid::ConstructionGrid, f64, f64) -> bool) {
@@ -2379,6 +2819,7 @@ impl OpenCADStudio {
         }
         self.aec.styles.opening_authored_grid = None;
         self.aec.styles.opening_grid_path.clear();
+        self.aec.styles.opening_selected_grid_edge = None;
         let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
         let height = parse_dim(&self.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
         let old_columns = parse_list(&self.aec.styles.opening_vertical).len().max(1);
@@ -2502,6 +2943,7 @@ impl OpenCADStudio {
         }
         self.aec.styles.opening_authored_grid = None;
         self.aec.styles.opening_grid_path.clear();
+        self.aec.styles.opening_selected_grid_edge = None;
         let old_columns = parse_list(&self.aec.styles.opening_vertical).len().max(1);
         let old_rows = parse_list(&self.aec.styles.opening_horizontal).len() + 1;
         let s = &mut self.aec.styles;
@@ -2625,51 +3067,99 @@ impl OpenCADStudio {
 
     pub(crate) fn aec_opening_style_manager_cell_kind(&mut self, index: usize, value: &str) {
         use crate::modules::aec::engine::opening_style::OpeningCellKind;
-        if self.aec.styles.opening_cells.len() <= index {
-            self.aec.styles.opening_cells.resize_with(index + 1, || {
-                AecOpeningCellBuffer {
-                    kind: OpeningCellKind::Glass,
-                    hinge: None,
-                    sill: "0".to_string(),
-                }
-            });
-        }
-        if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
-            cell.kind = OpeningCellKind::from_str(value);
-            if !cell.kind.permits_hinge() {
-                cell.hinge = None;
+        let kind = OpeningCellKind::from_str(value);
+        if self.aec.styles.opening_grid_path.is_empty() {
+            if self.aec.styles.opening_cells.len() <= index {
+                self.aec.styles.opening_cells.resize_with(index + 1, || {
+                    AecOpeningCellBuffer {
+                        kind: OpeningCellKind::Glass,
+                        hinge: None,
+                        sill: "0".to_string(),
+                    }
+                });
             }
-            sync_authored_cell(self, index);
+            if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
+                cell.kind = kind;
+                if !kind.permits_hinge() {
+                    cell.hinge = None;
+                }
+            }
         }
+        mutate_current_grid_cell(self, index, |cell| {
+            cell.fill = match kind {
+                OpeningCellKind::Opaque => {
+                    crate::modules::aec::engine::construction_grid::CellFill::Opaque
+                }
+                OpeningCellKind::DoorLeaf => {
+                    crate::modules::aec::engine::construction_grid::CellFill::Door
+                }
+                OpeningCellKind::Fixed => {
+                    crate::modules::aec::engine::construction_grid::CellFill::Fixed
+                }
+                OpeningCellKind::Glass => {
+                    crate::modules::aec::engine::construction_grid::CellFill::Glass
+                }
+            };
+            if !kind.permits_hinge() {
+                cell.operation = None;
+            }
+        });
         self.aec_opening_style_manager_cell_select(index);
         refresh_opening_division_measure_buffers(self);
     }
 
     pub(crate) fn aec_opening_style_manager_cell_hinge(&mut self, index: usize, value: &str) {
-        if self.aec.styles.opening_cells.len() <= index {
-            self.aec.styles.opening_cells.resize_with(index + 1, || {
-                AecOpeningCellBuffer {
-                    kind: crate::modules::aec::engine::opening_style::OpeningCellKind::Glass,
-                    hinge: None,
-                    sill: "0".to_string(),
-                }
-            });
+        let operation = if value.is_empty() || value == "-" {
+            None
+        } else {
+            Some(LeafOperation::from_str(value))
+        };
+        if self.aec.styles.opening_grid_path.is_empty() {
+            if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
+                cell.hinge = operation;
+            }
         }
-        if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
-            cell.hinge = if value.is_empty() || value == "-" {
-                None
-            } else {
-                Some(LeafOperation::from_str(value))
-            };
-            sync_authored_cell(self, index);
-        }
+        mutate_current_grid_cell(self, index, |cell| cell.operation = operation);
         self.aec_opening_style_manager_cell_select(index);
     }
 
+    pub(crate) fn aec_opening_style_manager_cell_swing(
+        &mut self,
+        index: usize,
+        value: &str,
+    ) {
+        let swing = if value.is_empty() || value == "-" {
+            None
+        } else {
+            Some(SwingSide::from_str(value))
+        };
+        mutate_current_grid_cell(self, index, |cell| cell.swing = swing);
+    }
+
+    pub(crate) fn aec_opening_style_manager_cell_angle(
+        &mut self,
+        index: usize,
+        value: &str,
+    ) {
+        let angle = if value.trim().is_empty() {
+            None
+        } else {
+            let Some(angle) = parse_dim(value) else {
+                return;
+            };
+            Some(angle)
+        };
+        mutate_current_grid_cell(self, index, |cell| cell.angle_deg = angle);
+    }
+
     pub(crate) fn aec_opening_style_manager_cell_sill(&mut self, index: usize, value: String) {
-        if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
-            cell.sill = value;
-            sync_authored_cell(self, index);
+        if self.aec.styles.opening_grid_path.is_empty() {
+            if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
+                cell.sill = value.clone();
+            }
+        }
+        if let Some(sill) = parse_dim(&value) {
+            mutate_current_grid_cell(self, index, |cell| cell.sill = sill);
         }
         refresh_opening_division_measure_buffers(self);
     }
@@ -2779,6 +3269,7 @@ impl OpenCADStudio {
             height,
             sill,
             self.aec.styles.opening_hinge,
+            self.aec.styles.opening_swing_side,
             frame,
             angle,
             self.aec.styles.opening_shape,
@@ -3536,6 +4027,7 @@ mod tests {
             0.8,
             0.9,
             LeafOperation::left(),
+            SwingSide::Exterior,
             0.06,
             90.0,
             OpeningShape::Circle,
@@ -3557,6 +4049,7 @@ mod tests {
             9.0,
             0.1,
             LeafOperation::left(),
+            SwingSide::Exterior,
             0.06,
             90.0,
             OpeningShape::Triangle(
@@ -3602,6 +4095,7 @@ mod tests {
             1.0,
             0.1,
             LeafOperation::left(),
+            SwingSide::Exterior,
             0.06,
             90.0,
             OpeningShape::Rectangle,
@@ -3789,5 +4283,80 @@ mod tests {
                 .iter()
                 .any(|path| path.resolved_look_role() == Some(role)));
         }
+    }
+
+    #[test]
+    fn section_frame_and_sills_are_anchored_to_rough_opening_edges() {
+        let mut style = OpeningStyle::standard_window();
+        style.default_sill = 0.9;
+        style.default_height = 1.2;
+        style.parts.fixed_frame.face_width = 0.08;
+        style.parts.exterior_sill.thickness = 0.05;
+        style.parts.exterior_sill.overhang = 0.1;
+        style.parts.exterior_sill.upstand = 0.0;
+        style.parts.interior_board.thickness = 0.04;
+        style.parts.interior_board.overhang = 0.08;
+
+        let paths = section_preview_paths(&style, None);
+        let mut frames: Vec<_> = paths
+            .iter()
+            .filter(|path| path.resolved_look_role() == Some(OpeningLookRole::FixedFrame))
+            .collect();
+        frames.sort_by(|first, second| {
+            first
+                .points
+                .iter()
+                .map(|point| point.1)
+                .fold(f64::INFINITY, f64::min)
+                .total_cmp(
+                    &second
+                        .points
+                        .iter()
+                        .map(|point| point.1)
+                        .fold(f64::INFINITY, f64::min),
+                )
+        });
+        assert_eq!(frames.len(), 2);
+        let bounds_z = |path: &BakedPath| {
+            let min = path.points.iter().map(|point| point.1).fold(f64::INFINITY, f64::min);
+            let max = path
+                .points
+                .iter()
+                .map(|point| point.1)
+                .fold(f64::NEG_INFINITY, f64::max);
+            (min, max)
+        };
+        assert!((bounds_z(frames[0]).0 - style.default_sill).abs() < 1e-9);
+        assert!((bounds_z(frames[0]).1 - (style.default_sill + 0.08)).abs() < 1e-9);
+        let head = style.default_sill + style.default_height;
+        assert!((bounds_z(frames[1]).0 - (head - 0.08)).abs() < 1e-9);
+        assert!((bounds_z(frames[1]).1 - head).abs() < 1e-9);
+
+        let sill_bounds = |role| {
+            let path = paths
+                .iter()
+                .find(|path| path.resolved_look_role() == Some(role))
+                .expect("sill path");
+            let x = (
+                path.points.iter().map(|point| point.0).fold(f64::INFINITY, f64::min),
+                path.points
+                    .iter()
+                    .map(|point| point.0)
+                    .fold(f64::NEG_INFINITY, f64::max),
+            );
+            let z = bounds_z(path);
+            (x, z)
+        };
+        let wall_half = PREVIEW_WALL_THICKNESS * 0.5;
+        let (exterior_x, exterior_z) = sill_bounds(OpeningLookRole::ExteriorSill);
+        assert!((exterior_x.0 - (-wall_half - 0.1)).abs() < 1e-9);
+        assert!((exterior_x.1 + wall_half).abs() < 1e-9);
+        assert!((exterior_z.0 - (style.default_sill - 0.05)).abs() < 1e-9);
+        assert!((exterior_z.1 - style.default_sill).abs() < 1e-9);
+        let (interior_x, interior_z) = sill_bounds(OpeningLookRole::InteriorBoard);
+        assert!((interior_x.0 - wall_half).abs() < 1e-9);
+        assert!((interior_x.1 - (wall_half + 0.08)).abs() < 1e-9);
+        assert!((interior_z.0 - (style.default_sill - 0.04)).abs() < 1e-9);
+        assert!((interior_z.1 - style.default_sill).abs() < 1e-9);
     }
 }

@@ -212,13 +212,16 @@ fn aec_opening_parts(&self) -> Option<crate::modules::aec::ui::style_manager::St
             angle: &self.aec.styles.opening_angle,
             spring: &self.aec.styles.opening_spring,
             hinge: self.aec.styles.opening_hinge,
+            swing_side: self.aec.styles.opening_swing_side,
             authored_grid: self.aec.styles.opening_authored_grid.as_ref(),
             grid_path: &self.aec.styles.opening_grid_path,
-            preview_azimuth: self.aec.styles.opening_preview_azimuth,
-            preview_elevation: self.aec.styles.opening_preview_elevation,
+            selected_grid_edge: self.aec.styles.opening_selected_grid_edge,
+            grid_measure: self.aec.styles.opening_grid_measure.as_deref(),
+            preview_isometric: self.aec.styles.opening_preview_isometric,
             preview_zoom: self.aec.styles.opening_preview_zoom,
             preview_pan_x: self.aec.styles.opening_preview_pan_x,
             preview_pan_y: self.aec.styles.opening_preview_pan_y,
+            preview_model_cache: &self.aec.styles.opening_preview_model_cache,
         },
     ))
 }

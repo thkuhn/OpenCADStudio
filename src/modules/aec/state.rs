@@ -114,6 +114,27 @@ pub enum AecOpeningPreviewMode {
     Model3D,
 }
 
+/// One of the four fixed isometric views in the Opening Style Manager.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AecOpeningIsometric {
+    #[default]
+    FrontLeft,
+    FrontRight,
+    BackLeft,
+    BackRight,
+}
+
+impl AecOpeningIsometric {
+    pub const fn camera_angles(self) -> (f64, f64) {
+        match self {
+            Self::FrontLeft => (0.0, 0.0),
+            Self::FrontRight => (std::f64::consts::FRAC_PI_2, 0.0),
+            Self::BackLeft => (-std::f64::consts::FRAC_PI_2, 0.0),
+            Self::BackRight => (std::f64::consts::PI, 0.0),
+        }
+    }
+}
+
 /// One grid cell in the opening style dialog.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AecOpeningCellBuffer {

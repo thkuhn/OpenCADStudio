@@ -168,9 +168,11 @@ pub enum AecMessage {
     AecOpeningStyleManagerAngleChanged(String),
     AecOpeningStyleManagerSpringChanged(String),
     AecOpeningStyleManagerHingeChanged(String),
+    AecOpeningStyleManagerSwingChanged(String),
     AecOpeningStyleManagerSetPreviewMode(crate::modules::aec::state::AecOpeningPreviewMode),
-    /// Azimuth, elevation, zoom, pan x, pan y for the 3D style preview.
-    AecOpeningStyleManagerPreviewCamera(f64, f64, f64, f64, f64),
+    AecOpeningStyleManagerSetIsometric(crate::modules::aec::state::AecOpeningIsometric),
+    /// Zoom and pan x/y for the opening style preview.
+    AecOpeningStyleManagerPreviewView(f64, f64, f64),
     AecOpeningStyleManagerSetEditorTab(
         crate::modules::aec::engine::opening_style::OpeningEditorGroup,
     ),
@@ -195,6 +197,8 @@ pub enum AecMessage {
     AecOpeningStyleManagerDimChanged(String, String),
     AecOpeningStyleManagerCellKindChanged(usize, String),
     AecOpeningStyleManagerCellHingeChanged(usize, String),
+    AecOpeningStyleManagerCellSwingChanged(usize, String),
+    AecOpeningStyleManagerCellAngleChanged(usize, String),
     AecOpeningStyleManagerCellSillChanged(usize, String),
     AecOpeningStyleManagerCellSelect(usize),
     AecOpeningStyleManagerCellAdd,
@@ -209,6 +213,9 @@ pub enum AecMessage {
     AecOpeningStyleManagerGridInsert(String, String),
     /// Moves a post or transom in the current grid level.
     AecOpeningStyleManagerGridDivider(String, usize, String),
+    AecOpeningStyleManagerGridEdgeSelect(String, usize),
+    AecOpeningStyleManagerGridMeasure(String, usize, String),
+    AecOpeningStyleManagerGridMeeting(String, usize, String),
     /// Opens the nested grid of the selected resolved cell.
     AecOpeningStyleManagerGridEnter(usize),
     /// Returns from a nested grid to its parent.

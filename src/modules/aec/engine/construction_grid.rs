@@ -3,7 +3,44 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TrackMeasure {
     Fixed(f64),
+    Percent(f64),
     Fraction(f64),
+}
+
+pub fn parse_track_measure(value: &str) -> Option<TrackMeasure> {
+    let value = value.trim();
+    let measure = if let Some(percent) = value.strip_suffix('%') {
+        TrackMeasure::Percent(percent.trim().parse().ok()?)
+    } else if let Some(fraction) = value.strip_suffix('*') {
+        let fraction = fraction.trim();
+        TrackMeasure::Fraction(if fraction.is_empty() {
+            1.0
+        } else {
+            fraction.parse().ok()?
+        })
+    } else {
+        TrackMeasure::Fixed(value.parse().ok()?)
+    };
+    let value = match measure {
+        TrackMeasure::Fixed(value)
+        | TrackMeasure::Percent(value)
+        | TrackMeasure::Fraction(value) => value,
+    };
+    (value.is_finite() && value >= 0.0).then_some(measure)
+}
+
+pub fn format_track_measure(measure: TrackMeasure) -> String {
+    fn number(value: f64) -> String {
+        format!("{value:.4}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+    match measure {
+        TrackMeasure::Fixed(value) => number(value),
+        TrackMeasure::Percent(value) => format!("{}%", number(value)),
+        TrackMeasure::Fraction(value) => format!("{}*", number(value)),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -171,6 +208,8 @@ pub struct GridCell {
     pub rows: u32,
     pub fill: CellFill,
     pub operation: Option<LeafOperation>,
+    pub swing: Option<crate::modules::aec::engine::openings::SwingSide>,
+    pub angle_deg: Option<f64>,
     pub sill: f64,
     pub left: Option<EdgeRule>,
     pub right: Option<EdgeRule>,
@@ -540,7 +579,7 @@ pub fn with_grid_at_path<R>(
     width: f64,
     height: f64,
     path: &[(u32, u32)],
-    mut f: impl FnMut(&mut ConstructionGrid, f64, f64) -> R,
+    f: impl FnMut(&mut ConstructionGrid, f64, f64) -> R,
 ) -> Option<R> {
     fn walk<R>(
         grid: &mut ConstructionGrid,
@@ -610,10 +649,14 @@ pub fn insert_axis_division(
     widths[index] = first;
     widths.insert(index + 1, second);
     let mut previous = tracks.clone();
+    let old_meeting = previous[index].meeting;
+    let old_profile = previous[index].profile_id.clone();
     let inserted = previous[index].clone();
     previous.insert(index + 1, inserted);
-    previous[index + 1].meeting = TrackMeeting::Mullion;
-    previous[index + 1].profile_id = None;
+    previous[index].meeting = TrackMeeting::Mullion;
+    previous[index].profile_id = None;
+    previous[index + 1].meeting = old_meeting;
+    previous[index + 1].profile_id = old_profile;
     write_fraction_tracks(grid, vertical, &widths, &previous);
     shift_cells_after_insert(grid, vertical, index as u32 + 1);
     true
@@ -723,13 +766,15 @@ fn shift_cells_after_insert(grid: &mut ConstructionGrid, vertical: bool, boundar
                 if vertical { cell.row } else { cell.column },
                 cell.fill.clone(),
                 cell.operation,
+                cell.swing,
+                cell.angle_deg,
                 cell.sill,
             ));
         } else if *start <= split && end > split {
             *span = covered + 1;
         }
     }
-    for (start, cross, fill, operation, sill) in extras {
+    for (start, cross, fill, operation, swing, angle_deg, sill) in extras {
         grid.cells.push(if vertical {
             GridCell {
                 column: start,
@@ -738,6 +783,8 @@ fn shift_cells_after_insert(grid: &mut ConstructionGrid, vertical: bool, boundar
                 rows: 1,
                 fill,
                 operation,
+                swing,
+                angle_deg,
                 sill,
                 ..GridCell::default()
             }
@@ -749,6 +796,8 @@ fn shift_cells_after_insert(grid: &mut ConstructionGrid, vertical: bool, boundar
                 rows: 1,
                 fill,
                 operation,
+                swing,
+                angle_deg,
                 sill,
                 ..GridCell::default()
             }
@@ -993,6 +1042,10 @@ fn resolve_tracks(tracks: &[GridTrack], total: f64) -> Vec<ResolvedTrack> {
         .iter()
         .filter_map(|track| match track.measure {
             TrackMeasure::Fixed(value) if value.is_finite() => Some(value.max(0.0)),
+            TrackMeasure::Percent(value) if value.is_finite() => {
+                Some(total.max(0.0) * value.max(0.0) / 100.0)
+            }
+            TrackMeasure::Percent(_) => None,
             TrackMeasure::Fraction(_) => None,
             TrackMeasure::Fixed(_) => None,
         })
@@ -1008,6 +1061,7 @@ fn resolve_tracks(tracks: &[GridTrack], total: f64) -> Vec<ResolvedTrack> {
         .filter_map(|track| match track.measure {
             TrackMeasure::Fraction(value) if value.is_finite() => Some(value.max(0.0)),
             TrackMeasure::Fixed(_) => None,
+            TrackMeasure::Percent(_) => None,
             TrackMeasure::Fraction(_) => None,
         })
         .fold(0.0_f64, f64::max);
@@ -1030,6 +1084,9 @@ fn resolve_tracks(tracks: &[GridTrack], total: f64) -> Vec<ResolvedTrack> {
         .map(|track| {
             let extent = match track.measure {
                 TrackMeasure::Fixed(value) if value.is_finite() => value.max(0.0) * fixed_scale,
+                TrackMeasure::Percent(value) if value.is_finite() => {
+                    total.max(0.0) * value.max(0.0) / 100.0 * fixed_scale
+                }
                 TrackMeasure::Fraction(value)
                     if value.is_finite() && fraction_max > 0.0 && fraction_sum > 0.0 =>
                 {
@@ -1185,6 +1242,95 @@ mod tests {
             .map(|track| track.end - track.start)
             .collect();
         assert!(extents.iter().all(|extent| (extent - 0.4).abs() < 1e-9));
+    }
+
+    #[test]
+    fn track_measure_text_accepts_fixed_percent_and_fraction_values() {
+        assert_eq!(parse_track_measure("0.60"), Some(TrackMeasure::Fixed(0.6)));
+        assert_eq!(parse_track_measure("50%"), Some(TrackMeasure::Percent(50.0)));
+        assert_eq!(parse_track_measure("1*"), Some(TrackMeasure::Fraction(1.0)));
+        assert_eq!(format_track_measure(TrackMeasure::Fixed(0.6)), "0.6");
+        assert_eq!(format_track_measure(TrackMeasure::Percent(50.0)), "50%");
+        assert_eq!(format_track_measure(TrackMeasure::Fraction(1.0)), "1*");
+
+        let grid = ConstructionGrid {
+            columns: vec![
+                GridTrack {
+                    measure: TrackMeasure::Percent(50.0),
+                    ..GridTrack::default()
+                },
+                GridTrack {
+                    measure: TrackMeasure::Fraction(2.0),
+                    ..GridTrack::default()
+                },
+                GridTrack {
+                    measure: TrackMeasure::Fraction(1.0),
+                    ..GridTrack::default()
+                },
+            ],
+            ..ConstructionGrid::default()
+        };
+        let resolved = resolve_grid(&grid, 1.2, 1.0);
+        let extents: Vec<_> = resolved
+            .columns
+            .iter()
+            .map(|track| track.end - track.start)
+            .collect();
+        assert!((extents[0] - 0.6).abs() < 1e-9);
+        assert!((extents[1] - 0.4).abs() < 1e-9);
+        assert!((extents[2] - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn legacy_grid_cells_default_new_leaf_overrides_to_none() {
+        let cell: GridCell = serde_json::from_str(
+            r#"{"columns":1}"#,
+        )
+        .expect("legacy cell without swing or angle fields");
+        assert_eq!(cell.swing, None);
+        assert_eq!(cell.angle_deg, None);
+    }
+
+    #[test]
+    fn inserting_a_divider_defaults_to_mullion_and_preserves_the_next_meeting() {
+        let mut grid = ConstructionGrid {
+            columns: vec![
+                GridTrack {
+                    meeting: TrackMeeting::Stulp {
+                        bearer: TrackEnd::End,
+                    },
+                    ..fraction()
+                },
+                fraction(),
+            ],
+            cells: vec![
+                GridCell {
+                    column: 0,
+                    swing: Some(crate::modules::aec::engine::openings::SwingSide::Interior),
+                    angle_deg: Some(45.0),
+                    ..GridCell::default()
+                },
+                GridCell {
+                    column: 1,
+                    ..GridCell::default()
+                },
+            ],
+            ..ConstructionGrid::default()
+        };
+        assert!(insert_axis_division(&mut grid, true, 0.3, 1.0, 1.0));
+        assert_eq!(grid.columns.len(), 3);
+        assert_eq!(grid.columns[0].meeting, TrackMeeting::Mullion);
+        assert_eq!(
+            grid.columns[1].meeting,
+            TrackMeeting::Stulp {
+                bearer: TrackEnd::End
+            }
+        );
+        assert!(grid.cells.iter().any(|cell| {
+            cell.column == 1
+                && cell.swing == Some(crate::modules::aec::engine::openings::SwingSide::Interior)
+                && cell.angle_deg == Some(45.0)
+        }));
     }
 
     #[test]

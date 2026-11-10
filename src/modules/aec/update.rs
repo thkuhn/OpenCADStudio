@@ -183,19 +183,20 @@ impl OpenCADStudio {
                     crate::modules::aec::engine::opening_style::LeafOperation::from_str(&value);
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerSwingChanged(value) => {
+                self.aec.styles.opening_swing_side =
+                    crate::modules::aec::engine::openings::SwingSide::from_str(&value);
+                Task::none()
+            }
             AecMessage::AecOpeningStyleManagerSetPreviewMode(mode) => {
                 self.aec.styles.opening_preview_mode = mode;
                 Task::none()
             }
-            AecMessage::AecOpeningStyleManagerPreviewCamera(
-                azimuth,
-                elevation,
-                zoom,
-                pan_x,
-                pan_y,
-            ) => {
-                self.aec.styles.opening_preview_azimuth = azimuth;
-                self.aec.styles.opening_preview_elevation = elevation;
+            AecMessage::AecOpeningStyleManagerSetIsometric(view) => {
+                self.aec.styles.opening_preview_isometric = view;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerPreviewView(zoom, pan_x, pan_y) => {
                 self.aec.styles.opening_preview_zoom = zoom;
                 self.aec.styles.opening_preview_pan_x = pan_x;
                 self.aec.styles.opening_preview_pan_y = pan_y;
@@ -245,6 +246,14 @@ impl OpenCADStudio {
                 self.aec_opening_style_manager_cell_hinge(index, &value);
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerCellSwingChanged(index, value) => {
+                self.aec_opening_style_manager_cell_swing(index, &value);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerCellAngleChanged(index, value) => {
+                self.aec_opening_style_manager_cell_angle(index, &value);
+                Task::none()
+            }
             AecMessage::AecOpeningStyleManagerCellSelect(index) => {
                 self.aec_opening_style_manager_cell_select(index);
                 Task::none()
@@ -283,6 +292,18 @@ impl OpenCADStudio {
             }
             AecMessage::AecOpeningStyleManagerGridDivider(axis, index, position) => {
                 self.aec_opening_style_manager_grid_divider(&axis, index, &position);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerGridEdgeSelect(axis, index) => {
+                self.aec_opening_style_manager_grid_edge_select(&axis, index);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerGridMeasure(axis, index, measure) => {
+                self.aec_opening_style_manager_grid_measure(&axis, index, &measure);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerGridMeeting(axis, index, meeting) => {
+                self.aec_opening_style_manager_grid_meeting(&axis, index, &meeting);
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerGridEnter(index) => {

@@ -8,7 +8,7 @@ pub use crate::modules::aec::engine::construction_grid::{
 use crate::modules::aec::engine::construction_grid::resolve_grid;
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
-use crate::modules::aec::engine::openings::OpeningKind;
+use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 
 use crate::modules::aec::engine::style::{resolve_chain, Style, StyleError, StyleId};
 use serde::{Deserialize, Serialize};
@@ -1587,6 +1587,8 @@ pub struct OpeningStyle {
     pub default_height: f64,
     pub default_sill: f64,
     pub hinge: LeafOperation,
+    #[serde(default = "default_opening_swing_side")]
+    pub swing_side: SwingSide,
     #[serde(default)]
     pub parts: OpeningParts,
     #[serde(default)]
@@ -1607,6 +1609,10 @@ pub struct OpeningStyle {
     /// Optional evaluated block per 2D family. Empty names are not a binding.
     #[serde(default)]
     pub family_symbols: OpeningFamilySymbols,
+}
+
+fn default_opening_swing_side() -> SwingSide {
+    SwingSide::Exterior
 }
 
 fn default_suggested_levels() -> OpeningRepresentationLevels {
@@ -1638,6 +1644,7 @@ impl OpeningStyle {
             default_height: crate::modules::aec::engine::openings::DEFAULT_WINDOW_HEIGHT,
             default_sill: crate::modules::aec::engine::openings::DEFAULT_WINDOW_SILL,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
             grid: ConstructionGrid::default(),
@@ -1665,6 +1672,7 @@ impl OpeningStyle {
             default_height: 1.40,
             default_sill: 0.90,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
             grid: stulp_pair(CellFill::Glass),
@@ -1692,6 +1700,7 @@ impl OpeningStyle {
             default_height: 1.80,
             default_sill: 0.80,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
             grid: ConstructionGrid::default(),
@@ -1719,6 +1728,7 @@ impl OpeningStyle {
             default_height: 0.90,
             default_sill: 1.20,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
             grid: ConstructionGrid::default(),
@@ -1746,6 +1756,7 @@ impl OpeningStyle {
             default_height: 2.20,
             default_sill: 0.00,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
             grid: ConstructionGrid::default(),
@@ -1773,6 +1784,7 @@ impl OpeningStyle {
             default_height: crate::modules::aec::engine::openings::DEFAULT_DOOR_HEIGHT,
             default_sill: crate::modules::aec::engine::openings::DEFAULT_DOOR_SILL,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
             grid: ConstructionGrid::default(),
@@ -1808,6 +1820,7 @@ impl OpeningStyle {
             default_height: 2.20,
             default_sill: 0.00,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts::default(),
             looks: OpeningLooks::default(),
             grid: stulp_pair(CellFill::Door),
@@ -1835,6 +1848,7 @@ impl OpeningStyle {
             default_height: crate::modules::aec::engine::openings::DEFAULT_BREAKTHROUGH_HEIGHT,
             default_sill: crate::modules::aec::engine::openings::DEFAULT_BREAKTHROUGH_SILL,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts {
                 fixed_frame: FixedFrameDimensions {
                     enabled: true,
@@ -1871,6 +1885,7 @@ impl OpeningStyle {
             default_height: 0.40,
             default_sill: 1.80,
             hinge: LeafOperation::left(),
+            swing_side: SwingSide::Exterior,
             parts: OpeningParts {
                 fixed_frame: FixedFrameDimensions {
                     enabled: true,
@@ -1918,6 +1933,7 @@ pub fn apply_style_defaults(opening: &mut crate::modules::aec::engine::openings:
     opening.height = style.default_height;
     opening.sill_height = style.default_sill;
     opening.hinge = style.hinge;
+    opening.swing_side = style.swing_side;
     opening.shape = style.shape;
     opening.spring_height = style.spring_height;
     let (w, h) = opening.shape.lock_size(opening.width, opening.height, true);
@@ -2384,6 +2400,18 @@ mod tests {
         let json = serde_json::to_string(&style).unwrap();
         let back: OpeningStyle = serde_json::from_str(&json).unwrap();
         assert_eq!(style, back);
+    }
+
+    #[test]
+    fn legacy_style_defaults_opening_swing_to_exterior() {
+        let style = OpeningStyle::standard_window();
+        let mut legacy = serde_json::to_value(style).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("serialized style object")
+            .remove("swing_side");
+        let back: OpeningStyle = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.swing_side, SwingSide::Exterior);
     }
 
     #[test]
