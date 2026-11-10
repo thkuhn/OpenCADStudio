@@ -1135,29 +1135,54 @@ fn emit_opening_cut_details(
             && !(op.kind == OpeningKind::Door && cell_sill <= sill_z + EPS)
         {
             let exterior_sill = &parts.exterior_sill;
-            let ext_start = exterior_u - inward * exterior_sill.overhang;
-            let ext_end = exterior_u + inward * exterior_sill_section.depth;
-            emit_opening_section_profile(
-                op,
-                wall,
-                model_view,
-                primitives,
-                counter,
-                &exterior_sill_section,
-                exterior_u,
-                cell_sill - exterior_sill_section.face,
-                inward,
-                (
-                    ext_start.min(ext_end),
-                    ext_start.max(ext_end),
-                    cell_sill - exterior_sill_section.face,
+            let frame_outer = frame_center - inward * frame_depth * 0.5;
+            let requested_outer = exterior_u - inward * exterior_sill.overhang.max(0.0);
+            let has_profile = exterior_sill
+                .profile_id
+                .as_deref()
+                .and_then(|id| ctx.style_library?.find_section_profile(id))
+                .is_some_and(|profile| profile.is_valid());
+            if has_profile {
+                let profile_outer = frame_outer - inward * exterior_sill_section.depth;
+                emit_opening_section_profile(
+                    op,
+                    wall,
+                    model_view,
+                    primitives,
+                    counter,
+                    &exterior_sill_section,
+                    profile_outer,
                     cell_sill,
-                ),
-                PrimitiveRole::CutBoundary,
-                FeatureKey::OpeningSill,
-                exterior_sill_style.clone(),
-            )?;
-            if exterior_sill.overhang > EPS {
+                    inward,
+                    (
+                        requested_outer.min(profile_outer).min(frame_outer),
+                        requested_outer.max(profile_outer).max(frame_outer),
+                        cell_sill,
+                        cell_sill + exterior_sill_section.face,
+                    ),
+                    PrimitiveRole::CutBoundary,
+                    FeatureKey::OpeningSill,
+                    exterior_sill_style.clone(),
+                )?;
+                if (profile_outer - requested_outer) * inward > EPS {
+                    emit_opening_section_region(
+                        op,
+                        wall,
+                        model_view,
+                        primitives,
+                        counter,
+                        (
+                            requested_outer.min(profile_outer),
+                            requested_outer.max(profile_outer),
+                            cell_sill,
+                            cell_sill + exterior_sill_section.face,
+                        ),
+                        PrimitiveRole::CutBoundary,
+                        FeatureKey::OpeningSill,
+                        exterior_sill_style.clone(),
+                    )?;
+                }
+            } else {
                 emit_opening_section_region(
                     op,
                     wall,
@@ -1165,35 +1190,35 @@ fn emit_opening_cut_details(
                     primitives,
                     counter,
                     (
-                        ext_start.min(exterior_u),
-                        ext_start.max(exterior_u),
-                        cell_sill - exterior_sill_section.face,
+                        requested_outer.min(frame_outer),
+                        requested_outer.max(frame_outer),
                         cell_sill,
+                        cell_sill + exterior_sill_section.face,
                     ),
                     PrimitiveRole::CutBoundary,
                     FeatureKey::OpeningSill,
                     exterior_sill_style.clone(),
                 )?;
-            }
-            if exterior_sill.upstand > 0.0 {
-                let u = exterior_u + inward * exterior_sill_section.depth;
-                let upstand_start = u - inward * exterior_sill_section.depth.min(frame_depth);
-                emit_opening_section_region(
-                    op,
-                    wall,
-                    model_view,
-                    primitives,
-                    counter,
-                    (
-                        upstand_start.min(u),
-                        upstand_start.max(u),
-                        cell_sill,
-                        cell_sill + exterior_sill.upstand,
-                    ),
-                    PrimitiveRole::CutBoundary,
-                    FeatureKey::OpeningSill,
-                    exterior_sill_style.clone(),
-                )?;
+                if exterior_sill.upstand > 0.0 {
+                    let depth = exterior_sill_section.depth.min(frame_depth);
+                    let upstand_outer = frame_outer - inward * depth;
+                    emit_opening_section_region(
+                        op,
+                        wall,
+                        model_view,
+                        primitives,
+                        counter,
+                        (
+                            upstand_outer.min(frame_outer),
+                            upstand_outer.max(frame_outer),
+                            cell_sill + exterior_sill_section.face,
+                            cell_sill + exterior_sill_section.face + exterior_sill.upstand,
+                        ),
+                        PrimitiveRole::CutBoundary,
+                        FeatureKey::OpeningSill,
+                        exterior_sill_style.clone(),
+                    )?;
+                }
             }
         }
 
@@ -1204,29 +1229,54 @@ fn emit_opening_cut_details(
             && !(op.kind == OpeningKind::Door && cell_sill <= sill_z + EPS)
         {
             let interior_board = &parts.interior_board;
-            let board_start = interior_u - inward * interior_board_section.depth;
-            let board_end = interior_u + inward * interior_board.overhang;
-            emit_opening_section_profile(
-                op,
-                wall,
-                model_view,
-                primitives,
-                counter,
-                &interior_board_section,
-                interior_u,
-                cell_sill - interior_board_section.face,
-                -inward,
-                (
-                    board_start.min(board_end),
-                    board_start.max(board_end),
-                    cell_sill - interior_board_section.face,
+            let frame_inner = frame_center + inward * frame_depth * 0.5;
+            let requested_inner = interior_u + inward * interior_board.overhang.max(0.0);
+            let has_profile = interior_board
+                .profile_id
+                .as_deref()
+                .and_then(|id| ctx.style_library?.find_section_profile(id))
+                .is_some_and(|profile| profile.is_valid());
+            if has_profile {
+                let profile_end = frame_inner + inward * interior_board_section.depth;
+                emit_opening_section_profile(
+                    op,
+                    wall,
+                    model_view,
+                    primitives,
+                    counter,
+                    &interior_board_section,
+                    frame_inner,
                     cell_sill,
-                ),
-                PrimitiveRole::CutBoundary,
-                FeatureKey::OpeningSill,
-                interior_board_style.clone(),
-            )?;
-            if interior_board.overhang > EPS {
+                    inward,
+                    (
+                        frame_inner.min(profile_end).min(requested_inner),
+                        frame_inner.max(profile_end).max(requested_inner),
+                        cell_sill,
+                        cell_sill + interior_board_section.face,
+                    ),
+                    PrimitiveRole::CutBoundary,
+                    FeatureKey::OpeningSill,
+                    interior_board_style.clone(),
+                )?;
+                if (requested_inner - profile_end) * inward > EPS {
+                    emit_opening_section_region(
+                        op,
+                        wall,
+                        model_view,
+                        primitives,
+                        counter,
+                        (
+                            profile_end.min(requested_inner),
+                            profile_end.max(requested_inner),
+                            cell_sill,
+                            cell_sill + interior_board_section.face,
+                        ),
+                        PrimitiveRole::CutBoundary,
+                        FeatureKey::OpeningSill,
+                        interior_board_style.clone(),
+                    )?;
+                }
+            } else {
                 emit_opening_section_region(
                     op,
                     wall,
@@ -1234,15 +1284,35 @@ fn emit_opening_cut_details(
                     primitives,
                     counter,
                     (
-                        interior_u.min(board_end),
-                        interior_u.max(board_end),
-                        cell_sill - interior_board_section.face,
+                        frame_inner.min(requested_inner),
+                        frame_inner.max(requested_inner),
                         cell_sill,
+                        cell_sill + interior_board_section.face,
                     ),
                     PrimitiveRole::CutBoundary,
                     FeatureKey::OpeningSill,
                     interior_board_style.clone(),
                 )?;
+                if interior_board.upstand > 0.0 {
+                    let depth = interior_board_section.depth.min(frame_depth);
+                    let upstand_inner = frame_inner + inward * depth;
+                    emit_opening_section_region(
+                        op,
+                        wall,
+                        model_view,
+                        primitives,
+                        counter,
+                        (
+                            frame_inner.min(upstand_inner),
+                            frame_inner.max(upstand_inner),
+                            cell_sill + interior_board_section.face,
+                            cell_sill + interior_board_section.face + interior_board.upstand,
+                        ),
+                        PrimitiveRole::CutBoundary,
+                        FeatureKey::OpeningSill,
+                        interior_board_style.clone(),
+                    )?;
+                }
             }
         }
     }
@@ -2037,9 +2107,61 @@ mod tests {
                 }) && matches!(&primitive.geometry, Geometry2d::Region { outer, .. } if outer.len() == 3)
             })
             .expect("triangle profile should be a triangular cut region");
-        let bounds = bounds(triangle_frame).expect("triangle is a section region");
-        assert!((bounds.1 - bounds.0 - 0.05).abs() < 1e-9);
-        assert!((bounds.3 - bounds.2 - 0.07).abs() < 1e-9);
+        let triangle_bounds = bounds(triangle_frame).expect("triangle is a section region");
+        assert!((triangle_bounds.1 - triangle_bounds.0 - 0.05).abs() < 1e-9);
+        assert!((triangle_bounds.3 - triangle_bounds.2 - 0.07).abs() < 1e-9);
+
+        let mut sill_profile_style = style.clone();
+        sill_profile_style.parts.exterior_sill.profile_id = Some("sill_section_triangle".into());
+        let mut sill_profile_library = library.clone();
+        assert!(sill_profile_library.upsert_section_profile(
+            crate::modules::aec::engine::section_profile::SectionProfile::new(
+                "sill_section_triangle",
+                "Sill section triangle",
+                crate::modules::aec::engine::section_profile::SectionShape::Triangle {
+                    base: 0.07,
+                    height: 0.05,
+                },
+            )
+        ));
+        let sill_profile_ctx =
+            ViewStyleContext::new(&model_view, None, Some(&sill_profile_library), true);
+        let mut sill_profile_primitives = Vec::new();
+        let mut sill_profile_counter = 0;
+        emit_opening_cut_details(
+            &opening,
+            &wall,
+            &[(0.8, 2.2)],
+            &sill_profile_style.parts,
+            false,
+            1.0,
+            1.15,
+            0.85,
+            0.85,
+            1.15,
+            &model_view,
+            &sill_profile_ctx,
+            &mut sill_profile_primitives,
+            &mut sill_profile_counter,
+        )
+        .unwrap();
+        let sill_profile = sill_profile_primitives
+            .iter()
+            .find(|primitive| {
+                primitive.sources.as_slice().iter().any(|source| {
+                    source.feature == Some(FeatureKey::OpeningSill)
+                }) && matches!(&primitive.geometry, Geometry2d::Region { outer, .. } if outer.len() == 3)
+            })
+            .expect("profiled sill should keep its triangle contour");
+        let sill_profile_bounds = bounds(sill_profile).expect("profiled sill is a section region");
+        assert!((sill_profile_bounds.1 - sill_profile_bounds.0 - 0.05).abs() < 1e-9);
+        assert!((sill_profile_bounds.3 - sill_profile_bounds.2 - 0.07).abs() < 1e-9);
+        assert!(
+            (sill_profile_bounds.0 - 1.06).abs() < 1e-9
+                || (sill_profile_bounds.1 - 1.06).abs() < 1e-9,
+            "profiled sill bounds should include the fixed-frame face: {sill_profile_bounds:?}"
+        );
+        assert!((sill_profile_bounds.2 - opening.sill_height).abs() < 1e-9);
     }
 
     #[test]

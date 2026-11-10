@@ -58,7 +58,7 @@ pub fn view<'a>(
         default_hinge,
     })
     .width(Fill)
-    .height(210)
+    .height(Fill)
     .into()
 }
 

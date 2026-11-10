@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820">
+  <defs>
+    <style>
+      text { font-family: Inter, Arial, sans-serif; fill: #202b3c; }
+      .caption { font-size: 13px; fill: #607087; }
+      .label { font-size: 14px; font-weight: 600; }
+      .small { font-size: 12px; fill: #52647a; }
+      .panel { fill: #ffffff; stroke: #b8c5d5; stroke-width: 1.5; }
+      .soft { fill: #f2f6fa; stroke: #c8d3df; stroke-width: 1; }
+      .accent { fill: #e6f1ff; stroke: #5d8fc9; stroke-width: 1.5; }
+      .guide { stroke: #9aabba; stroke-width: 1; stroke-dasharray: 5 5; }
+    </style>
+  </defs>
+  <rect width="1280" height="820" fill="#e9eef4"/>
+  <text x="24" y="30" font-size="20" font-weight="700">Öffnungsstil-Manager — Layoutvorschlag</text>
+  <text x="24" y="52" class="caption">Responsiver Dialog · Mindestgröße etwa 1280 × 820 · Bereiche bleiben sichtbar und scrollen bei Bedarf intern</text>
+
+  <rect x="20" y="68" width="1240" height="732" rx="8" class="panel"/>
+  <rect x="36" y="82" width="1208" height="138" rx="5" class="soft"/>
+  <text x="52" y="106" class="label">Stammdaten und Öffnungsmaße</text>
+  <text x="52" y="126" class="small">Name</text>
+  <rect x="52" y="132" width="500" height="28" rx="4" class="panel"/>
+  <text x="66" y="151" class="caption">Fensterstil</text>
+  <text x="570" y="126" class="small">Basisstil</text>
+  <rect x="570" y="132" width="658" height="28" rx="4" class="panel"/>
+  <text x="584" y="151" class="caption">Auswahl …</text>
+  <text x="52" y="178" class="small">Art</text>
+  <rect x="52" y="184" width="185" height="26" rx="4" class="panel"/>
+  <text x="64" y="202" class="caption">Fenster</text>
+  <text x="249" y="178" class="small">Form</text>
+  <rect x="249" y="184" width="185" height="26" rx="4" class="panel"/>
+  <text x="261" y="202" class="caption">Rechteckig</text>
+  <text x="446" y="178" class="small">Breite</text>
+  <rect x="446" y="184" width="185" height="26" rx="4" class="panel"/>
+  <text x="458" y="202" class="caption">1,20 m</text>
+  <text x="643" y="178" class="small">Höhe</text>
+  <rect x="643" y="184" width="185" height="26" rx="4" class="panel"/>
+  <text x="655" y="202" class="caption">1,20 m</text>
+  <text x="840" y="178" class="small">Brüstung</text>
+  <rect x="840" y="184" width="185" height="26" rx="4" class="panel"/>
+  <text x="852" y="202" class="caption">0,90 m</text>
+  <text x="1037" y="178" class="small">Winkel</text>
+  <rect x="1037" y="184" width="191" height="26" rx="4" class="panel"/>
+  <text x="1049" y="202" class="caption">0°</text>
+  <text x="52" y="216" class="caption">Klar beschriftete Felder; die Zeilen passen sich bei schmaleren Dialogen an.</text>
+
+  <rect x="36" y="234" width="226" height="318" rx="5" class="soft"/>
+  <text x="52" y="260" class="label">Komponenten</text>
+  <rect x="50" y="274" width="198" height="34" rx="4" class="accent"/>
+  <text x="64" y="296" class="small">Rahmen</text>
+  <rect x="50" y="314" width="198" height="34" rx="4" class="panel"/>
+  <text x="64" y="336" class="small">Flügel</text>
+  <rect x="50" y="354" width="198" height="34" rx="4" class="panel"/>
+  <text x="64" y="376" class="small">Verglasung</text>
+  <rect x="50" y="394" width="198" height="34" rx="4" class="panel"/>
+  <text x="64" y="416" class="small">Außensims</text>
+  <rect x="50" y="434" width="198" height="34" rx="4" class="panel"/>
+  <text x="64" y="456" class="small">Innenbrett</text>
+  <rect x="50" y="474" width="198" height="34" rx="4" class="panel"/>
+  <text x="64" y="496" class="small">Teilungen · weitere …</text>
+  <text x="52" y="534" class="caption">Schmale Liste, eigener Scrollbereich</text>
+
+  <rect x="276" y="234" width="374" height="318" rx="5" class="soft"/>
+  <text x="292" y="260" class="label">Eigenschaften · Rahmen</text>
+  <text x="292" y="290" class="small">Abmessungen, Profil und Einbau</text>
+  <rect x="292" y="300" width="342" height="38" rx="4" class="panel"/>
+  <text x="306" y="324" class="caption">Ansichtsbreite</text>
+  <rect x="500" y="307" width="120" height="24" rx="3" class="soft"/>
+  <rect x="292" y="346" width="342" height="38" rx="4" class="panel"/>
+  <text x="306" y="370" class="caption">Profilauswahl</text>
+  <rect x="500" y="353" width="120" height="24" rx="3" class="soft"/>
+  <rect x="292" y="392" width="342" height="38" rx="4" class="panel"/>
+  <text x="306" y="416" class="caption">Wandtiefe · Versatz</text>
+  <rect x="500" y="399" width="120" height="24" rx="3" class="soft"/>
+  <rect x="292" y="438" width="342" height="38" rx="4" class="panel"/>
+  <text x="306" y="462" class="caption">Linie · Farbe · Material</text>
+  <rect x="500" y="445" width="120" height="24" rx="3" class="soft"/>
+  <text x="292" y="516" class="caption">Eigenschaften scrollen unabhängig vom Dialog.</text>
+
+  <rect x="664" y="234" width="580" height="318" rx="5" class="soft"/>
+  <text x="680" y="260" class="label">Vorschau</text>
+  <rect x="1050" y="243" width="176" height="30" rx="4" class="panel"/>
+  <text x="1062" y="263" class="small">2D · Ans · Schn · 3D</text>
+  <rect x="680" y="280" width="548" height="254" rx="4" fill="#fbfdff" stroke="#c8d3df"/>
+  <line x1="954" y1="320" x2="954" y2="496" class="guide"/>
+  <line x1="850" y1="448" x2="1060" y2="448" stroke="#667b91" stroke-width="8"/>
+  <rect x="878" y="348" width="152" height="100" fill="#e6f1ff" stroke="#456b92" stroke-width="5"/>
+  <line x1="954" y1="348" x2="954" y2="448" stroke="#456b92" stroke-width="3"/>
+  <line x1="878" y1="398" x2="1030" y2="398" stroke="#456b92" stroke-width="3"/>
+  <text x="697" y="514" class="caption">Mausrad zoomt; Auswahl bleibt per Klick · Isometrien nur im 3D-Modus</text>
+
+  <rect x="36" y="566" width="1208" height="216" rx="5" class="soft"/>
+  <text x="52" y="592" class="label">Teilungsraster</text>
+  <rect x="52" y="608" width="584" height="154" rx="4" class="panel"/>
+  <line x1="246" y1="608" x2="246" y2="762" class="guide"/>
+  <line x1="440" y1="608" x2="440" y2="762" class="guide"/>
+  <line x1="52" y1="659" x2="636" y2="659" class="guide"/>
+  <line x1="52" y1="710" x2="636" y2="710" class="guide"/>
+  <text x="80" y="638" class="caption">Raster-Skizze / Zellen</text>
+  <rect x="660" y="608" width="568" height="154" rx="4" class="panel"/>
+  <text x="680" y="635" class="label">Auswahl bearbeiten</text>
+  <rect x="680" y="648" width="254" height="38" rx="4" class="soft"/>
+  <text x="694" y="672" class="caption">Zell- oder Kanteneigenschaften</text>
+  <rect x="950" y="648" width="254" height="38" rx="4" class="soft"/>
+  <text x="964" y="672" class="caption">Maß · Anteil · Einheit</text>
+  <text x="680" y="728" class="caption">Ziehen setzt Anteile · Doppelklick öffnet verschachtelte Raster</text>
+</svg>

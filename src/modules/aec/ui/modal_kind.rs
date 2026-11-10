@@ -35,7 +35,7 @@ impl AecModalKind {
     /// Fixed max size for `sized_flow`. `None` uses `automatic_flow`.
     pub fn size(&self) -> Option<(u16, u16)> {
         match self {
-            Self::Styles => Some((1180, 700)),
+            Self::Styles => Some((1280, 820)),
             Self::WallStyleDisplayProfiles => Some((760, 540)),
             Self::JunctionEditor => Some((720, 520)),
             Self::ProjectExplorer => Some((860, 560)),
@@ -74,6 +74,6 @@ mod tests {
     #[test]
     fn drop_warning_is_automatic_flow() {
         assert_eq!(AecModalKind::DropWarning.size(), None);
-        assert!(AecModalKind::Styles.size().is_some());
+        assert_eq!(AecModalKind::Styles.size(), Some((1280, 820)));
     }
 }

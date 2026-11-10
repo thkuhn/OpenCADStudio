@@ -128,9 +128,9 @@ impl AecOpeningIsometric {
     pub const fn camera_angles(self) -> (f64, f64) {
         match self {
             Self::FrontLeft => (0.0, 0.0),
-            Self::FrontRight => (std::f64::consts::FRAC_PI_2, 0.0),
-            Self::BackLeft => (-std::f64::consts::FRAC_PI_2, 0.0),
+            Self::BackLeft => (std::f64::consts::FRAC_PI_2, 0.0),
             Self::BackRight => (std::f64::consts::PI, 0.0),
+            Self::FrontRight => (-std::f64::consts::FRAC_PI_2, 0.0),
         }
     }
 }
@@ -477,5 +477,21 @@ impl Default for AecState {
             aec_storey_settings_height: String::new(),
             aec_control_plane_highlight_epoch: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod opening_isometric_tests {
+    use super::AecOpeningIsometric;
+
+    #[test]
+    fn isometric_angles_advance_counterclockwise_in_ninety_degree_steps() {
+        let angles = [
+            AecOpeningIsometric::FrontLeft.camera_angles().0,
+            AecOpeningIsometric::BackLeft.camera_angles().0,
+            AecOpeningIsometric::BackRight.camera_angles().0,
+            AecOpeningIsometric::FrontRight.camera_angles().0,
+        ];
+        assert_eq!(angles, [0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI, -std::f64::consts::FRAC_PI_2]);
     }
 }

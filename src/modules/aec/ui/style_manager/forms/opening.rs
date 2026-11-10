@@ -228,22 +228,22 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
 
     let mut detail_col = column![
         row![
-            text(t!("Name")).size(10).style(muted).width(100),
+            text(t!("Name")).size(10).style(muted).width(48),
             text_input("", form.name)
                 .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerNameChanged(v)))
                 .size(11)
-                .padding([4, 6]),
-        ]
-        .spacing(8),
-        row![
-            text(t!("Parent")).size(10).style(muted).width(100),
+                .padding([4, 6])
+                .width(iced::Length::FillPortion(3)),
+            text(t!("Parent")).size(10).style(muted).width(55),
             button(text(parent_label).size(11))
                 .padding([4, 8])
+                .width(iced::Length::FillPortion(2))
                 .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
                     StylePickerTarget::OpeningStyleParent,
                 ))),
         ]
-        .spacing(8),
+        .spacing(8)
+        .align_y(iced::Center),
         row![
             text(t!("Kind")).size(10).style(muted).width(48),
             pick_list(
@@ -286,7 +286,7 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
                 .size(11)
                 .padding([4, 6])
                 .width(95),
-            text(tr!("aec", "opening-angle")).size(10).style(muted).width(66),
+            text(tr!("aec", "opening-angle")).size(10).style(muted).width(90),
             text_input("", form.angle)
                 .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerAngleChanged(v)))
                 .size(11)
@@ -374,25 +374,25 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
     let preview_header = row![
         text(tr!("aec", "opening-preview")).size(10).style(muted),
         Space::new(),
-        button(text(tr!("aec", "opening-preview-plan2d")).size(10))
+        button(text(tr!("aec", "opening-preview-plan2d-short")).size(10))
             .style(if is_plan { button::primary } else { button::secondary })
             .padding([2, 8])
             .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetPreviewMode(
                 AecOpeningPreviewMode::Plan2D,
             ))),
-        button(text(tr!("aec", "opening-preview-elevation2d")).size(10))
+        button(text(tr!("aec", "opening-preview-elevation2d-short")).size(10))
             .style(if is_elev { button::primary } else { button::secondary })
             .padding([2, 8])
             .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetPreviewMode(
                 AecOpeningPreviewMode::Elevation2D,
             ))),
-        button(text(tr!("aec", "opening-preview-section")).size(10))
+        button(text(tr!("aec", "opening-preview-section-short")).size(10))
             .style(if is_section { button::primary } else { button::secondary })
             .padding([2, 8])
             .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetPreviewMode(
                 AecOpeningPreviewMode::Section,
             ))),
-        button(text(tr!("aec", "opening-preview-model3d")).size(10))
+        button(text(tr!("aec", "opening-preview-model3d-short")).size(10))
             .style(if is_3d { button::primary } else { button::secondary })
             .padding([2, 8])
             .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetPreviewMode(
@@ -406,10 +406,6 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             .style(if form.preview_isometric == AecOpeningIsometric::FrontLeft { button::primary } else { button::secondary })
             .padding([2, 4])
             .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::FrontLeft))),
-        button(text(tr!("aec", "opening-isometric-front-right")).size(9))
-            .style(if form.preview_isometric == AecOpeningIsometric::FrontRight { button::primary } else { button::secondary })
-            .padding([2, 4])
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::FrontRight))),
         button(text(tr!("aec", "opening-isometric-back-left")).size(9))
             .style(if form.preview_isometric == AecOpeningIsometric::BackLeft { button::primary } else { button::secondary })
             .padding([2, 4])
@@ -418,6 +414,10 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             .style(if form.preview_isometric == AecOpeningIsometric::BackRight { button::primary } else { button::secondary })
             .padding([2, 4])
             .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::BackRight))),
+        button(text(tr!("aec", "opening-isometric-front-right")).size(9))
+            .style(if form.preview_isometric == AecOpeningIsometric::FrontRight { button::primary } else { button::secondary })
+            .padding([2, 4])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetIsometric(AecOpeningIsometric::FrontRight))),
     ]
     .spacing(3);
     let preview_toolbar = if is_3d {
@@ -465,18 +465,58 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
     });
     let preview_col = column![preview_toolbar, preview_canvas]
         .spacing(8)
-        .width(360)
+        .width(iced::Length::FillPortion(3))
         .height(FillLen);
 
     let properties = scrollable(opening_editor_tab_content(&form, library))
         .id(iced::advanced::widget::Id::new(OPENING_EDITOR_SCROLL_ID))
         .height(FillLen)
-        .width(FillLen);
-    let editor = row![component_group_list(&form), properties, preview_col]
+        .width(iced::Length::FillPortion(2));
+    let editor = container(row![component_group_list(&form), properties, preview_col]
         .spacing(12)
-        .height(FillLen);
+        .height(FillLen))
+        .padding(8)
+        .width(FillLen)
+        .height(FillLen)
+        .style(|theme: &Theme| container::Style {
+            background: Some(
+                theme
+                    .palette()
+                    .background
+                    .neutral
+                    .color
+                    .scale_alpha(0.08)
+                    .into(),
+            ),
+            border: Border {
+                color: theme.palette().background.neutral.color,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..Default::default()
+        });
     let raster = divisions_tab(&form);
-    column![detail_col, editor, raster]
+    let detail_panel = container(detail_col)
+        .padding(8)
+        .width(FillLen)
+        .style(|theme: &Theme| container::Style {
+            background: Some(
+                theme
+                    .palette()
+                    .background
+                    .neutral
+                    .color
+                    .scale_alpha(0.08)
+                    .into(),
+            ),
+            border: Border {
+                color: theme.palette().background.neutral.color,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..Default::default()
+        });
+    column![detail_panel, editor, raster]
         .spacing(10)
         .height(FillLen)
         .into()
@@ -712,7 +752,7 @@ fn component_group_list<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Mes
         }
         list = list.push(item);
     }
-    scrollable(list).height(FillLen).width(160).into()
+    scrollable(list).height(FillLen).width(190).into()
 }
 
 fn opening_group_roles(group: OpeningEditorGroup) -> &'static [OpeningLookRole] {
@@ -1245,7 +1285,7 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
             .align_y(iced::Center),
         ]
         .spacing(5)
-        .width(245)
+        .width(FillLen)
         .into()
     } else {
         text(tr!("aec", "opening-grid-select-cell")).size(10).style(muted).into()
@@ -1294,36 +1334,67 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     .on_select(|value| Message::Aec(AecMessage::AecOpeningStyleManagerSwingChanged(value)))
     .text_size(10)
     .width(120);
-    let leaf_defaults = row![
+    let leaf_defaults = column![
         text(t!("Default")).size(10).style(muted),
-        text(opening_label("opening-cell-hinge")).size(10),
-        style_hinge,
-        text(tr!("aec", "opening-cell-swing")).size(10),
-        style_swing,
+        row![text(opening_label("opening-cell-hinge")).size(10).width(90), style_hinge]
+            .spacing(5)
+            .align_y(iced::Center),
+        row![text(tr!("aec", "opening-cell-swing")).size(10).width(90), style_swing]
+            .spacing(5)
+            .align_y(iced::Center),
     ]
-    .spacing(5)
-    .align_y(iced::Center);
-    column![
+    .spacing(5);
+    let raster_content = column![
         grid_heading,
-        leaf_defaults,
-        text(tr!("aec", "opening-division-sketch-hint")).size(10).style(muted),
         row![
-            crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
-                &level,
-                level_width,
-                level_height,
-                style.kind,
-                form.selected_cell,
-                form.selected_grid_edge,
-                form.hinge,
-            ),
-            edge_properties
+            container(
+                crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
+                    &level,
+                    level_width,
+                    level_height,
+                    style.kind,
+                    form.selected_cell,
+                    form.selected_grid_edge,
+                    form.hinge,
+                ),
+            )
+            .width(iced::Length::FillPortion(3))
+            .height(FillLen),
+            column![
+                leaf_defaults,
+                edge_properties,
+                text(tr!("aec", "opening-division-sketch-hint")).size(10).style(muted),
+            ]
+            .spacing(8)
+            .width(iced::Length::FillPortion(2)),
         ]
-        .spacing(8)
-        .height(210),
+        .spacing(12)
+        .height(FillLen),
     ]
     .spacing(6)
-    .into()
+    .height(FillLen);
+    container(raster_content)
+        .padding(8)
+        .width(FillLen)
+        .height(248)
+        .style(|theme: &Theme| container::Style {
+            background: Some(
+                theme
+                    .palette()
+                    .background
+                    .neutral
+                    .color
+                    .scale_alpha(0.08)
+                    .into(),
+            ),
+            border: Border {
+                color: theme.palette().background.neutral.color,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 fn fill_to_kind(
@@ -1662,6 +1733,20 @@ impl PreviewCamera {
     }
 }
 
+fn preview_pan_for_cursor(
+    camera: &PreviewCamera,
+    cursor: Point,
+    world_x: f64,
+    world_y: f64,
+    zoom: f64,
+) -> (f64, f64) {
+    let screen_wx = if camera.mirror_x { -world_x } else { world_x };
+    (
+        cursor.x as f64 - camera.ox as f64 - screen_wx * camera.scale as f64 * zoom,
+        cursor.y as f64 - camera.oy as f64 + world_y * camera.scale as f64 * zoom,
+    )
+}
+
 /// Slot of the preview path under the model-space point `(x, y)`: an edge
 /// within `tol` wins (nearest first), otherwise the smallest closed path
 /// containing the point.
@@ -1801,9 +1886,6 @@ impl Program<Message> for OpeningPreviewCanvas {
         let cam = self.camera(bounds, &paths);
         match event {
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if self.mode != AecOpeningPreviewMode::Model3D {
-                    return None;
-                }
                 let pos = cursor.position_in(bounds)?;
                 let lines = match delta {
                     mouse::ScrollDelta::Lines { y, .. } => *y,
@@ -1824,12 +1906,8 @@ impl Program<Message> for OpeningPreviewCanvas {
                     self.sill,
                     self.thickness,
                 );
-                let new_pan_x = pos.x as f64
-                    - fitted.ox as f64
-                    - wx * fitted.scale as f64 * new_zoom;
-                let new_pan_y = pos.y as f64
-                    - fitted.oy as f64
-                    + wy * fitted.scale as f64 * new_zoom;
+                let (new_pan_x, new_pan_y) =
+                    preview_pan_for_cursor(&fitted, pos, wx, wy, new_zoom);
                 return Some(
                     canvas::Action::publish(Message::Aec(
                         AecMessage::AecOpeningStyleManagerPreviewView(
@@ -2076,6 +2154,83 @@ mod hit_tests {
         let unassigned = rect(OpeningComponentSlot::HostCut2D, 0.0, 0.0, 10.0, 10.0);
         assert_eq!(hit_role(&[unassigned], 5.0, 5.0, 0.1), None);
         assert_eq!(hit_role(&[], 5.0, 5.0, 0.1), None);
+    }
+
+    #[test]
+    fn preview_wheel_zoom_is_available_in_every_view() {
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let cursor = mouse::Cursor::Available(Point::new(200.0, 150.0));
+        let event = canvas::Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+        });
+        for mode in [
+            AecOpeningPreviewMode::Plan2D,
+            AecOpeningPreviewMode::Elevation2D,
+            AecOpeningPreviewMode::Section,
+            AecOpeningPreviewMode::Model3D,
+        ] {
+            let preview = OpeningPreviewCanvas {
+                paths: vec![rect(OpeningComponentSlot::Frame2D, -0.5, 0.0, 0.5, 1.0)],
+                mode,
+                width: 1.0,
+                height: 1.0,
+                sill: 0.9,
+                thickness: PREVIEW_WALL_THICKNESS,
+                look_styles: HashMap::new(),
+                selected_role: None,
+                isometric: AecOpeningIsometric::FrontLeft,
+                zoom: 1.0,
+                pan_x: 0.0,
+                pan_y: 0.0,
+            };
+            let mut state = None;
+            assert!(preview
+                .update(&mut state, &event, bounds, cursor)
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn section_wheel_zoom_keeps_the_cursor_world_point_fixed() {
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let cursor = Point::new(260.0, 170.0);
+        let paths = vec![rect(OpeningComponentSlot::Frame2D, -0.1, 0.9, 0.1, 2.4)];
+        let camera = PreviewCamera::fit(
+            bounds,
+            &paths,
+            AecOpeningPreviewMode::Section,
+            1.2,
+            1.5,
+            0.9,
+            PREVIEW_WALL_THICKNESS,
+        );
+        let (world_x, world_y) = camera.to_local(cursor);
+        let zoom = 1.1;
+        let fitted = PreviewCamera::fit(
+            bounds,
+            &paths,
+            AecOpeningPreviewMode::Section,
+            1.2,
+            1.5,
+            0.9,
+            PREVIEW_WALL_THICKNESS,
+        );
+        let (pan_x, pan_y) = preview_pan_for_cursor(&fitted, cursor, world_x, world_y, zoom);
+        let zoomed = fitted.with_view(zoom, pan_x, pan_y);
+        let after = zoomed.to_screen(world_x, world_y);
+
+        assert!((after.x - cursor.x).abs() < 1e-4);
+        assert!((after.y - cursor.y).abs() < 1e-4);
     }
 
     #[test]

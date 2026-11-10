@@ -1354,25 +1354,80 @@ pub fn preview_baked_paths_for_mode_with_library(
                         -ht,
                         ht,
                         sill.overhang,
-                        exterior_sill_section.depth,
+                        fixed_frame_section.depth,
                     );
                 let (x_min, x_max) = crate::modules::aec::engine::opening_display::sill_x_span(
                     hw,
                     sill.side_overhang_left,
                     sill.side_overhang_right,
                 );
-                push_preview_wire_box(
-                    &mut paths,
-                    &iso_proj,
-                    x_min,
-                    x_max,
-                    y_min,
-                    y_max,
-                    sill_z - exterior_sill_section.face,
-                    sill_z + sill.upstand.max(0.0),
-                    OpeningComponentSlot::Solid3D,
-                    Some(OpeningLookRole::ExteriorSill),
-                );
+                let profile = sill
+                    .profile_id
+                    .as_deref()
+                    .and_then(|id| library?.find_section_profile(id))
+                    .filter(|profile| profile.is_valid());
+                if profile.is_some() {
+                    let frame_outer = (-fixed_frame_section.depth * 0.5).clamp(-ht, ht);
+                    let profile_outer = frame_outer - exterior_sill_section.depth;
+                    let y_min = (-ht - sill.overhang.max(0.0)).min(profile_outer);
+                    if let Some(body) = crate::modules::aec::engine::opening_display::build_opening_profile_prism_3d(
+                        x_max - x_min,
+                        &exterior_sill_section,
+                        profile_outer,
+                        1.0,
+                    ) {
+                        push_preview_body_edges(
+                            &mut paths,
+                            &body,
+                            &iso_proj,
+                            (x_min + x_max) * 0.5,
+                            sill_z,
+                            OpeningComponentSlot::Solid3D,
+                            OpeningLookRole::ExteriorSill,
+                        );
+                    }
+                    push_preview_wire_box(
+                        &mut paths,
+                        &iso_proj,
+                        x_min,
+                        x_max,
+                        y_min,
+                        profile_outer,
+                        sill_z,
+                        sill_z + exterior_sill_section.face,
+                        OpeningComponentSlot::Solid3D,
+                        Some(OpeningLookRole::ExteriorSill),
+                    );
+                } else {
+                    push_preview_wire_box(
+                        &mut paths,
+                        &iso_proj,
+                        x_min,
+                        x_max,
+                        y_min,
+                        y_max,
+                        sill_z,
+                        sill_z + exterior_sill_section.face,
+                        OpeningComponentSlot::Solid3D,
+                        Some(OpeningLookRole::ExteriorSill),
+                    );
+                    if sill.upstand > 0.0 {
+                        let frame_outer = (-fixed_frame_section.depth * 0.5).clamp(-ht, ht);
+                        let depth = exterior_sill_section.depth.min(fixed_frame_section.depth);
+                        push_preview_wire_box(
+                            &mut paths,
+                            &iso_proj,
+                            x_min,
+                            x_max,
+                            frame_outer - depth,
+                            frame_outer,
+                            sill_z + exterior_sill_section.face,
+                            sill_z + exterior_sill_section.face + sill.upstand,
+                            OpeningComponentSlot::Solid3D,
+                            Some(OpeningLookRole::ExteriorSill),
+                        );
+                    }
+                }
             }
             if crate::modules::aec::engine::opening_display::opening_component_should_render_with_library(
                 &style.parts,
@@ -1386,25 +1441,80 @@ pub fn preview_baked_paths_for_mode_with_library(
                         -ht,
                         ht,
                         board.overhang,
-                        interior_board_section.depth,
+                        fixed_frame_section.depth,
                     );
                 let (x_min, x_max) = crate::modules::aec::engine::opening_display::sill_x_span(
                     hw,
                     board.side_overhang_left,
                     board.side_overhang_right,
                 );
-                push_preview_wire_box(
-                    &mut paths,
-                    &iso_proj,
-                    x_min,
-                    x_max,
-                    y_min,
-                    y_max,
-                    sill_z - interior_board_section.face,
-                    sill_z + board.upstand.max(0.0),
-                    OpeningComponentSlot::Solid3D,
-                    Some(OpeningLookRole::InteriorBoard),
-                );
+                let profile = board
+                    .profile_id
+                    .as_deref()
+                    .and_then(|id| library?.find_section_profile(id))
+                    .filter(|profile| profile.is_valid());
+                if profile.is_some() {
+                    let frame_inner = (fixed_frame_section.depth * 0.5).clamp(-ht, ht);
+                    let profile_inner = frame_inner + interior_board_section.depth;
+                    let y_max = (ht + board.overhang.max(0.0)).max(profile_inner);
+                    if let Some(body) = crate::modules::aec::engine::opening_display::build_opening_profile_prism_3d(
+                        x_max - x_min,
+                        &interior_board_section,
+                        frame_inner,
+                        1.0,
+                    ) {
+                        push_preview_body_edges(
+                            &mut paths,
+                            &body,
+                            &iso_proj,
+                            (x_min + x_max) * 0.5,
+                            sill_z,
+                            OpeningComponentSlot::Solid3D,
+                            OpeningLookRole::InteriorBoard,
+                        );
+                    }
+                    push_preview_wire_box(
+                        &mut paths,
+                        &iso_proj,
+                        x_min,
+                        x_max,
+                        profile_inner,
+                        y_max,
+                        sill_z,
+                        sill_z + interior_board_section.face,
+                        OpeningComponentSlot::Solid3D,
+                        Some(OpeningLookRole::InteriorBoard),
+                    );
+                } else {
+                    push_preview_wire_box(
+                        &mut paths,
+                        &iso_proj,
+                        x_min,
+                        x_max,
+                        y_min,
+                        y_max,
+                        sill_z,
+                        sill_z + interior_board_section.face,
+                        OpeningComponentSlot::Solid3D,
+                        Some(OpeningLookRole::InteriorBoard),
+                    );
+                    if board.upstand > 0.0 {
+                        let frame_inner = (fixed_frame_section.depth * 0.5).clamp(-ht, ht);
+                        let depth = interior_board_section.depth.min(fixed_frame_section.depth);
+                        push_preview_wire_box(
+                            &mut paths,
+                            &iso_proj,
+                            x_min,
+                            x_max,
+                            frame_inner,
+                            frame_inner + depth,
+                            sill_z + interior_board_section.face,
+                            sill_z + interior_board_section.face + board.upstand,
+                            OpeningComponentSlot::Solid3D,
+                            Some(OpeningLookRole::InteriorBoard),
+                        );
+                    }
+                }
             }
             if crate::modules::aec::engine::opening_display::opening_component_should_render_with_library(
                 &style.parts,
@@ -1487,7 +1597,7 @@ pub fn preview_baked_paths_for_mode_with_library(
             let shape = style.shape;
             let angle = style.opening_angle_deg;
             let hinge = style.hinge;
-            let project_opening = |x: f64, y: f64, z: f64| iso_proj(x, y, z + sill_z);
+            let project_opening = iso_proj;
 
             if let Some(frame_solid) =
                 crate::modules::aec::engine::opening_display::build_opening_frame_3d(
@@ -1504,7 +1614,7 @@ pub fn preview_baked_paths_for_mode_with_library(
                     &frame_solid,
                     &project_opening,
                     0.0,
-                    0.0,
+                    sill_z,
                     OpeningComponentSlot::Frame3D,
                     OpeningLookRole::FixedFrame,
                 );
@@ -1611,7 +1721,7 @@ pub fn preview_baked_paths_for_mode_with_library(
                             &leaf,
                             &project_opening,
                             center_x,
-                            cell.bottom,
+                            sill_z + cell.bottom,
                             OpeningComponentSlot::Leaf3D,
                             OpeningLookRole::Leaf,
                         );
@@ -1621,7 +1731,7 @@ pub fn preview_baked_paths_for_mode_with_library(
                                 &glass,
                                 &project_opening,
                                 center_x,
-                                cell.bottom,
+                                sill_z + cell.bottom,
                                 OpeningComponentSlot::Glazing3D,
                                 OpeningLookRole::Glazing,
                             );
@@ -1683,7 +1793,7 @@ pub fn preview_baked_paths_for_mode_with_library(
                             &leaf,
                             &project_opening,
                             center_x,
-                            cell.bottom,
+                            sill_z + cell.bottom,
                             OpeningComponentSlot::Leaf3D,
                             OpeningLookRole::Leaf,
                         );
@@ -1750,7 +1860,7 @@ pub fn preview_baked_paths_for_mode_with_library(
                             &glass,
                             &project_opening,
                             (left + right) * 0.5,
-                            (bottom + top) * 0.5,
+                            sill_z + (bottom + top) * 0.5,
                             OpeningComponentSlot::Glazing3D,
                             OpeningLookRole::Glazing,
                         );
@@ -1778,7 +1888,7 @@ pub fn preview_baked_paths_for_mode_with_library(
                         &bar,
                         &project_opening,
                         center_x,
-                        center_z,
+                        sill_z + center_z,
                         OpeningComponentSlot::Frame3D,
                         OpeningLookRole::Division,
                     );
@@ -1875,6 +1985,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         filled: false,
     });
 
+    let mut profile_sill_paths = Vec::new();
     let mut push_rect = |role: OpeningLookRole,
                          slot: OpeningComponentSlot,
                          x0: f64,
@@ -1929,23 +2040,67 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         style.kind,
         OpeningLookRole::ExteriorSill,
     ) {
-        push_rect(
-            OpeningLookRole::ExteriorSill,
-            OpeningComponentSlot::Sill2D,
-            -wall_half - exterior_sill.overhang,
-            sill_z - exterior_sill.thickness,
-            -wall_half,
-            sill_z,
+        let section = resolve_profile_section(
+            library,
+            exterior_sill.profile_id.as_deref(),
+            exterior_sill.thickness,
+            exterior_sill.thickness,
         );
-        if exterior_sill.upstand > 0.0 {
+        let profile = exterior_sill
+            .profile_id
+            .as_deref()
+            .and_then(|id| library?.find_section_profile(id))
+            .filter(|profile| profile.is_valid());
+        let requested_outer = -wall_half - exterior_sill.overhang.max(0.0);
+        if profile.is_some() {
+            let profile_outer = frame_x0 - section.depth;
+            let outline = if section.outline.len() > 1
+                && section.outline.first() == section.outline.last()
+            {
+                &section.outline[..section.outline.len() - 1]
+            } else {
+                &section.outline
+            };
+            profile_sill_paths.push(BakedPath {
+                slot: OpeningComponentSlot::Sill2D,
+                look_role: Some(OpeningLookRole::ExteriorSill),
+                points: outline
+                    .iter()
+                    .map(|(face, depth)| (profile_outer + depth, sill_z + face))
+                    .collect(),
+                points_3d: None,
+                closed: true,
+                filled: true,
+            });
+            if profile_outer > requested_outer {
+                push_rect(
+                    OpeningLookRole::ExteriorSill,
+                    OpeningComponentSlot::Sill2D,
+                    requested_outer,
+                    sill_z,
+                    profile_outer,
+                    sill_z + section.face,
+                );
+            }
+        } else {
             push_rect(
                 OpeningLookRole::ExteriorSill,
                 OpeningComponentSlot::Sill2D,
-                -wall_half,
+                requested_outer,
                 sill_z,
-                -wall_half + exterior_sill.thickness,
-                sill_z + exterior_sill.upstand,
+                frame_x0,
+                sill_z + exterior_sill.thickness,
             );
+            if exterior_sill.upstand > 0.0 {
+                push_rect(
+                    OpeningLookRole::ExteriorSill,
+                    OpeningComponentSlot::Sill2D,
+                    frame_x0,
+                    sill_z + exterior_sill.thickness,
+                    (frame_x0 + exterior_sill.thickness).min(frame_x1),
+                    sill_z + exterior_sill.thickness + exterior_sill.upstand,
+                );
+            }
         }
     }
 
@@ -1955,14 +2110,69 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         style.kind,
         OpeningLookRole::InteriorBoard,
     ) {
-        push_rect(
-            OpeningLookRole::InteriorBoard,
-            OpeningComponentSlot::Sill2D,
-            wall_half,
-            sill_z - interior_board.thickness,
-            wall_half + interior_board.overhang,
-            sill_z,
+        let section = resolve_profile_section(
+            library,
+            interior_board.profile_id.as_deref(),
+            interior_board.thickness,
+            interior_board.thickness,
         );
+        let profile = interior_board
+            .profile_id
+            .as_deref()
+            .and_then(|id| library?.find_section_profile(id))
+            .filter(|profile| profile.is_valid());
+        let requested_inner = wall_half + interior_board.overhang.max(0.0);
+        if profile.is_some() {
+            let profile_inner = frame_x1;
+            let profile_outer = profile_inner + section.depth;
+            let outline = if section.outline.len() > 1
+                && section.outline.first() == section.outline.last()
+            {
+                &section.outline[..section.outline.len() - 1]
+            } else {
+                &section.outline
+            };
+            profile_sill_paths.push(BakedPath {
+                slot: OpeningComponentSlot::Sill2D,
+                look_role: Some(OpeningLookRole::InteriorBoard),
+                points: outline
+                    .iter()
+                    .map(|(face, depth)| (profile_inner + depth, sill_z + face))
+                    .collect(),
+                points_3d: None,
+                closed: true,
+                filled: true,
+            });
+            if profile_outer < requested_inner {
+                push_rect(
+                    OpeningLookRole::InteriorBoard,
+                    OpeningComponentSlot::Sill2D,
+                    profile_outer,
+                    sill_z,
+                    requested_inner,
+                    sill_z + section.face,
+                );
+            }
+        } else {
+            push_rect(
+                OpeningLookRole::InteriorBoard,
+                OpeningComponentSlot::Sill2D,
+                frame_x1,
+                sill_z,
+                requested_inner,
+                sill_z + interior_board.thickness,
+            );
+            if interior_board.upstand > 0.0 {
+                push_rect(
+                    OpeningLookRole::InteriorBoard,
+                    OpeningComponentSlot::Sill2D,
+                    (frame_x1 - interior_board.thickness).max(frame_x0),
+                    sill_z + interior_board.thickness,
+                    frame_x1,
+                    sill_z + interior_board.thickness + interior_board.upstand,
+                );
+            }
+        }
     }
 
     let threshold = &style.parts.threshold;
@@ -2021,6 +2231,7 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
         );
     }
 
+    paths.extend(profile_sill_paths);
     paths.extend(profile_frame_paths);
     paths
 }
@@ -3917,7 +4128,9 @@ mod tests {
             height: 0.025,
             width: 0.12,
         };
+        door.parts.interior_board.enabled = true;
         door.parts.interior_board.thickness = 0.03;
+        door.parts.interior_board.overhang = 0.05;
         door.parts.lintel.height = 0.20;
         let paths = preview_baked_paths_for_mode(&door, door.default_width, AecOpeningPreviewMode::Section);
         let door_roles: std::collections::HashSet<_> = paths
@@ -4158,7 +4371,9 @@ mod tests {
 
         let elev_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Elevation2D);
         assert!(elev_paths.iter().any(|p| p.slot == OpeningComponentSlot::ElevationContour2D || p.slot == OpeningComponentSlot::ElevationSwing2D));
-        assert!(elev_paths.iter().all(|path| path.slot.is_elevation()));
+        assert!(elev_paths.iter().all(|path| {
+            path.slot.is_elevation() || path.slot == OpeningComponentSlot::Mark2D
+        }));
 
         let model_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Model3D);
         assert!(model_paths.iter().any(|p| p.slot == OpeningComponentSlot::HostCut2D));
@@ -4293,9 +4508,10 @@ mod tests {
         style.parts.fixed_frame.face_width = 0.08;
         style.parts.exterior_sill.thickness = 0.05;
         style.parts.exterior_sill.overhang = 0.1;
-        style.parts.exterior_sill.upstand = 0.0;
+        style.parts.exterior_sill.upstand = 0.02;
         style.parts.interior_board.thickness = 0.04;
         style.parts.interior_board.overhang = 0.08;
+        style.parts.interior_board.upstand = 0.03;
 
         let paths = section_preview_paths(&style, None);
         let mut frames: Vec<_> = paths
@@ -4348,15 +4564,129 @@ mod tests {
             (x, z)
         };
         let wall_half = PREVIEW_WALL_THICKNESS * 0.5;
+        let frame_section = resolve_profile_section(
+            None,
+            style.parts.fixed_frame.profile_id.as_deref(),
+            style.parts.fixed_frame.face_width,
+            style.parts.fixed_frame.wall_depth,
+        );
+        let frame_depth = frame_section.depth.min(PREVIEW_WALL_THICKNESS);
+        let frame_x0 = (style.parts.fixed_frame.axis_offset - frame_depth * 0.5).max(-wall_half);
+        let frame_x1 = (style.parts.fixed_frame.axis_offset + frame_depth * 0.5).min(wall_half);
         let (exterior_x, exterior_z) = sill_bounds(OpeningLookRole::ExteriorSill);
         assert!((exterior_x.0 - (-wall_half - 0.1)).abs() < 1e-9);
-        assert!((exterior_x.1 + wall_half).abs() < 1e-9);
-        assert!((exterior_z.0 - (style.default_sill - 0.05)).abs() < 1e-9);
-        assert!((exterior_z.1 - style.default_sill).abs() < 1e-9);
+        assert!((exterior_x.1 - frame_x0).abs() < 1e-9);
+        assert!((exterior_z.0 - style.default_sill).abs() < 1e-9);
+        assert!((exterior_z.1 - (style.default_sill + 0.05)).abs() < 1e-9);
         let (interior_x, interior_z) = sill_bounds(OpeningLookRole::InteriorBoard);
-        assert!((interior_x.0 - wall_half).abs() < 1e-9);
+        assert!((interior_x.0 - frame_x1).abs() < 1e-9);
         assert!((interior_x.1 - (wall_half + 0.08)).abs() < 1e-9);
-        assert!((interior_z.0 - (style.default_sill - 0.04)).abs() < 1e-9);
-        assert!((interior_z.1 - style.default_sill).abs() < 1e-9);
+        assert!((interior_z.0 - style.default_sill).abs() < 1e-9);
+        assert!((interior_z.1 - (style.default_sill + 0.04)).abs() < 1e-9);
+
+        let section_upstand_bounds = |role, min_z| {
+            let path = paths
+                .iter()
+                .find(|path| {
+                    path.resolved_look_role() == Some(role)
+                        && path.points.iter().all(|point| point.1 >= min_z - 1e-9)
+                })
+                .expect("upstand path");
+            bounds_z(path)
+        };
+        let exterior_upstand = section_upstand_bounds(
+            OpeningLookRole::ExteriorSill,
+            style.default_sill + 0.05,
+        );
+        assert!((exterior_upstand.0 - (style.default_sill + 0.05)).abs() < 1e-9);
+        assert!((exterior_upstand.1 - (style.default_sill + 0.07)).abs() < 1e-9);
+        let interior_upstand = section_upstand_bounds(
+            OpeningLookRole::InteriorBoard,
+            style.default_sill + 0.04,
+        );
+        assert!((interior_upstand.0 - (style.default_sill + 0.04)).abs() < 1e-9);
+        assert!((interior_upstand.1 - (style.default_sill + 0.07)).abs() < 1e-9);
+
+        let model = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Model3D);
+        let model_bounds_z = |role| {
+            model
+                .iter()
+                .filter(|path| path.resolved_look_role() == Some(role))
+                .flat_map(|path| path.points_3d.as_deref().unwrap_or(&[]))
+                .map(|point| point[2])
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), z| {
+                    (min.min(z), max.max(z))
+                })
+        };
+        assert!((model_bounds_z(OpeningLookRole::FixedFrame).0 - style.default_sill).abs() < 1e-9);
+        let exterior_model = model_bounds_z(OpeningLookRole::ExteriorSill);
+        assert!((exterior_model.0 - style.default_sill).abs() < 1e-9);
+        assert!((exterior_model.1 - (style.default_sill + 0.07)).abs() < 1e-9);
+        let interior_model = model_bounds_z(OpeningLookRole::InteriorBoard);
+        assert!((interior_model.0 - style.default_sill).abs() < 1e-9);
+        assert!((interior_model.1 - (style.default_sill + 0.07)).abs() < 1e-9);
+
+        let mut profile_style = style.clone();
+        profile_style.parts.exterior_sill.profile_id = Some("sill_profile".into());
+        let mut library = StyleLibrary::default();
+        assert!(library.upsert_section_profile(
+            crate::modules::aec::engine::section_profile::SectionProfile::new(
+                "sill_profile",
+                "Sill profile",
+                crate::modules::aec::engine::section_profile::SectionShape::Triangle {
+                    base: 0.08,
+                    height: 0.04,
+                },
+            )
+        ));
+        let profile_section = resolve_profile_section(Some(&library), Some("sill_profile"), 0.0, 0.0);
+        let profile_frame = resolve_profile_section(
+            Some(&library),
+            profile_style.parts.fixed_frame.profile_id.as_deref(),
+            profile_style.parts.fixed_frame.face_width,
+            profile_style.parts.fixed_frame.wall_depth,
+        );
+        let frame_depth = profile_frame.depth.min(PREVIEW_WALL_THICKNESS);
+        let frame_outer = (profile_style.parts.fixed_frame.axis_offset - frame_depth * 0.5)
+            .max(-PREVIEW_WALL_THICKNESS * 0.5);
+        let profile_paths = section_preview_paths(&profile_style, Some(&library));
+        let profile = profile_paths
+            .iter()
+            .find(|path| {
+                path.resolved_look_role() == Some(OpeningLookRole::ExteriorSill)
+                    && path.points.len() == 3
+            })
+            .expect("profile contour path");
+        let profile_x_max = profile
+            .points
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!((profile_x_max - frame_outer).abs() < 1e-9);
+        assert_eq!(bounds_z(profile), (style.default_sill, style.default_sill + profile_section.face));
+        let profile_sill_max = profile_paths
+            .iter()
+            .filter(|path| path.resolved_look_role() == Some(OpeningLookRole::ExteriorSill))
+            .flat_map(|path| path.points.iter().map(|point| point.1))
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!((profile_sill_max - (style.default_sill + profile_section.face)).abs() < 1e-9);
+
+        let profile_model = preview_baked_paths_for_mode_with_library(
+            &profile_style,
+            1.2,
+            AecOpeningPreviewMode::Model3D,
+            Some(&library),
+            PreviewCamera3d::default(),
+        );
+        let profile_model_z = profile_model
+            .iter()
+            .filter(|path| path.resolved_look_role() == Some(OpeningLookRole::ExteriorSill))
+            .flat_map(|path| path.points_3d.as_deref().unwrap_or(&[]))
+            .map(|point| point[2])
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), z| {
+                (min.min(z), max.max(z))
+            });
+        assert!((profile_model_z.0 - style.default_sill).abs() < 1e-9);
+        assert!((profile_model_z.1 - (style.default_sill + profile_section.face)).abs() < 1e-9);
     }
 }

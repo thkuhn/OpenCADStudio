@@ -12092,7 +12092,9 @@ fn test_opening_cross_axis_offset_shifts_geometry_and_sills() {
         })
         .expect("seed window style");
     style.parts.exterior_sill.thickness = 0.035;
+    style.parts.exterior_sill.overhang = 0.035;
     style.parts.interior_board.thickness = 0.025;
+    style.parts.interior_board.overhang = 0.025;
 
     let paths = bake_opening_world(&axis, thickness, &win, Some(&library), None);
     assert!(!paths.is_empty());
