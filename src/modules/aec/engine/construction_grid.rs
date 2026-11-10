@@ -371,6 +371,441 @@ pub fn omits_threshold(resolved: &ResolvedGrid, width: f64) -> bool {
     cursor + 1e-6 >= width
 }
 
+pub fn ensure_explicit_cells(grid: &mut ConstructionGrid) {
+    if !grid.cells.is_empty() {
+        return;
+    }
+    let columns = grid.columns.len().max(1) as u32;
+    let rows = grid.rows.len().max(1) as u32;
+    for row in 0..rows {
+        for column in 0..columns {
+            grid.cells.push(GridCell {
+                column,
+                row,
+                columns: 1,
+                rows: 1,
+                ..GridCell::default()
+            });
+        }
+    }
+}
+
+pub fn grid_nesting_depth(grid: &ConstructionGrid) -> u32 {
+    1 + grid
+        .cells
+        .iter()
+        .map(|cell| match &cell.fill {
+            CellFill::Nested(child) => grid_nesting_depth(child),
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+pub fn merge_adjacent_cell(
+    grid: &mut ConstructionGrid,
+    column: u32,
+    row: u32,
+    across_columns: bool,
+) -> bool {
+    ensure_explicit_cells(grid);
+    let Some(index) = grid
+        .cells
+        .iter()
+        .position(|cell| cell.column == column && cell.row == row)
+    else {
+        return false;
+    };
+    let span_columns = grid.cells[index].columns.max(1);
+    let span_rows = grid.cells[index].rows.max(1);
+    let (target_column, target_row) = if across_columns {
+        (column + span_columns, row)
+    } else {
+        (column, row + span_rows)
+    };
+    let Some(other) = grid.cells.iter().position(|cell| {
+        cell.column == target_column && cell.row == target_row
+    }) else {
+        return false;
+    };
+    let compatible = if across_columns {
+        grid.cells[other].rows.max(1) == span_rows
+    } else {
+        grid.cells[other].columns.max(1) == span_columns
+    };
+    if !compatible {
+        return false;
+    }
+    if across_columns {
+        grid.cells[index].columns = span_columns + grid.cells[other].columns.max(1);
+    } else {
+        grid.cells[index].rows = span_rows + grid.cells[other].rows.max(1);
+    }
+    grid.cells.remove(other);
+    true
+}
+
+pub fn split_cell_span(grid: &mut ConstructionGrid, column: u32, row: u32) -> bool {
+    ensure_explicit_cells(grid);
+    let Some(index) = grid
+        .cells
+        .iter()
+        .position(|cell| cell.column == column && cell.row == row)
+    else {
+        return false;
+    };
+    let span_columns = grid.cells[index].columns.max(1);
+    let span_rows = grid.cells[index].rows.max(1);
+    if span_columns == 1 && span_rows == 1 {
+        return false;
+    }
+    let fill = grid.cells[index].fill.clone();
+    grid.cells[index].columns = 1;
+    grid.cells[index].rows = 1;
+    for row_offset in 0..span_rows {
+        for column_offset in 0..span_columns {
+            if row_offset == 0 && column_offset == 0 {
+                continue;
+            }
+            let column = column + column_offset;
+            let row = row + row_offset;
+            if grid
+                .cells
+                .iter()
+                .any(|cell| cell.column == column && cell.row == row)
+            {
+                continue;
+            }
+            grid.cells.push(GridCell {
+                column,
+                row,
+                columns: 1,
+                rows: 1,
+                fill: fill.clone(),
+                ..GridCell::default()
+            });
+        }
+    }
+    true
+}
+
+pub fn nest_empty_grid(grid: &mut ConstructionGrid, column: u32, row: u32) -> bool {
+    if grid_nesting_depth(grid) >= 3 {
+        return false;
+    }
+    ensure_explicit_cells(grid);
+    let Some(cell) = grid
+        .cells
+        .iter_mut()
+        .find(|cell| cell.column == column && cell.row == row)
+    else {
+        return false;
+    };
+    if matches!(cell.fill, CellFill::Nested(_)) {
+        return false;
+    }
+    cell.fill = CellFill::Nested(ConstructionGrid::default());
+    true
+}
+
+pub fn grid_at_path<'a>(
+    grid: &'a ConstructionGrid,
+    mut width: f64,
+    mut height: f64,
+    path: &[(u32, u32)],
+) -> Option<(&'a ConstructionGrid, f64, f64)> {
+    let mut current = grid;
+    for &(column, row) in path {
+        let resolved = resolve_grid(current, width, height);
+        let cell = resolved
+            .cells
+            .iter()
+            .find(|cell| cell.column == column as usize && cell.row == row as usize)?;
+        let child = current
+            .cells
+            .iter()
+            .find(|cell| cell.column == column && cell.row == row)?;
+        let CellFill::Nested(child_grid) = &child.fill else {
+            return None;
+        };
+        width = (cell.right - cell.left).max(1e-6);
+        height = (cell.top - cell.bottom).max(1e-6);
+        current = child_grid;
+    }
+    Some((current, width, height))
+}
+
+pub fn with_grid_at_path<R>(
+    grid: &mut ConstructionGrid,
+    width: f64,
+    height: f64,
+    path: &[(u32, u32)],
+    mut f: impl FnMut(&mut ConstructionGrid, f64, f64) -> R,
+) -> Option<R> {
+    fn walk<R>(
+        grid: &mut ConstructionGrid,
+        width: f64,
+        height: f64,
+        path: &[(u32, u32)],
+        f: &mut impl FnMut(&mut ConstructionGrid, f64, f64) -> R,
+    ) -> Option<R> {
+        if path.is_empty() {
+            return Some(f(grid, width, height));
+        }
+        let (column, row) = path[0];
+        let resolved = resolve_grid(grid, width, height);
+        let cell = resolved
+            .cells
+            .iter()
+            .find(|cell| cell.column == column as usize && cell.row == row as usize)?;
+        let child_width = (cell.right - cell.left).max(1e-6);
+        let child_height = (cell.top - cell.bottom).max(1e-6);
+        let child = grid
+            .cells
+            .iter_mut()
+            .find(|cell| cell.column == column && cell.row == row)?;
+        let CellFill::Nested(child_grid) = &mut child.fill else {
+            return None;
+        };
+        walk(child_grid, child_width, child_height, &path[1..], f)
+    }
+    let mut f = f;
+    walk(grid, width, height, path, &mut f)
+}
+
+pub fn insert_axis_division(
+    grid: &mut ConstructionGrid,
+    vertical: bool,
+    position: f64,
+    width: f64,
+    height: f64,
+) -> bool {
+    let total = if vertical { width } else { height };
+    if total <= 0.1 {
+        return false;
+    }
+    let resolved = resolve_grid(grid, width, height);
+    let tracks = if vertical {
+        &resolved.columns
+    } else {
+        &resolved.rows
+    };
+    if tracks.len() >= 16 {
+        return false;
+    }
+    let position = position.clamp(0.05, total - 0.05);
+    let Some(index) = tracks.iter().position(|track| {
+        position > track.start + 0.04 && position < track.end - 0.04
+    }) else {
+        return false;
+    };
+    ensure_explicit_cells(grid);
+    let mut widths: Vec<f64> = tracks
+        .iter()
+        .map(|track| (track.end - track.start).max(1e-6))
+        .collect();
+    let start = tracks[index].start;
+    let first = (position - start).max(1e-6);
+    let second = (widths[index] - first).max(1e-6);
+    widths[index] = first;
+    widths.insert(index + 1, second);
+    let mut previous = tracks.clone();
+    let inserted = previous[index].clone();
+    previous.insert(index + 1, inserted);
+    previous[index + 1].meeting = TrackMeeting::Mullion;
+    previous[index + 1].profile_id = None;
+    write_fraction_tracks(grid, vertical, &widths, &previous);
+    shift_cells_after_insert(grid, vertical, index as u32 + 1);
+    true
+}
+
+pub fn move_axis_division(
+    grid: &mut ConstructionGrid,
+    vertical: bool,
+    index: usize,
+    position: f64,
+    width: f64,
+    height: f64,
+) -> bool {
+    let resolved = resolve_grid(grid, width, height);
+    let tracks = if vertical {
+        &resolved.columns
+    } else {
+        &resolved.rows
+    };
+    if index + 1 >= tracks.len() {
+        return false;
+    }
+    let start = tracks[index].start;
+    let end = tracks[index + 1].end;
+    let position = position.clamp(start + 0.04, (end - 0.04).max(start + 0.04));
+    let mut widths: Vec<f64> = tracks
+        .iter()
+        .map(|track| (track.end - track.start).max(1e-6))
+        .collect();
+    let span = widths[index] + widths[index + 1];
+    widths[index] = (position - start).max(1e-6);
+    widths[index + 1] = (span - widths[index]).max(1e-6);
+    write_fraction_tracks(grid, vertical, &widths, tracks);
+    true
+}
+
+pub fn remove_last_axis_division(grid: &mut ConstructionGrid, vertical: bool) -> bool {
+    let tracks = if vertical {
+        &mut grid.columns
+    } else {
+        &mut grid.rows
+    };
+    if tracks.len() < 2 {
+        return false;
+    }
+    let removed = tracks.len() - 1;
+    tracks.pop();
+    let removed = removed as u32;
+    for cell in &mut grid.cells {
+        let (start, span) = if vertical {
+            (&mut cell.column, &mut cell.columns)
+        } else {
+            (&mut cell.row, &mut cell.rows)
+        };
+        if *start >= removed {
+            *start = start.saturating_sub(1);
+        } else if *start + (*span).max(1) > removed && *span > 1 {
+            *span -= 1;
+        }
+    }
+    true
+}
+
+fn write_fraction_tracks(
+    grid: &mut ConstructionGrid,
+    vertical: bool,
+    widths: &[f64],
+    previous: &[ResolvedTrack],
+) {
+    let tracks = if vertical {
+        &mut grid.columns
+    } else {
+        &mut grid.rows
+    };
+    *tracks = widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let previous = previous.get(index);
+            GridTrack {
+                measure: TrackMeasure::Fraction(*width),
+                profile_id: previous.and_then(|track| track.profile_id.clone()),
+                meeting: previous
+                    .map(|track| track.meeting)
+                    .unwrap_or(TrackMeeting::Mullion),
+            }
+        })
+        .collect();
+}
+
+fn shift_cells_after_insert(grid: &mut ConstructionGrid, vertical: bool, boundary: u32) {
+    let split = boundary.saturating_sub(1);
+    let mut extras = Vec::new();
+    for cell in &mut grid.cells {
+        let (start, span) = if vertical {
+            (&mut cell.column, &mut cell.columns)
+        } else {
+            (&mut cell.row, &mut cell.rows)
+        };
+        let covered = (*span).max(1);
+        let end = *start + covered;
+        if *start > split {
+            *start += 1;
+        } else if *start <= split && end > split && covered == 1 {
+            extras.push((
+                boundary,
+                if vertical { cell.row } else { cell.column },
+                cell.fill.clone(),
+                cell.operation,
+                cell.sill,
+            ));
+        } else if *start <= split && end > split {
+            *span = covered + 1;
+        }
+    }
+    for (start, cross, fill, operation, sill) in extras {
+        grid.cells.push(if vertical {
+            GridCell {
+                column: start,
+                row: cross,
+                columns: 1,
+                rows: 1,
+                fill,
+                operation,
+                sill,
+                ..GridCell::default()
+            }
+        } else {
+            GridCell {
+                column: cross,
+                row: start,
+                columns: 1,
+                rows: 1,
+                fill,
+                operation,
+                sill,
+                ..GridCell::default()
+            }
+        });
+    }
+}
+
+fn uncover_edges(edges: Vec<ResolvedEdge>, cells: &[ResolvedCell]) -> Vec<ResolvedEdge> {
+    let mut uncovered = Vec::new();
+    for edge in edges {
+        let mut spans = vec![(edge.start, edge.end)];
+        for cell in cells {
+            let (cover_start, cover_end, covers) = match edge.axis {
+                BarAxis::Vertical => (
+                    cell.bottom,
+                    cell.top,
+                    cell.left + 1e-6 < edge.position && edge.position < cell.right - 1e-6,
+                ),
+                BarAxis::Horizontal => (
+                    cell.left,
+                    cell.right,
+                    cell.bottom + 1e-6 < edge.position && edge.position < cell.top - 1e-6,
+                ),
+            };
+            if covers {
+                spans = subtract_spans(spans, cover_start, cover_end);
+            }
+        }
+        for (start, end) in spans {
+            if end - start > 1e-6 {
+                let mut piece = edge.clone();
+                piece.start = start;
+                piece.end = end;
+                uncovered.push(piece);
+            }
+        }
+    }
+    uncovered
+}
+
+fn subtract_spans(spans: Vec<(f64, f64)>, cover_start: f64, cover_end: f64) -> Vec<(f64, f64)> {
+    let mut next = Vec::new();
+    for (start, end) in spans {
+        if cover_end <= start || cover_start >= end {
+            next.push((start, end));
+            continue;
+        }
+        if cover_start > start {
+            next.push((start, cover_start));
+        }
+        if cover_end < end {
+            next.push((cover_end, end));
+        }
+    }
+    next
+}
+
 pub fn resolve_grid(grid: &ConstructionGrid, width: f64, height: f64) -> ResolvedGrid {
     let width = finite_extent(width);
     let height = finite_extent(height);
@@ -440,6 +875,9 @@ pub fn resolve_grid(grid: &ConstructionGrid, width: f64, height: f64) -> Resolve
         columns.last().map_or(width, |track| track.end),
         &None,
     );
+    if !grid.cells.is_empty() {
+        edges = uncover_edges(edges, &cells);
+    }
 
     ResolvedGrid {
         columns,
@@ -940,6 +1378,24 @@ mod tests {
             assert_eq!(grid.columns[0].meeting, TrackMeeting::Flush);
             assert_eq!(grid.cells.len(), 2);
         }
+    }
+
+    #[test]
+    fn spanning_cell_hides_the_covered_post() {
+        let grid = ConstructionGrid {
+            columns: vec![fraction(), fraction()],
+            cells: vec![GridCell {
+                columns: 2,
+                rows: 1,
+                ..GridCell::default()
+            }],
+            ..ConstructionGrid::default()
+        };
+        let resolved = resolve_grid(&grid, 1.2, 1.0);
+        assert_eq!(resolved.cells.len(), 1);
+        assert!(resolved.edges.iter().all(|edge| {
+            edge.axis != BarAxis::Vertical || (edge.position - 0.6).abs() > 1e-6
+        }));
     }
 
     #[test]

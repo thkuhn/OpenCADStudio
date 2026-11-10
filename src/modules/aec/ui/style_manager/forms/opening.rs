@@ -7,12 +7,13 @@ use iced::{Border, Color as IcedColor, Element, Fill as FillLen, Point, Rectangl
 use std::collections::HashMap;
 
 use crate::app::Message;
+use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
 use crate::modules::aec::engine::opening_display::BakedPath;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_style::{
     FamilyPlacement, OpeningCellKind, OpeningEditorGroup, OpeningLookRole, OpeningProfilePart,
-    construction_from_division, project_division_sized, OpeningStyle, LeafOperation,
+    construction_from_division, OpeningStyle, LeafOperation,
 };
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::project::ProjectFile;
@@ -22,7 +23,7 @@ use crate::modules::aec::state::{
     StylePickerTarget,
 };
 use crate::modules::aec::styles::opening_style_manager::{
-    preview_baked_paths_for_mode_with_library, PREVIEW_WALL_THICKNESS,
+    preview_baked_paths_for_mode_with_library, PreviewCamera3d, PREVIEW_WALL_THICKNESS,
 };
 use crate::modules::aec::engine::style_common::StyleOrigin;
 use crate::modules::aec::ui::aec_ui_util::muted;
@@ -60,14 +61,19 @@ pub struct OpeningStyleFormState<'a> {
     pub leaf_face: &'a str,
     pub leaf_depth: &'a str,
     pub leaf_rebate: &'a str,
+    pub leaf_lateral: &'a str,
     pub glazing_thickness: &'a str,
     pub glazing_inset: &'a str,
     pub ext_sill_thickness: &'a str,
     pub ext_sill_overhang: &'a str,
     pub ext_sill_upstand: &'a str,
+    pub ext_sill_side_left: &'a str,
+    pub ext_sill_side_right: &'a str,
     pub int_board_thickness: &'a str,
     pub int_board_overhang: &'a str,
     pub int_board_upstand: &'a str,
+    pub int_board_side_left: &'a str,
+    pub int_board_side_right: &'a str,
     pub threshold_height: &'a str,
     pub threshold_width: &'a str,
     pub shutter_height: &'a str,
@@ -97,6 +103,12 @@ pub struct OpeningStyleFormState<'a> {
     pub spring: &'a str,
     pub hinge: LeafOperation,
     pub authored_grid: Option<&'a crate::modules::aec::engine::construction_grid::ConstructionGrid>,
+    pub grid_path: &'a [(u32, u32)],
+    pub preview_azimuth: f64,
+    pub preview_elevation: f64,
+    pub preview_zoom: f64,
+    pub preview_pan_x: f64,
+    pub preview_pan_y: f64,
 }
 
 pub fn parts<'a>(
@@ -372,6 +384,10 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         preview_width,
         form.preview_mode,
         Some(library),
+        PreviewCamera3d {
+            azimuth: form.preview_azimuth,
+            elevation: form.preview_elevation,
+        },
     );
     let look_styles = preview_look_styles(&preview_style, library);
 
@@ -422,6 +438,11 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             frame: frame.max(0.0),
             look_styles,
             selected_role: form.selected_look_role,
+            azimuth: form.preview_azimuth,
+            elevation: form.preview_elevation,
+            zoom: form.preview_zoom,
+            pan_x: form.preview_pan_x,
+            pan_y: form.preview_pan_y,
         })
         .width(FillLen)
         .height(FillLen),
@@ -514,16 +535,21 @@ fn form_preview_style(form: &OpeningStyleFormState<'_>) -> OpeningStyle {
     style.parts.leaf_frame.profile_id = form.profile_ids.get(&OpeningProfilePart::LeafFrame).cloned();
     style.parts.leaf_frame.depth = dim(form.leaf_depth, style.parts.leaf_frame.depth);
     style.parts.leaf_frame.rebate_overlap = dim(form.leaf_rebate, style.parts.leaf_frame.rebate_overlap);
+    style.parts.leaf_frame.lateral_overlap = dim(form.leaf_lateral, style.parts.leaf_frame.lateral_overlap);
     style.parts.glazing.thickness = dim(form.glazing_thickness, style.parts.glazing.thickness);
     style.parts.glazing.inset = dim(form.glazing_inset, style.parts.glazing.inset);
     style.parts.exterior_sill.thickness = dim(form.ext_sill_thickness, 0.0);
     style.parts.exterior_sill.profile_id = form.profile_ids.get(&OpeningProfilePart::ExteriorSill).cloned();
     style.parts.exterior_sill.overhang = dim(form.ext_sill_overhang, 0.0);
     style.parts.exterior_sill.upstand = dim(form.ext_sill_upstand, 0.0);
+    style.parts.exterior_sill.side_overhang_left = dim(form.ext_sill_side_left, 0.0);
+    style.parts.exterior_sill.side_overhang_right = dim(form.ext_sill_side_right, 0.0);
     style.parts.interior_board.thickness = dim(form.int_board_thickness, 0.0);
     style.parts.interior_board.profile_id = form.profile_ids.get(&OpeningProfilePart::InteriorBoard).cloned();
     style.parts.interior_board.overhang = dim(form.int_board_overhang, 0.0);
     style.parts.interior_board.upstand = dim(form.int_board_upstand, 0.0);
+    style.parts.interior_board.side_overhang_left = dim(form.int_board_side_left, 0.0);
+    style.parts.interior_board.side_overhang_right = dim(form.int_board_side_right, 0.0);
     style.parts.threshold.height = dim(form.threshold_height, 0.0);
     style.parts.threshold.profile_id = form.profile_ids.get(&OpeningProfilePart::Threshold).cloned();
     style.parts.threshold.width = dim(form.threshold_width, 0.0);
@@ -599,6 +625,10 @@ fn preview_look_colors(
             (role, PreviewLookColors { line, hatch })
         })
         .collect()
+}
+
+pub(crate) fn opening_grid_preview_color() -> iced::Color {
+    iced::Color::from_rgb8(128, 128, 128)
 }
 
 fn preview_look_styles(
@@ -778,7 +808,9 @@ fn opening_editor_tab_content<'a>(
                     .push(dim_row("opening-leaf-face", "leaf_face", form.leaf_face))
                     .push(dim_row("opening-leaf-depth", "leaf_depth", form.leaf_depth));
             }
-            col = col.push(dim_row("opening-leaf-rebate", "leaf_rebate", form.leaf_rebate));
+            col = col
+                .push(dim_row("opening-leaf-rebate", "leaf_rebate", form.leaf_rebate))
+                .push(dim_row("opening-leaf-lateral", "leaf_lateral", form.leaf_lateral));
         }
         OpeningEditorGroup::Glazing => {
             col = col
@@ -796,7 +828,9 @@ fn opening_editor_tab_content<'a>(
             }
             col = col
                 .push(dim_row("opening-ext-sill-overhang", "ext_sill_overhang", form.ext_sill_overhang))
-                .push(dim_row("opening-ext-sill-upstand", "ext_sill_upstand", form.ext_sill_upstand));
+                .push(dim_row("opening-ext-sill-upstand", "ext_sill_upstand", form.ext_sill_upstand))
+                .push(dim_row("opening-ext-sill-side-left", "ext_sill_side_left", form.ext_sill_side_left))
+                .push(dim_row("opening-ext-sill-side-right", "ext_sill_side_right", form.ext_sill_side_right));
         }
         OpeningEditorGroup::InteriorBoard => {
             col = col.push(profile_picker(form, library, OpeningProfilePart::InteriorBoard));
@@ -809,7 +843,9 @@ fn opening_editor_tab_content<'a>(
             }
             col = col
                 .push(dim_row("opening-int-board-overhang", "int_board_overhang", form.int_board_overhang))
-                .push(dim_row("opening-int-board-upstand", "int_board_upstand", form.int_board_upstand));
+                .push(dim_row("opening-int-board-upstand", "int_board_upstand", form.int_board_upstand))
+                .push(dim_row("opening-int-board-side-left", "int_board_side_left", form.int_board_side_left))
+                .push(dim_row("opening-int-board-side-right", "int_board_side_right", form.int_board_side_right));
         }
         OpeningEditorGroup::Threshold => {
             col = col.push(profile_picker(form, library, OpeningProfilePart::Threshold));
@@ -1003,18 +1039,34 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     let height = crate::modules::aec::styles::opening_style_manager::parse_dim(form.height)
         .unwrap_or(style.default_height);
     let selected_index = form.selected_cell.unwrap_or(0);
-    let division = project_division_sized(&style.grid, width, height);
-    let selected_cell = division
-        .resolved_cells(style.kind)
-        .get(selected_index)
-        .cloned()
-        .unwrap_or_default();
+    let root = form.authored_grid.cloned().unwrap_or_else(|| style.grid.clone());
+    let (level, level_width, level_height) =
+        crate::modules::aec::engine::construction_grid::grid_at_path(
+            &root,
+            width,
+            height,
+            form.grid_path,
+        )
+        .unwrap_or((&root, width, height));
+    let level = level.clone();
+    let resolved = crate::modules::aec::engine::construction_grid::resolve_grid(
+        &level,
+        level_width,
+        level_height,
+    );
+    let selected_resolved = resolved.cells.get(selected_index);
+    let selected_kind = selected_resolved
+        .map(|cell| fill_to_kind(&cell.cell.fill))
+        .unwrap_or(OpeningCellKind::Glass);
+    let selected_hinge = selected_resolved
+        .and_then(|cell| cell.cell.operation)
+        .unwrap_or(LeafOperation::left());
     let kind_options: Vec<String> = OpeningCellKind::catalogue()
         .iter()
         .map(|kind| kind.as_str().to_string())
         .collect();
     let kind_selector = pick_list(
-        Some(selected_cell.kind.as_str().to_string()),
+        Some(selected_kind.as_str().to_string()),
         kind_options,
         |value: &String| value.clone(),
     )
@@ -1026,8 +1078,7 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     })
     .text_size(11)
     .width(130);
-    let selected_hinge = selected_cell.hinge.unwrap_or(LeafOperation::left());
-    let hinge_selector: Element<'a, Message> = if selected_cell.kind.permits_hinge() {
+    let hinge_selector: Element<'a, Message> = if selected_kind.permits_hinge() {
         pick_list(
             Some(selected_hinge.as_str().to_string()),
             vec!["Left".to_string(), "Right".to_string()],
@@ -1065,6 +1116,29 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
                 "slide".to_string(),
             )))
             .style(button::secondary),
+        button(text(t!("Verbinden")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellSpan(
+                "join".to_string(),
+            )))
+            .style(button::secondary),
+        button(text(t!("Trennen")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellSpan(
+                "split".to_string(),
+            )))
+            .style(button::secondary),
+        button(text(t!("Kindraster")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellSpan(
+                "nest".to_string(),
+            )))
+            .style(button::secondary),
+        button(text(t!("Öffnen")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerGridEnter(
+                selected_index,
+            )))
+            .style(button::secondary),
+        button(text(t!("Zurück")).size(12))
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerGridBack))
+            .style(button::secondary),
     ]
     .spacing(6);
     column![
@@ -1073,9 +1147,9 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
         text(tr!("aec", "opening-division-sketch-hint")).size(10).style(muted),
         row![
             crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
-                &division,
-                width,
-                height,
+                &level,
+                level_width,
+                level_height,
                 style.kind,
                 form.selected_cell,
             ),
@@ -1124,6 +1198,18 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
     ]
     .spacing(6)
     .into()
+}
+
+fn fill_to_kind(
+    fill: &crate::modules::aec::engine::construction_grid::CellFill,
+) -> OpeningCellKind {
+    use crate::modules::aec::engine::construction_grid::CellFill;
+    match fill {
+        CellFill::Glass | CellFill::Nested(_) => OpeningCellKind::Glass,
+        CellFill::Opaque => OpeningCellKind::Opaque,
+        CellFill::Door => OpeningCellKind::DoorLeaf,
+        CellFill::Fixed => OpeningCellKind::Fixed,
+    }
 }
 
 fn meter_list_editor<'a>(
@@ -1324,6 +1410,11 @@ struct PreviewCamera {
     scale: f32,
     ox: f32,
     oy: f32,
+    /// Section depth runs right-to-left in model space. Mirror it so interior is left.
+    mirror_x: bool,
+    zoom: f32,
+    pan_x: f32,
+    pan_y: f32,
 }
 
 /// Wall drawn above the rough head in the section preview, independent of lintel or frame.
@@ -1414,20 +1505,33 @@ impl PreviewCamera {
             scale,
             ox: bounds.width * 0.5 - (center_x as f32 * scale),
             oy: bounds.height * 0.5 + (center_y as f32 * scale),
+            mirror_x: mode == AecOpeningPreviewMode::Section,
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
         }
     }
 
+    fn with_view(mut self, zoom: f64, pan_x: f64, pan_y: f64) -> Self {
+        self.zoom = zoom.max(0.05) as f32;
+        self.pan_x = pan_x as f32;
+        self.pan_y = pan_y as f32;
+        self
+    }
+
     fn to_screen(&self, x: f64, y: f64) -> Point {
+        let x = if self.mirror_x { -x } else { x };
         Point::new(
-            self.ox + x as f32 * self.scale,
-            self.oy - y as f32 * self.scale,
+            self.ox + self.pan_x + x as f32 * self.scale * self.zoom,
+            self.oy + self.pan_y - y as f32 * self.scale * self.zoom,
         )
     }
 
     fn to_local(&self, p: Point) -> (f64, f64) {
+        let x = (p.x - self.ox - self.pan_x) as f64 / (self.scale * self.zoom) as f64;
         (
-            (p.x - self.ox) as f64 / self.scale as f64,
-            (self.oy - p.y) as f64 / self.scale as f64,
+            if self.mirror_x { -x } else { x },
+            (self.oy + self.pan_y - p.y) as f64 / (self.scale * self.zoom) as f64,
         )
     }
 }
@@ -1508,63 +1612,175 @@ struct OpeningPreviewCanvas {
     frame: f64,
     look_styles: HashMap<OpeningLookRole, PreviewLookColors>,
     selected_role: Option<OpeningLookRole>,
+    azimuth: f64,
+    elevation: f64,
+    zoom: f64,
+    pan_x: f64,
+    pan_y: f64,
+}
+
+struct PreviewGesture {
+    origin: Point,
+    last: Point,
+    dragging: bool,
+}
+
+impl OpeningPreviewCanvas {
+    fn camera(&self, bounds: Rectangle) -> PreviewCamera {
+        PreviewCamera::fit(
+            bounds,
+            &self.paths,
+            self.mode,
+            self.width,
+            self.height,
+            self.sill,
+            self.thickness,
+        )
+        .with_view(self.zoom, self.pan_x, self.pan_y)
+    }
 }
 
 impl Program<Message> for OpeningPreviewCanvas {
-    type State = ();
+    type State = Option<PreviewGesture>;
 
     fn update(
         &self,
-        _state: &mut Self::State,
+        state: &mut Self::State,
         event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else {
-            return None;
-        };
-        let pos = cursor.position_in(bounds)?;
-        let cam = PreviewCamera::fit(
-            bounds,
-            &self.paths,
-            self.mode,
-            self.width,
-            self.height,
-            self.sill,
-            self.thickness,
-        );
-        let (x, y) = cam.to_local(pos);
-        Some(
-            canvas::Action::publish(Message::Aec(
-                AecMessage::AecOpeningStyleManagerPreviewSlotSelect(hit_role(
+        let cam = self.camera(bounds);
+        match event {
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if self.mode != AecOpeningPreviewMode::Model3D {
+                    return None;
+                }
+                let pos = cursor.position_in(bounds)?;
+                let lines = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => *y,
+                    mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
+                };
+                if lines.abs() < 1e-6 {
+                    return None;
+                }
+                let factor = if lines > 0.0 { 1.1_f64 } else { 1.0 / 1.1 };
+                let new_zoom = (self.zoom * factor).clamp(0.25, 12.0);
+                let (wx, wy) = cam.to_local(pos);
+                let fitted = PreviewCamera::fit(
+                    bounds,
                     &self.paths,
-                    x,
-                    y,
-                    8.0 / cam.scale.max(1e-6) as f64,
-                )),
-            ))
-            .and_capture(),
-        )
+                    self.mode,
+                    self.width,
+                    self.height,
+                    self.sill,
+                    self.thickness,
+                );
+                let new_pan_x = pos.x as f64
+                    - fitted.ox as f64
+                    - wx * fitted.scale as f64 * new_zoom;
+                let new_pan_y = pos.y as f64
+                    - fitted.oy as f64
+                    + wy * fitted.scale as f64 * new_zoom;
+                return Some(
+                    canvas::Action::publish(Message::Aec(
+                        AecMessage::AecOpeningStyleManagerPreviewCamera(
+                            self.azimuth,
+                            self.elevation,
+                            new_zoom,
+                            new_pan_x,
+                            new_pan_y,
+                        ),
+                    ))
+                    .and_capture(),
+                );
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let pos = cursor.position_in(bounds)?;
+                if self.mode == AecOpeningPreviewMode::Model3D {
+                    *state = Some(PreviewGesture {
+                        origin: pos,
+                        last: pos,
+                        dragging: false,
+                    });
+                    return Some(canvas::Action::capture());
+                }
+                let (x, y) = cam.to_local(pos);
+                return Some(
+                    canvas::Action::publish(Message::Aec(
+                        AecMessage::AecOpeningStyleManagerPreviewSlotSelect(hit_role(
+                            &self.paths,
+                            x,
+                            y,
+                            8.0 / cam.scale.max(1e-6) as f64,
+                        )),
+                    ))
+                    .and_capture(),
+                );
+            }
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let gesture = state.as_mut()?;
+                let pos = cursor.position_in(bounds)?;
+                let moved = (pos.x - gesture.origin.x).hypot(pos.y - gesture.origin.y);
+                if moved < 4.0 && !gesture.dragging {
+                    return Some(canvas::Action::capture());
+                }
+                gesture.dragging = true;
+                let dx = (pos.x - gesture.last.x) as f64;
+                let dy = (pos.y - gesture.last.y) as f64;
+                gesture.last = pos;
+                return Some(
+                    canvas::Action::publish(Message::Aec(
+                        AecMessage::AecOpeningStyleManagerPreviewCamera(
+                            self.azimuth + dx * 0.01,
+                            (self.elevation + dy * 0.01).clamp(-1.2, 1.2),
+                            self.zoom,
+                            self.pan_x,
+                            self.pan_y,
+                        ),
+                    ))
+                    .and_capture(),
+                );
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                let gesture = state.take()?;
+                if gesture.dragging {
+                    return Some(canvas::Action::capture());
+                }
+                let (x, y) = cam.to_local(gesture.origin);
+                return Some(
+                    canvas::Action::publish(Message::Aec(
+                        AecMessage::AecOpeningStyleManagerPreviewSlotSelect(hit_role(
+                            &self.paths,
+                            x,
+                            y,
+                            8.0 / cam.scale.max(1e-6) as f64,
+                        )),
+                    ))
+                    .and_capture(),
+                );
+            }
+            _ => None,
+        }
     }
 
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if self.mode == AecOpeningPreviewMode::Model3D {
+            return if state.is_some() {
+                mouse::Interaction::Grabbing
+            } else {
+                mouse::Interaction::Pointer
+            };
+        }
         let Some(pos) = cursor.position_in(bounds) else {
             return mouse::Interaction::default();
         };
-        let cam = PreviewCamera::fit(
-            bounds,
-            &self.paths,
-            self.mode,
-            self.width,
-            self.height,
-            self.sill,
-            self.thickness,
-        );
+        let cam = self.camera(bounds);
         let (x, y) = cam.to_local(pos);
         if hit_path(&self.paths, x, y, 8.0 / cam.scale.max(1e-6) as f64).is_some() {
             mouse::Interaction::Pointer
@@ -1575,22 +1791,14 @@ impl Program<Message> for OpeningPreviewCanvas {
 
     fn draw(
         &self,
-        _state: &(),
+        _state: &Self::State,
         renderer: &iced::Renderer,
         theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let cam = PreviewCamera::fit(
-            bounds,
-            &self.paths,
-            self.mode,
-            self.width,
-            self.height,
-            self.sill,
-            self.thickness,
-        );
+        let cam = self.camera(bounds);
 
         if self.mode == AecOpeningPreviewMode::Plan2D {
             let hw = self.width * 0.5;
@@ -1627,10 +1835,33 @@ impl Program<Message> for OpeningPreviewCanvas {
             }
         }
 
+        if self.mode == AecOpeningPreviewMode::Elevation2D {
+            let hw = self.width * 0.5;
+            let head = self.height.max(0.0);
+            let guide = theme.palette().background.neutral.color;
+            let rough = Path::new(|p| {
+                p.move_to(cam.to_screen(-hw, 0.0));
+                p.line_to(cam.to_screen(hw, 0.0));
+                p.line_to(cam.to_screen(hw, head));
+                p.line_to(cam.to_screen(-hw, head));
+                p.close();
+            });
+            frame.stroke(
+                &rough,
+                Stroke::default().with_width(1.0).with_color(guide),
+            );
+        }
+
         let fallback_stroke_color = theme.palette().background.base.text;
         let fallback_fill_color = fallback_stroke_color.scale_alpha(0.18);
         for path in &self.paths {
             if path.points.len() < 2 {
+                continue;
+            }
+            if self.mode == AecOpeningPreviewMode::Elevation2D
+                && path.slot == OpeningComponentSlot::Mark2D
+                && path.look_role.is_none()
+            {
                 continue;
             }
             let first = cam.to_screen(path.points[0].0, path.points[0].1);
@@ -1652,6 +1883,10 @@ impl Program<Message> for OpeningPreviewCanvas {
                 && path.resolved_look_role() == self.selected_role;
             let stroke_color = if selected {
                 theme.palette().primary.base.color
+            } else if path.resolved_look_role() == Some(OpeningLookRole::Division)
+                && role_colors.and_then(|colors| colors.line).is_none()
+            {
+                opening_grid_preview_color()
             } else {
                 role_colors
                     .and_then(|colors| colors.line)

@@ -1053,9 +1053,18 @@ fn project_opening_elevation(
 
     // 3. ElevationSill2D: Window sill projection line
     if op.kind == OpeningKind::Window && is_opening_slot_visible(ctx, op, OpeningComponentSlot::ElevationSill2D) {
-        let ear = 0.05;
-        let sill_p0 = Point2::new(uv_bl.x_m.min(uv_br.x_m) - ear, uv_bl.y_m.min(uv_br.y_m) - 0.04);
-        let sill_p1 = Point2::new(uv_bl.x_m.max(uv_br.x_m) + ear, uv_bl.y_m.min(uv_br.y_m) - 0.04);
+        let sill = if style.parts.exterior_sill.enabled {
+            &style.parts.exterior_sill
+        } else {
+            &style.parts.interior_board
+        };
+        let left = sill.side_overhang_left.max(0.0);
+        let right = sill.side_overhang_right.max(0.0);
+        let width = op.width.max(1e-9);
+        let dx = (uv_br.x_m - uv_bl.x_m) / width;
+        let dy = (uv_br.y_m - uv_bl.y_m) / width;
+        let sill_p0 = Point2::new(uv_bl.x_m - dx * left, uv_bl.y_m - dy * left - 0.04);
+        let sill_p1 = Point2::new(uv_br.x_m + dx * right, uv_br.y_m + dy * right - 0.04);
 
         let sill_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::ElevationSill2D);
 

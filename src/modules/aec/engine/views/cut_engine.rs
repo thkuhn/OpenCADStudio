@@ -1277,8 +1277,11 @@ fn emit_opening_cut_details(
         && shutter_section.face > EPS
         && shutter_section.depth > EPS
     {
-        let u0 = exterior_u + inward * shutter.installation_depth;
-        let z0 = head_z + shutter.seat_above_frame;
+        let u0 = exterior_u + inward * shutter.installation_depth.max(0.0);
+        let z0 = crate::modules::aec::engine::opening_display::accessory_bottom(
+            head_z,
+            shutter.seat_above_frame,
+        );
         emit_opening_section_profile(
             op,
             wall,
@@ -1809,6 +1812,8 @@ mod tests {
             thickness: 0.10,
             overhang: 0.20,
             upstand: 0.03,
+            side_overhang_left: 0.0,
+            side_overhang_right: 0.0,
         };
         style.parts.interior_board = SillDimensions {
             enabled: true,
@@ -1816,6 +1821,8 @@ mod tests {
             thickness: 0.08,
             overhang: 0.15,
             upstand: 0.0,
+            side_overhang_left: 0.0,
+            side_overhang_right: 0.0,
         };
         style.parts.shutter_box = ShutterBoxDimensions {
             enabled: true,

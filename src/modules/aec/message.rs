@@ -169,6 +169,8 @@ pub enum AecMessage {
     AecOpeningStyleManagerSpringChanged(String),
     AecOpeningStyleManagerHingeChanged(String),
     AecOpeningStyleManagerSetPreviewMode(crate::modules::aec::state::AecOpeningPreviewMode),
+    /// Azimuth, elevation, zoom, pan x, pan y for the 3D style preview.
+    AecOpeningStyleManagerPreviewCamera(f64, f64, f64, f64, f64),
     AecOpeningStyleManagerSetEditorTab(
         crate::modules::aec::engine::opening_style::OpeningEditorGroup,
     ),
@@ -201,6 +203,16 @@ pub enum AecMessage {
     AecOpeningStyleManagerDivisionRemove(String, usize),
     /// Writes a division template (`double`, `fold`, `slide`) as axes and cells.
     AecOpeningStyleManagerDivisionPreset(String),
+    /// `join`, `split`, or `nest` on the selected authored cell.
+    AecOpeningStyleManagerCellSpan(String),
+    /// Inserts a post or transom at a world position in the current grid level.
+    AecOpeningStyleManagerGridInsert(String, String),
+    /// Moves a post or transom in the current grid level.
+    AecOpeningStyleManagerGridDivider(String, usize, String),
+    /// Opens the nested grid of the selected resolved cell.
+    AecOpeningStyleManagerGridEnter(usize),
+    /// Returns from a nested grid to its parent.
+    AecOpeningStyleManagerGridBack,
     /// Family id (`plan`, `section`, `elevation`) and block name.
     AecOpeningStyleManagerFamilyBlockChanged(String, String),
     AecOpeningStyleManagerFamilyPlacementChanged(String, String),

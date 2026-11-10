@@ -993,6 +993,9 @@ pub fn resolve_opening_view_style(
         OpeningComponentSlot::Swing2D => (0.18, None, "AEC_OPENING"),
         OpeningComponentSlot::Sill2D | OpeningComponentSlot::Threshold2D => (0.18, None, "AEC_OPENING"),
         OpeningComponentSlot::Glazing2D => (0.18, None, "AEC_OPENING"),
+        OpeningComponentSlot::Division2D | OpeningComponentSlot::ElevationMuntins2D => {
+            (0.18, None, "AEC_OPENING_GRID")
+        }
         OpeningComponentSlot::BreakthroughSymbol2D => (0.25, None, "AEC_OPENING"),
         OpeningComponentSlot::ElevationContour2D => (0.35, None, "AEC_OPENING"),
         OpeningComponentSlot::ElevationSwing2D => (0.18, Some("DASHED".to_string()), "AEC_OPENING"),

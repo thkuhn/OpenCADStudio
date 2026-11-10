@@ -151,6 +151,7 @@ pub enum OpeningComponentSlot {
     Leaf2D,
     Swing2D,
     Glazing2D,
+    Division2D,
     Sill2D,
     Threshold2D,
     BreakthroughSymbol2D,
@@ -179,6 +180,7 @@ impl OpeningComponentSlot {
                 | OpeningComponentSlot::Leaf2D
                 | OpeningComponentSlot::Swing2D
                 | OpeningComponentSlot::Glazing2D
+                | OpeningComponentSlot::Division2D
                 | OpeningComponentSlot::Sill2D
                 | OpeningComponentSlot::Threshold2D
                 | OpeningComponentSlot::BreakthroughSymbol2D
@@ -214,6 +216,7 @@ impl OpeningComponentSlot {
             OpeningComponentSlot::Leaf2D => "Leaf2D",
             OpeningComponentSlot::Swing2D => "Swing2D",
             OpeningComponentSlot::Glazing2D => "Glazing2D",
+            OpeningComponentSlot::Division2D => "Division2D",
             OpeningComponentSlot::Sill2D => "Sill2D",
             OpeningComponentSlot::Threshold2D => "Threshold2D",
             OpeningComponentSlot::BreakthroughSymbol2D => "BreakthroughSymbol2D",
@@ -237,6 +240,7 @@ impl OpeningComponentSlot {
             OpeningComponentSlot::Leaf2D,
             OpeningComponentSlot::Swing2D,
             OpeningComponentSlot::Glazing2D,
+            OpeningComponentSlot::Division2D,
             OpeningComponentSlot::Sill2D,
             OpeningComponentSlot::Threshold2D,
             OpeningComponentSlot::BreakthroughSymbol2D,
@@ -260,6 +264,7 @@ impl OpeningComponentSlot {
             "Leaf2D" => Some(OpeningComponentSlot::Leaf2D),
             "Swing2D" => Some(OpeningComponentSlot::Swing2D),
             "Glazing2D" => Some(OpeningComponentSlot::Glazing2D),
+            "Division2D" => Some(OpeningComponentSlot::Division2D),
             "Sill2D" => Some(OpeningComponentSlot::Sill2D),
             "Threshold2D" => Some(OpeningComponentSlot::Threshold2D),
             "BreakthroughSymbol2D" => Some(OpeningComponentSlot::BreakthroughSymbol2D),

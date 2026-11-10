@@ -243,7 +243,7 @@ pub fn bake_opening_representation(
     rules: Option<&ComponentRuleSet>,
     doc: Option<&acadrust::CadDocument>,
 ) -> Vec<BakedPath> {
-    let projected = project_division_sized(grid, params.width, params.height);
+    let _projected = project_division_sized(grid, params.width, params.height);
     let fixed_frame_section = resolve_component_section(
         library,
         parts.fixed_frame.profile_id.as_deref(),
@@ -316,10 +316,15 @@ pub fn bake_opening_representation(
         ));
     }
     if slot_enabled(OpeningComponentSlot::Leaf2D) {
-        paths.extend(bake_grid_leaf_lines(&projected, params));
+        paths.extend(bake_grid_leaf_lines(grid, params));
     }
     if slot_enabled(OpeningComponentSlot::Glazing2D) {
-        paths.extend(bake_grid_glazing_lines(&projected, params));
+        paths.extend(bake_grid_glazing_lines(
+            grid,
+            params,
+            parts.glazing.inset,
+            fixed_frame_section.face,
+        ));
     }
     paths.extend(bake_grid_plan_divisions(
         grid,
@@ -341,7 +346,11 @@ pub fn bake_opening_representation(
             omits_threshold(&resolve_grid(grid, params.width, params.height), params.width)
                 || params.kind == OpeningKind::Door,
         ));
-        paths.extend(bake_grid_elevation_schema(grid, params));
+        paths.extend(bake_grid_elevation_schema(
+            grid,
+            params,
+            (parts.leaf_frame.rebate_overlap + parts.leaf_frame.lateral_overlap).max(0.0),
+        ));
     }
     if slot_enabled(OpeningComponentSlot::ElevationMuntins2D) {
         paths.extend(bake_grid_elevation_divisions(
@@ -402,14 +411,15 @@ pub fn bake_opening_elevation_from_grid(
     );
     let division_fallback =
         division_profile_section(library, grid, parts).unwrap_or(fixed_frame_section.clone());
-    let mut paths = bake_elevation_frame_level(
+    let mut paths = vec![rough_opening_elevation_guide(params)];
+    paths.extend(bake_elevation_frame_level(
         params,
         fixed_frame_section.face,
         leaf_frame_section.face,
         frame_level,
         omits_threshold(&resolve_grid(grid, params.width, params.height), params.width)
             || params.kind == OpeningKind::Door,
-    );
+    ));
     paths.extend(bake_grid_elevation_divisions(
         grid,
         params,
@@ -418,7 +428,7 @@ pub fn bake_opening_elevation_from_grid(
         &division_fallback,
         &leaf_frame_section,
     ));
-    paths.extend(bake_grid_elevation_schema(grid, params));
+    paths.extend(bake_grid_elevation_schema(grid, params, 0.0));
     paths.retain(|path| {
         path.resolved_look_role().map_or(true, |role| {
             opening_component_should_render_with_library(parts, params.kind, role, library)
@@ -646,19 +656,21 @@ fn unclosed_section_outline(section: &ResolvedSection) -> &[(f64, f64)] {
     }
 }
 
-fn bake_grid_leaf_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
-    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
-        return Vec::new();
-    };
+fn bake_grid_leaf_lines(grid: &ConstructionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
+    let cells = flatten_resolved_cells(grid, params.width, params.height);
     let mut paths = Vec::new();
     for cell in cells {
-        if !matches!(cell.cell.kind, crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf | crate::modules::aec::engine::opening_style::OpeningCellKind::Glass) {
+        if !matches!(
+            cell.cell.fill,
+            crate::modules::aec::engine::construction_grid::CellFill::Door
+                | crate::modules::aec::engine::construction_grid::CellFill::Glass
+        ) {
             continue;
         }
         let center_x = (cell.left + cell.right) * 0.5;
         let cell_width = cell.right - cell.left;
         if params.kind == OpeningKind::Door {
-            let hinge = cell.cell.hinge.unwrap_or(params.hinge);
+            let hinge = cell.cell.operation.unwrap_or(params.hinge);
             let (_, end) = leaf_segment(
                 hinge,
                 params.swing_side,
@@ -667,8 +679,12 @@ fn bake_grid_leaf_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Vec<B
                 params.frame_thickness,
             );
             let start_x = match hinge.bearing() {
-                crate::modules::aec::engine::construction_grid::TrackEnd::Start => cell.left + params.frame_thickness * 0.5,
-                crate::modules::aec::engine::construction_grid::TrackEnd::End => cell.right - params.frame_thickness * 0.5,
+                crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
+                    cell.left + params.frame_thickness * 0.5
+                }
+                crate::modules::aec::engine::construction_grid::TrackEnd::End => {
+                    cell.right - params.frame_thickness * 0.5
+                }
             };
             paths.push(path(
                 OpeningComponentSlot::Leaf2D,
@@ -688,26 +704,33 @@ fn bake_grid_leaf_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Vec<B
     paths
 }
 
-fn bake_grid_glazing_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
-    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
-        return Vec::new();
-    };
-    cells
+fn bake_grid_glazing_lines(
+    grid: &ConstructionGrid,
+    params: OpeningBakeParams,
+    inset: f64,
+    bar: f64,
+) -> Vec<BakedPath> {
+    flatten_resolved_cells(grid, params.width, params.height)
         .into_iter()
         .filter(|cell| {
             matches!(
-                cell.cell.kind,
-                crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
-                    | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+                cell.cell.fill,
+                crate::modules::aec::engine::construction_grid::CellFill::Glass
+                    | crate::modules::aec::engine::construction_grid::CellFill::Fixed
             )
         })
-        .map(|cell| {
-            path(
+        .filter_map(|cell| {
+            let left = glass_edge_into_bar(cell.left, 1.0, bar, inset);
+            let right = glass_edge_into_bar(cell.right, -1.0, bar, inset);
+            if right - left <= 1e-9 {
+                return None;
+            }
+            Some(path(
                 OpeningComponentSlot::Glazing2D,
-                vec![(cell.left, 0.0), (cell.right, 0.0)],
+                vec![(left, 0.0), (right, 0.0)],
                 false,
                 false,
-            )
+            ))
         })
         .collect()
 }
@@ -830,11 +853,11 @@ fn bake_plan_division_path(
                 )
             })
             .collect();
-        path(OpeningComponentSlot::Glazing2D, outline, true, false)
+        path(OpeningComponentSlot::Division2D, outline, true, false)
             .with_look_role(OpeningLookRole::Division)
     } else {
         path(
-            OpeningComponentSlot::Glazing2D,
+            OpeningComponentSlot::Division2D,
             vec![(x, params.wall_y_min), (x, params.wall_y_max)],
             false,
             false,
@@ -870,9 +893,36 @@ fn bake_grid_swing_glyphs(
         }
         paths.extend(plan_operation_schema(cell, hinge, params, glyph));
     }
+    let root = resolve_grid(grid, params.width, params.height);
+    for cell in flatten_resolved_cells(grid, params.width, params.height) {
+        let is_root = root.cells.iter().any(|root_cell| {
+            (root_cell.left - params.width * 0.5 - cell.left).abs() < 1e-6
+                && (root_cell.right - params.width * 0.5 - cell.right).abs() < 1e-6
+                && (root_cell.bottom - cell.bottom).abs() < 1e-6
+                && (root_cell.top - cell.top).abs() < 1e-6
+        });
+        if is_root {
+            continue;
+        }
+        let hinge = cell.cell.operation.unwrap_or(params.hinge);
+        let layout = crate::modules::aec::engine::opening_style::DivisionCellLayout {
+            column: cell.column,
+            row: cell.row,
+            left: cell.left,
+            right: cell.right,
+            bottom: cell.bottom,
+            top: cell.top,
+            cell: crate::modules::aec::engine::opening_style::OpeningCell {
+                kind: crate::modules::aec::engine::opening_style::OpeningCellKind::Glass,
+                hinge: cell.cell.operation,
+                sill: cell.cell.sill,
+            },
+        };
+        paths.extend(plan_operation_schema(&layout, hinge, params, glyph));
+    }
     let free_y = match params.swing_side {
-        SwingSide::Exterior => params.wall_y_max,
-        SwingSide::Interior => params.wall_y_min,
+        SwingSide::Exterior => params.wall_y_min,
+        SwingSide::Interior => params.wall_y_max,
     };
     paths.extend(chain_schema_paths(
         &resolve_grid(grid, params.width, params.height),
@@ -998,8 +1048,8 @@ fn plan_operation_schema(
     let width = cell.right - cell.left;
     let center_x = (cell.left + cell.right) * 0.5;
     let free_y = match params.swing_side {
-        SwingSide::Exterior => params.wall_y_max,
-        SwingSide::Interior => params.wall_y_min,
+        SwingSide::Exterior => params.wall_y_min,
+        SwingSide::Interior => params.wall_y_max,
     };
     let slot = OpeningComponentSlot::Swing2D;
     match hinge {
@@ -1056,30 +1106,49 @@ fn plan_operation_schema(
     }
 }
 
-fn bake_grid_elevation_schema(grid: &ConstructionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
-    let projected = project_division_sized(grid, params.width, params.height);
-    let Ok(cells) = projected.layout(params.width, params.height, params.kind) else {
-        return Vec::new();
-    };
+fn bake_grid_elevation_schema(
+    grid: &ConstructionGrid,
+    params: OpeningBakeParams,
+    overlap: f64,
+) -> Vec<BakedPath> {
     let slot = OpeningComponentSlot::ElevationMuntins2D;
     let resolved = resolve_grid(grid, params.width, params.height);
     let chained = chain_cells(&resolved, params.hinge);
+    let chained_bounds: Vec<(f64, f64, f64, f64)> = resolved
+        .cells
+        .iter()
+        .filter(|cell| chained.contains(&(cell.column, cell.row)))
+        .map(|cell| {
+            (
+                cell.left - params.width * 0.5,
+                cell.right - params.width * 0.5,
+                cell.bottom,
+                cell.top,
+            )
+        })
+        .collect();
     let mut paths = chain_schema_paths(&resolved, params.hinge, slot, ChainPlane::Elevation);
-    for cell in cells {
-        if chained.contains(&(cell.column, cell.row)) {
+    for cell in flatten_resolved_cells(grid, params.width, params.height) {
+        if chained_bounds.iter().any(|bounds| {
+            (bounds.0 - cell.left).abs() < 1e-6
+                && (bounds.1 - cell.right).abs() < 1e-6
+                && (bounds.2 - cell.bottom).abs() < 1e-6
+                && (bounds.3 - cell.top).abs() < 1e-6
+        }) {
             continue;
         }
-        let hinge = cell.cell.hinge.unwrap_or(params.hinge);
-        let inset = params.frame_thickness.max(0.0);
+        let hinge = cell.cell.operation.unwrap_or(params.hinge);
+        let bar = params.frame_thickness.max(0.0);
+        let into = (bar - overlap.max(0.0).min(bar)).max(0.0);
         let bottom_inset = if params.kind == OpeningKind::Door {
             0.0
         } else {
-            inset
+            into
         };
-        let left = cell.left + inset;
-        let right = cell.right - inset;
+        let left = cell.left + into;
+        let right = cell.right - into;
         let bottom = cell.bottom + bottom_inset;
-        let top = cell.top - inset;
+        let top = cell.top - into;
         if right - left <= 1e-9 || top - bottom <= 1e-9 {
             continue;
         }
@@ -1443,6 +1512,37 @@ fn stulp_shift(meeting: TrackMeeting, face: f64) -> Option<f64> {
 
 /// Glass stops at the inner edge of the surrounding bar and bites `inset` into
 /// it, never past the bar.
+fn flatten_resolved_cells(
+    grid: &ConstructionGrid,
+    width: f64,
+    height: f64,
+) -> Vec<crate::modules::aec::engine::construction_grid::ResolvedCell> {
+    let resolved = resolve_grid(grid, width, height);
+    let mut cells = Vec::new();
+    collect_parent_cells(&resolved, -width * 0.5, 0.0, &mut cells);
+    cells
+}
+
+fn collect_parent_cells(
+    resolved: &ResolvedGrid,
+    offset_x: f64,
+    offset_z: f64,
+    cells: &mut Vec<crate::modules::aec::engine::construction_grid::ResolvedCell>,
+) {
+    for cell in &resolved.cells {
+        if let Some(nested) = &cell.nested {
+            collect_parent_cells(nested, offset_x + cell.left, offset_z + cell.bottom, cells);
+        } else {
+            let mut shifted = cell.clone();
+            shifted.left += offset_x;
+            shifted.right += offset_x;
+            shifted.bottom += offset_z;
+            shifted.top += offset_z;
+            cells.push(shifted);
+        }
+    }
+}
+
 pub(crate) fn glass_edge_into_bar(edge: f64, inward: f64, bar: f64, inset: f64) -> f64 {
     let bar = bar.max(0.0);
     let bite = inset.max(0.0).min(bar);
@@ -1716,6 +1816,23 @@ fn bake_generator(
     }
 }
 
+fn rough_opening_elevation_guide(params: OpeningBakeParams) -> BakedPath {
+    let hw = params.width * 0.5;
+    let head = params.height.max(0.0);
+    path(
+        OpeningComponentSlot::Mark2D,
+        vec![
+            (-hw, 0.0),
+            (hw, 0.0),
+            (hw, head),
+            (-hw, head),
+            (-hw, 0.0),
+        ],
+        false,
+        false,
+    )
+}
+
 fn path(
     slot: OpeningComponentSlot,
     points: Vec<(f64, f64)>,
@@ -1828,6 +1945,13 @@ fn bake_leaf_line(
     }
 }
 
+fn swing_toward_exterior(swing: SwingSide) -> f64 {
+    match swing {
+        SwingSide::Exterior => -1.0,
+        SwingSide::Interior => 1.0,
+    }
+}
+
 fn leaf_segment(
     hinge: LeafOperation,
     swing: SwingSide,
@@ -1839,10 +1963,7 @@ fn leaf_segment(
     let rebate_w = post_w * 0.5;
     let clear_w = (hw - rebate_w) * 2.0;
     let ang = angle_deg.to_radians();
-    let swing_sign = match swing {
-        SwingSide::Exterior => 1.0,
-        SwingSide::Interior => -1.0,
-    };
+    let swing_sign = swing_toward_exterior(swing);
     match hinge.bearing() {
         crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
             let start = (-hw + rebate_w, 0.0);
@@ -1876,10 +1997,7 @@ fn bake_swing_arc(slot: OpeningComponentSlot, p: OpeningBakeParams, hw: f64, ft:
     }
     let ang = p.opening_angle_deg.to_radians().abs().max(1e-6);
     let n = SWING_CHORD_COUNT.max(4);
-    let swing_sign = match p.swing_side {
-        SwingSide::Exterior => 1.0,
-        SwingSide::Interior => -1.0,
-    };
+    let swing_sign = swing_toward_exterior(p.swing_side);
     let pts = match p.hinge.bearing() {
         crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
             let cx = -hw + rebate_w;
@@ -1916,11 +2034,11 @@ fn bake_sill_lines(
     let frame_half_d = frame_depth * 0.5;
 
     let mut out = Vec::new();
-    let sill_overhang = 0.035;
+    let sill_overhang = 0.0;
     let wall_ext_y = wall_y_min - cross_offset;
     let wall_int_y = wall_y_max - cross_offset;
     let sill_y_outer = wall_ext_y - sill_overhang;
-    let sill_ear = 0.02;
+    let sill_ear = 0.0;
 
     // Exterior sill front nose
     out.push(
@@ -1970,9 +2088,9 @@ fn bake_sill_lines(
         );
     }
 
-    let board_overhang = 0.025;
+    let board_overhang = 0.0;
     let board_y_inner = wall_int_y + board_overhang;
-    let board_ear = 0.02;
+    let board_ear = 0.0;
 
     // Interior board front nose
     out.push(
@@ -2041,19 +2159,6 @@ fn bake_sill_lines_from_parts(
     let frame_y_min = parts.fixed_frame.axis_offset - fixed_frame.depth * 0.5;
     let frame_y_max = parts.fixed_frame.axis_offset + fixed_frame.depth * 0.5;
     let mut out = Vec::new();
-    let edge_extension = 0.02;
-    let has_exterior_sill_profile = parts
-        .exterior_sill
-        .profile_id
-        .as_deref()
-        .and_then(|id| library?.find_section_profile(id))
-        .is_some_and(|profile| profile.is_valid());
-    let has_interior_board_profile = parts
-        .interior_board
-        .profile_id
-        .as_deref()
-        .and_then(|id| library?.find_section_profile(id))
-        .is_some_and(|profile| profile.is_valid());
 
     if opening_component_should_render_with_library(
         parts,
@@ -2062,27 +2167,24 @@ fn bake_sill_lines_from_parts(
         library,
     ) && exterior_sill.depth > 0.0
     {
-        let configured_overhang = parts.exterior_sill.overhang.max(0.0);
-        let overhang = if configured_overhang > 0.0 || has_exterior_sill_profile {
-            configured_overhang
-        } else {
-            0.035
-        };
-        let sill_outer_y = wall_ext_y - overhang;
-        out.push(
-            path(
-                slot,
-                vec![
-                    (-hw - edge_extension, sill_outer_y),
-                    (hw + edge_extension, sill_outer_y),
-                    (hw + edge_extension, wall_ext_y),
-                    (-hw - edge_extension, wall_ext_y),
-                ],
-                true,
-                false,
-            )
-            .with_look_role(OpeningLookRole::ExteriorSill),
+        let overhang = parts.exterior_sill.overhang.max(0.0);
+        let (x0, x1) = sill_x_span(
+            hw,
+            parts.exterior_sill.side_overhang_left,
+            parts.exterior_sill.side_overhang_right,
         );
+        let sill_outer_y = wall_ext_y - overhang;
+        if overhang > 1e-9 || x0 < -hw - 1e-9 || x1 > hw + 1e-9 {
+            out.push(
+                path(
+                    slot,
+                    vec![(x0, sill_outer_y), (x1, sill_outer_y), (x1, wall_ext_y), (x0, wall_ext_y)],
+                    true,
+                    false,
+                )
+                .with_look_role(OpeningLookRole::ExteriorSill),
+            );
+        }
         out.push(
             path(slot, vec![(-hw, wall_ext_y), (hw, wall_ext_y)], false, false)
                 .with_look_role(OpeningLookRole::ExteriorSill),
@@ -2104,27 +2206,29 @@ fn bake_sill_lines_from_parts(
         library,
     ) && interior_board.depth > 0.0
     {
-        let configured_overhang = parts.interior_board.overhang.max(0.0);
-        let overhang = if configured_overhang > 0.0 || has_interior_board_profile {
-            configured_overhang
-        } else {
-            0.025
-        };
-        let board_inner_y = wall_int_y + overhang;
-        out.push(
-            path(
-                slot,
-                vec![
-                    (-hw - edge_extension, board_inner_y),
-                    (hw + edge_extension, board_inner_y),
-                    (hw + edge_extension, wall_int_y),
-                    (-hw - edge_extension, wall_int_y),
-                ],
-                true,
-                false,
-            )
-            .with_look_role(OpeningLookRole::InteriorBoard),
+        let overhang = parts.interior_board.overhang.max(0.0);
+        let (x0, x1) = sill_x_span(
+            hw,
+            parts.interior_board.side_overhang_left,
+            parts.interior_board.side_overhang_right,
         );
+        let board_inner_y = wall_int_y + overhang;
+        if overhang > 1e-9 || x0 < -hw - 1e-9 || x1 > hw + 1e-9 {
+            out.push(
+                path(
+                    slot,
+                    vec![
+                        (x0, board_inner_y),
+                        (x1, board_inner_y),
+                        (x1, wall_int_y),
+                        (x0, wall_int_y),
+                    ],
+                    true,
+                    false,
+                )
+                .with_look_role(OpeningLookRole::InteriorBoard),
+            );
+        }
         out.push(
             path(slot, vec![(-hw, wall_int_y), (hw, wall_int_y)], false, false)
                 .with_look_role(OpeningLookRole::InteriorBoard),
@@ -2313,7 +2417,7 @@ fn bake_elevation_swing_triangle(
 }
 
 fn bake_elevation_sill_line(slot: OpeningComponentSlot, hw: f64, _h: f64) -> Vec<BakedPath> {
-    let ear = 0.035;
+    let ear = 0.0;
     let sill_drop = -0.05;
     vec![
         path(slot, vec![(-hw - ear, 0.0), (hw + ear, 0.0)], false, false),
@@ -2673,10 +2777,7 @@ pub fn build_opening_leaf_ring(
         crate::modules::aec::engine::construction_grid::TrackEnd::Start => -hw + ft,
         crate::modules::aec::engine::construction_grid::TrackEnd::End => hw - ft,
     };
-    let swing_sign = match swing {
-        SwingSide::Exterior => 1.0,
-        SwingSide::Interior => -1.0,
-    };
+    let swing_sign = swing_toward_exterior(swing);
     let ang = match hinge.bearing() {
         crate::modules::aec::engine::construction_grid::TrackEnd::Start => swing_sign * opening_angle_deg.to_radians(),
         crate::modules::aec::engine::construction_grid::TrackEnd::End => -swing_sign * opening_angle_deg.to_radians(),
@@ -2914,6 +3015,22 @@ fn opening_look_line_style(
     (line_type, line_color)
 }
 
+pub const AEC_OPENING_GRID_LAYER: &str = "AEC_OPENING_GRID";
+
+fn ensure_opening_grid_layer(scene: &mut Scene, prefix: Option<&str>) -> String {
+    let name = crate::modules::aec::engine::wall_package::prefix_layer(AEC_OPENING_GRID_LAYER, prefix);
+    let existed = scene.document.layers.contains(&name);
+    scene.ensure_layer(&name);
+    if !existed {
+        if let Some(layer) = scene.document.layers.get_mut(&name) {
+            layer.color = acadrust::types::Color::Index(8);
+            layer.flags.off = false;
+            layer.is_plottable = true;
+        }
+    }
+    name
+}
+
 fn apply_opening_look_to_entity(
     entity: &mut EntityType,
     style: &OpeningStyle,
@@ -3051,6 +3168,30 @@ fn emit_opening_accessory_3d(
             rules,
         );
     }
+}
+
+pub(crate) fn sill_x_span(half_width: f64, left: f64, right: f64) -> (f64, f64) {
+    (-half_width - left.max(0.0), half_width + right.max(0.0))
+}
+
+pub(crate) fn wall_clamped_interval(wall_min: f64, wall_max: f64, start: f64, depth: f64) -> (f64, f64) {
+    let lo = wall_min.min(wall_max);
+    let hi = wall_min.max(wall_max);
+    let start = start.clamp(lo, hi);
+    let end = (start + depth.max(0.0)).clamp(lo, hi);
+    (start.min(end), start.max(end))
+}
+
+pub(crate) fn accessory_bottom(head: f64, seat: f64) -> f64 {
+    head + seat.max(0.0)
+}
+
+pub(crate) fn lintel_depth_interval(wall_min: f64, wall_max: f64, depth: f64) -> (f64, f64) {
+    let lo = wall_min.min(wall_max);
+    let hi = wall_min.max(wall_max);
+    let depth = depth.max(0.0).min((hi - lo).max(0.0));
+    let center = (lo + hi) * 0.5;
+    (center - depth * 0.5, center + depth * 0.5)
 }
 
 pub(crate) fn exterior_sill_y_bounds(
@@ -3696,6 +3837,16 @@ pub fn regenerate_opening_display(
         }
         None => None,
     };
+    let layer_for = |scene: &mut Scene, role: Option<OpeningLookRole>| -> Option<String> {
+        if role == Some(OpeningLookRole::Division) {
+            Some(ensure_opening_grid_layer(
+                scene,
+                xref_layer_prefix.as_deref(),
+            ))
+        } else {
+            default_opening_layer.clone()
+        }
+    };
 
     for baked in local {
         if baked.points.len() < 2 {
@@ -3719,8 +3870,8 @@ pub fn regenerate_opening_display(
             if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
                 entity.common_mut().owner_handle = opening_owner_handle;
             }
-            if let Some(ref l) = default_opening_layer {
-                entity.as_entity_mut().set_layer(l.clone());
+            if let Some(layer) = layer_for(scene, baked.resolved_look_role()) {
+                entity.as_entity_mut().set_layer(layer);
             }
             if let Some(role) = baked.resolved_look_role() {
                 apply_opening_look_to_entity(
@@ -3752,9 +3903,9 @@ pub fn regenerate_opening_display(
                         e.common_mut().owner_handle = opening_owner_handle;
                     }
                 }
-                if let Some(ref l) = default_opening_layer {
+                if let Some(layer) = layer_for(scene, baked.resolved_look_role()) {
                     if let Some(e) = scene.document.get_entity_mut(hatch) {
-                        e.as_entity_mut().set_layer(l.clone());
+                        e.as_entity_mut().set_layer(layer);
                     }
                 }
                 if let Some(EntityType::Hatch(h)) = scene.document.get_entity_mut(hatch) {
@@ -3775,8 +3926,8 @@ pub fn regenerate_opening_display(
         if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
             entity.common_mut().owner_handle = opening_owner_handle;
         }
-        if let Some(ref l) = default_opening_layer {
-            entity.as_entity_mut().set_layer(l.clone());
+        if let Some(layer) = layer_for(scene, baked.resolved_look_role()) {
+            entity.as_entity_mut().set_layer(layer);
         }
         if let Some(role) = baked.resolved_look_role() {
             apply_opening_look_to_entity(
@@ -3957,12 +4108,13 @@ pub fn regenerate_opening_display(
                 library,
                 &leaf_frame_section,
             ) {
+                let grid_layer = layer_for(scene, Some(OpeningLookRole::Division));
                 emit_opening_solid_3d(
                     scene,
                     body,
                     opening_handle,
                     opening_owner_handle,
-                    default_opening_layer.as_deref(),
+                    grid_layer.as_deref(),
                     origin,
                     (tx, ty),
                     normal,
@@ -3993,12 +4145,12 @@ pub fn regenerate_opening_display(
             library,
         )
     {
-        if let Ok(cells) = projected.layout(opening.width, opening.height, opening.kind) {
-            for cell in cells {
+        {
+            for cell in flatten_resolved_cells(grid, opening.width, opening.height) {
                 if !matches!(
-                    cell.cell.kind,
-                    crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
-                        | crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                    cell.cell.fill,
+                    crate::modules::aec::engine::construction_grid::CellFill::Door
+                        | crate::modules::aec::engine::construction_grid::CellFill::Glass
                 ) {
                     continue;
                 }
@@ -4012,16 +4164,25 @@ pub fn regenerate_opening_display(
                     continue;
                 }
                 let is_door =
-                    cell.cell.kind == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf;
+                    matches!(cell.cell.fill, crate::modules::aec::engine::construction_grid::CellFill::Door);
+                let frame = leaf_frame_section.face.max(0.0);
+                let bite = (style.parts.leaf_frame.rebate_overlap
+                    + style.parts.leaf_frame.lateral_overlap)
+                    .max(0.0)
+                    .min(frame);
+                let into = (frame - bite).max(0.0);
+                let bottom_inset = if is_door { 0.0 } else { into };
+                let width = (width - into * 2.0).max(0.0);
+                let height = (height - into - bottom_inset).max(0.0);
                 if let Some(body) = build_opening_leaf_ring(
                     width,
                     height,
-                    leaf_frame_section.face,
+                    frame,
                     leaf_frame_section.depth,
-                    style.parts.leaf_frame.lateral_overlap,
+                    0.0,
                     style.parts.leaf_frame.depth_offset,
                     style.opening_angle_deg,
-                    cell.cell.hinge.unwrap_or(opening.hinge),
+                    cell.cell.operation.unwrap_or(opening.hinge),
                     opening.swing_side,
                     is_door,
                     OpeningShape::Rectangle,
@@ -4038,7 +4199,7 @@ pub fn regenerate_opening_display(
                         normal,
                         wall_base_z + opening.sill_height,
                         (cell.left + cell.right) * 0.5,
-                        cell.bottom,
+                        cell.bottom + bottom_inset,
                         OpeningComponentSlot::Leaf3D,
                         OpeningLookRole::Leaf,
                         &style,
@@ -4059,19 +4220,19 @@ pub fn regenerate_opening_display(
     if glazing_3d_vis
         && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Glazing)
     {
-        if let Ok(cells) = projected.layout(opening.width, opening.height, opening.kind) {
-            for cell in cells {
+        {
+            for cell in flatten_resolved_cells(grid, opening.width, opening.height) {
                 if !matches!(
-                    cell.cell.kind,
-                    crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
-                        | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+                    cell.cell.fill,
+                    crate::modules::aec::engine::construction_grid::CellFill::Glass
+                        | crate::modules::aec::engine::construction_grid::CellFill::Fixed
                 ) {
                     continue;
                 }
                 let inset = style.parts.glazing.inset.max(0.0);
                 let leaf_here = matches!(
-                    cell.cell.kind,
-                    crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                    cell.cell.fill,
+                    crate::modules::aec::engine::construction_grid::CellFill::Glass
                 ) && opening_component_should_render(
                     &style.parts,
                     opening.kind,
@@ -4083,16 +4244,18 @@ pub fn regenerate_opening_display(
                     fixed_frame_section.face
                 };
                 let overlap = if leaf_here {
-                    style.parts.leaf_frame.lateral_overlap.max(0.0)
+                    (style.parts.leaf_frame.rebate_overlap + style.parts.leaf_frame.lateral_overlap)
+                        .max(0.0)
                 } else {
                     0.0
                 };
                 let surround = (bar - overlap).max(0.0);
                 let left = glass_edge_into_bar(cell.left, 1.0, surround, inset);
                 let right = glass_edge_into_bar(cell.right, -1.0, surround, inset);
-                let bottom_bar = if cell.cell.kind
-                    == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
-                {
+                let bottom_bar = if matches!(
+                    cell.cell.fill,
+                    crate::modules::aec::engine::construction_grid::CellFill::Door
+                ) {
                     0.0
                 } else {
                     surround
@@ -4154,6 +4317,8 @@ pub fn regenerate_opening_display(
         {
             let overhang = sill.overhang.max(0.0);
             let upstand = sill.upstand.max(0.0);
+            let left = sill.side_overhang_left.max(0.0);
+            let right = sill.side_overhang_right.max(0.0);
             let (y_min, y_max) = exterior_sill_y_bounds(
                 wall_y_min,
                 wall_y_max,
@@ -4163,7 +4328,7 @@ pub fn regenerate_opening_display(
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
-                    opening.width,
+                    opening.width + left + right,
                     exterior_sill_section.face + upstand,
                     y_min,
                     y_max,
@@ -4175,7 +4340,7 @@ pub fn regenerate_opening_display(
                 (tx, ty),
                 normal,
                 wall_base_z + opening.sill_height,
-                0.0,
+                (right - left) * 0.5,
                 (upstand - exterior_sill_section.face) * 0.5,
                 OpeningLookRole::ExteriorSill,
                 &style,
@@ -4195,6 +4360,8 @@ pub fn regenerate_opening_display(
         {
             let overhang = board.overhang.max(0.0);
             let upstand = board.upstand.max(0.0);
+            let left = board.side_overhang_left.max(0.0);
+            let right = board.side_overhang_right.max(0.0);
             let (y_min, y_max) = interior_board_y_bounds(
                 wall_y_min,
                 wall_y_max,
@@ -4204,7 +4371,7 @@ pub fn regenerate_opening_display(
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
-                    opening.width,
+                    opening.width + left + right,
                     interior_board_section.face + upstand,
                     y_min,
                     y_max,
@@ -4216,7 +4383,7 @@ pub fn regenerate_opening_display(
                 (tx, ty),
                 normal,
                 wall_base_z + opening.sill_height,
-                0.0,
+                (right - left) * 0.5,
                 (upstand - interior_board_section.face) * 0.5,
                 OpeningLookRole::InteriorBoard,
                 &style,
@@ -4262,14 +4429,19 @@ pub fn regenerate_opening_display(
             OpeningLookRole::ShutterBox,
             library,
         ) {
-            let y_min = wall_y_min + shutter.installation_depth;
+            let (y_min, y_max) = wall_clamped_interval(
+                wall_y_min,
+                wall_y_max,
+                wall_y_min + shutter.installation_depth.max(0.0),
+                shutter_section.depth,
+            );
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
                     opening.width,
                     shutter_section.face,
                     y_min,
-                    y_min + shutter_section.depth,
+                    y_max,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -4279,7 +4451,7 @@ pub fn regenerate_opening_display(
                 normal,
                 wall_base_z + opening.sill_height,
                 0.0,
-                opening.height + shutter.seat_above_frame + shutter_section.face * 0.5,
+                accessory_bottom(opening.height, shutter.seat_above_frame) + shutter_section.face * 0.5,
                 OpeningLookRole::ShutterBox,
                 &style,
                 library,
@@ -4296,14 +4468,14 @@ pub fn regenerate_opening_display(
         ) {
             let bearing_left = lintel.bearing_left.max(0.0);
             let bearing_right = lintel.bearing_right.max(0.0);
-            let lintel_y_center = (wall_y_min + wall_y_max) * 0.5;
+            let (y_min, y_max) = lintel_depth_interval(wall_y_min, wall_y_max, lintel_section.depth);
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
                     opening.width + bearing_left + bearing_right,
                     lintel_section.face,
-                    lintel_y_center - lintel_section.depth * 0.5,
-                    lintel_y_center + lintel_section.depth * 0.5,
+                    y_min,
+                    y_max,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -4530,7 +4702,7 @@ mod tests {
         let plan_post = plan
             .iter()
             .find(|path| {
-                path.slot == OpeningComponentSlot::Glazing2D
+                path.slot == OpeningComponentSlot::Division2D
                     && path.points[0].0 == path.points[1].0
             })
             .unwrap();
@@ -4696,7 +4868,7 @@ mod tests {
             muntin_profile_id: None,
         };
         let baked = params(2.0, OpeningKind::Window, fold);
-        let schemas = bake_grid_elevation_schema(&grid, baked);
+        let schemas = bake_grid_elevation_schema(&grid, baked, 0.0);
         assert_eq!(schemas.len(), 4);
         for pair in schemas.windows(2) {
             assert_eq!(pair[0].points[1], pair[1].points[0]);
@@ -4716,7 +4888,7 @@ mod tests {
         mixed.cells[3].operation = Some(LeafOperation::Slide {
             direction: TrackEnd::End,
         });
-        let mixed_schemas = bake_grid_elevation_schema(&mixed, baked);
+        let mixed_schemas = bake_grid_elevation_schema(&mixed, baked, 0.0);
         assert_eq!(mixed_schemas.len(), 4);
         assert_ne!(mixed_schemas[2].points[1], mixed_schemas[3].points[0]);
     }
@@ -5172,6 +5344,102 @@ mod tests {
     }
 
     #[test]
+    fn division_posts_use_the_grid_layer_and_keep_a_changed_layer_color() {
+        use crate::modules::aec::engine::construction_grid::{
+            ConstructionGrid, GridTrack, TrackMeasure,
+        };
+
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let mut lib = seed_default_library();
+        let style = lib
+            .opening_styles
+            .iter_mut()
+            .find(|style| style.style.id == SEED_WINDOW_STYLE_ID)
+            .expect("seed window style");
+        let fraction = GridTrack {
+            measure: TrackMeasure::Fraction(1.0),
+            ..GridTrack::default()
+        };
+        style.grid = ConstructionGrid {
+            columns: vec![fraction.clone(), fraction],
+            ..ConstructionGrid::default()
+        };
+        style.looks.division.line_color = None;
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+
+        let children = collect_opening_display_children(&scene, opening);
+        let posts: Vec<_> = children
+            .iter()
+            .copied()
+            .filter(|handle| {
+                scene
+                    .document
+                    .get_entity(*handle)
+                    .and_then(opening_rep_slot_from_entity)
+                    == Some(OpeningComponentSlot::Division2D)
+            })
+            .collect();
+        assert!(!posts.is_empty());
+        for handle in &posts {
+            let entity = scene.document.get_entity(*handle).expect("post");
+            assert_eq!(entity.as_entity().layer(), AEC_OPENING_GRID_LAYER);
+            assert!(matches!(
+                entity.as_entity().color(),
+                acadrust::types::Color::ByLayer
+            ));
+        }
+        let glass = children.iter().copied().find(|handle| {
+            scene
+                .document
+                .get_entity(*handle)
+                .and_then(opening_rep_slot_from_entity)
+                == Some(OpeningComponentSlot::Glazing2D)
+        });
+        let glass = glass.expect("glass");
+        assert_ne!(
+            scene.document.get_entity(glass).unwrap().as_entity().layer(),
+            AEC_OPENING_GRID_LAYER
+        );
+        assert_eq!(
+            scene
+                .document
+                .layers
+                .get(AEC_OPENING_GRID_LAYER)
+                .expect("grid layer")
+                .color,
+            acadrust::types::Color::Index(8)
+        );
+
+        scene
+            .document
+            .layers
+            .get_mut(AEC_OPENING_GRID_LAYER)
+            .expect("grid layer")
+            .color = acadrust::types::Color::Index(3);
+        regenerate_opening_display(&mut scene, opening, Some(&lib), None);
+        assert_eq!(
+            scene
+                .document
+                .layers
+                .get(AEC_OPENING_GRID_LAYER)
+                .expect("grid layer")
+                .color,
+            acadrust::types::Color::Index(3)
+        );
+    }
+
+    #[test]
     fn opening_look_is_written_to_generated_frame_polyline() {
         let mut scene = Scene::new();
         let wall = add_test_wall(&mut scene);
@@ -5612,6 +5880,154 @@ mod tests {
         );
         let inner = inner_frame_half_width(&baked).unwrap();
         assert!((opening.width * 0.5 - inner - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lintel_and_shutter_start_at_the_rough_head_inside_the_wall() {
+        let wall_min = -0.15;
+        let wall_max = 0.15;
+        let head = 1.2;
+        assert!((accessory_bottom(head, 0.04) - 1.24).abs() < 1e-12);
+        assert!((accessory_bottom(head, -0.2) - head).abs() < 1e-12);
+
+        let (y0, y1) = wall_clamped_interval(wall_min, wall_max, wall_min - 0.05, 0.4);
+        assert!((y0 - wall_min).abs() < 1e-12);
+        assert!((y1 - wall_max).abs() < 1e-12);
+
+        let (lintel_y0, lintel_y1) = lintel_depth_interval(wall_min, wall_max, 0.5);
+        assert!(lintel_y0 >= wall_min - 1e-12);
+        assert!(lintel_y1 <= wall_max + 1e-12);
+        assert!(lintel_y1 > lintel_y0);
+    }
+
+    #[test]
+    fn side_overhangs_extend_only_the_named_sill_and_side() {
+        let mut parts = OpeningParts::default();
+        parts.exterior_sill.thickness = 0.04;
+        parts.exterior_sill.overhang = 0.02;
+        parts.exterior_sill.side_overhang_left = 0.05;
+        parts.exterior_sill.side_overhang_right = 0.0;
+        parts.interior_board.thickness = 0.03;
+        parts.interior_board.overhang = 0.02;
+        parts.interior_board.side_overhang_left = 0.0;
+        parts.interior_board.side_overhang_right = 0.08;
+        let section = ResolvedSection {
+            outline: Vec::new(),
+            face: 0.04,
+            depth: 0.06,
+        };
+        let baked = bake_sill_lines_from_parts(
+            OpeningComponentSlot::Sill2D,
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
+            &parts,
+            None,
+            &section,
+            &section,
+            &section,
+        );
+        let span = |role: OpeningLookRole| {
+            let path = baked
+                .iter()
+                .find(|path| path.look_role == Some(role) && path.closed)
+                .expect("sill nose");
+            let min_x = path.points.iter().map(|point| point.0).fold(f64::INFINITY, f64::min);
+            let max_x = path.points.iter().map(|point| point.0).fold(f64::NEG_INFINITY, f64::max);
+            (min_x, max_x)
+        };
+        let (ext_min, ext_max) = span(OpeningLookRole::ExteriorSill);
+        let (int_min, int_max) = span(OpeningLookRole::InteriorBoard);
+        assert!((ext_min - (-0.6 - 0.05)).abs() < 1e-12);
+        assert!((ext_max - 0.6).abs() < 1e-12);
+        assert!((int_min - -0.6).abs() < 1e-12);
+        assert!((int_max - (0.6 + 0.08)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exterior_swing_points_to_the_exterior_edge() {
+        let mut baked = params(1.2, OpeningKind::Door, LeafOperation::left());
+        baked.swing_side = SwingSide::Exterior;
+        baked.wall_y_min = -0.15;
+        baked.wall_y_max = 0.15;
+        let exterior = bake_swing_arc(OpeningComponentSlot::Swing2D, baked, 0.6, 0.06);
+        assert!(exterior[0].points.last().unwrap().1 < 0.0);
+        baked.swing_side = SwingSide::Interior;
+        let interior = bake_swing_arc(OpeningComponentSlot::Swing2D, baked, 0.6, 0.06);
+        assert!(interior[0].points.last().unwrap().1 > 0.0);
+        assert!((swing_toward_exterior(SwingSide::Exterior) + 1.0).abs() < 1e-12);
+        assert!((swing_toward_exterior(SwingSide::Interior) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nested_grid_bakes_an_inner_post_and_one_leaf_per_child() {
+        use crate::modules::aec::engine::construction_grid::{
+            CellFill, ConstructionGrid, GridCell, GridTrack, TrackMeasure,
+        };
+
+        let fraction = GridTrack {
+            measure: TrackMeasure::Fraction(1.0),
+            ..GridTrack::default()
+        };
+        let grid = ConstructionGrid {
+            cells: vec![GridCell {
+                columns: 1,
+                rows: 1,
+                fill: CellFill::Nested(ConstructionGrid {
+                    columns: vec![fraction.clone(), fraction],
+                    cells: vec![
+                        GridCell {
+                            fill: CellFill::Glass,
+                            operation: Some(LeafOperation::left()),
+                            ..GridCell::default()
+                        },
+                        GridCell {
+                            column: 1,
+                            fill: CellFill::Glass,
+                            operation: Some(LeafOperation::right()),
+                            ..GridCell::default()
+                        },
+                    ],
+                    ..ConstructionGrid::default()
+                }),
+                ..GridCell::default()
+            }],
+            ..ConstructionGrid::default()
+        };
+        let params = params(1.2, OpeningKind::Window, LeafOperation::left());
+        let posts = bake_grid_plan_divisions(
+            &grid,
+            params,
+            DivisionLevel::Posts,
+            None,
+            &ResolvedSection {
+                outline: Vec::new(),
+                face: 0.04,
+                depth: 0.06,
+            },
+            &ResolvedSection {
+                outline: Vec::new(),
+                face: 0.04,
+                depth: 0.04,
+            },
+        );
+        assert_eq!(posts.len(), 1);
+        assert!((posts[0].points[0].0).abs() < 1e-9);
+        let leaves = bake_grid_leaf_lines(&grid, params);
+        assert_eq!(leaves.len(), 2);
+    }
+
+    #[test]
+    fn glazing_line_bites_into_a_rendered_bar_and_stays_flush_without_one() {
+        let grid = ConstructionGrid::default();
+        let lines = bake_grid_glazing_lines(
+            &grid,
+            params(1.2, OpeningKind::Window, LeafOperation::left()),
+            0.01,
+            0.06,
+        );
+        let (left, right) = (lines[0].points[0].0, lines[0].points[1].0);
+        assert!((left - (-0.6 + 0.05)).abs() < 1e-12);
+        assert!((right - (0.6 - 0.05)).abs() < 1e-12);
+        assert!((glass_edge_into_bar(0.0, 1.0, 0.0, 0.02) - 0.0).abs() < 1e-12);
     }
 
 }

@@ -187,6 +187,20 @@ impl OpenCADStudio {
                 self.aec.styles.opening_preview_mode = mode;
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerPreviewCamera(
+                azimuth,
+                elevation,
+                zoom,
+                pan_x,
+                pan_y,
+            ) => {
+                self.aec.styles.opening_preview_azimuth = azimuth;
+                self.aec.styles.opening_preview_elevation = elevation;
+                self.aec.styles.opening_preview_zoom = zoom;
+                self.aec.styles.opening_preview_pan_x = pan_x;
+                self.aec.styles.opening_preview_pan_y = pan_y;
+                Task::none()
+            }
             AecMessage::AecOpeningStyleManagerSetEditorTab(tab) => {
                 self.aec_opening_style_manager_set_editor_tab(tab);
                 Task::none()
@@ -257,6 +271,26 @@ impl OpenCADStudio {
             }
             AecMessage::AecOpeningStyleManagerDivisionPreset(name) => {
                 self.aec_opening_style_manager_division_preset(&name);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerCellSpan(action) => {
+                self.aec_opening_style_manager_cell_span(&action);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerGridInsert(axis, position) => {
+                self.aec_opening_style_manager_grid_insert(&axis, &position);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerGridDivider(axis, index, position) => {
+                self.aec_opening_style_manager_grid_divider(&axis, index, &position);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerGridEnter(index) => {
+                self.aec_opening_style_manager_grid_enter(index);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerGridBack => {
+                self.aec_opening_style_manager_grid_back();
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerFamilyBlockChanged(family, name) => {

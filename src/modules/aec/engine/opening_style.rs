@@ -624,6 +624,12 @@ pub struct SillDimensions {
     pub thickness: f64,
     pub overhang: f64,
     pub upstand: f64,
+    /// Lateral extension past the rough opening on the negative wall axis.
+    #[serde(default)]
+    pub side_overhang_left: f64,
+    /// Lateral extension past the rough opening on the positive wall axis.
+    #[serde(default)]
+    pub side_overhang_right: f64,
 }
 
 impl Default for SillDimensions {
@@ -634,6 +640,8 @@ impl Default for SillDimensions {
             thickness: 0.0,
             overhang: 0.0,
             upstand: 0.0,
+            side_overhang_left: 0.0,
+            side_overhang_right: 0.0,
         }
     }
 }
@@ -894,7 +902,9 @@ impl OpeningLookRole {
             OpeningComponentSlot::Swing2D | OpeningComponentSlot::ElevationSwing2D => {
                 Some(OpeningLookRole::Swing)
             }
-            OpeningComponentSlot::ElevationMuntins2D => Some(OpeningLookRole::Division),
+            OpeningComponentSlot::Division2D | OpeningComponentSlot::ElevationMuntins2D => {
+                Some(OpeningLookRole::Division)
+            }
             OpeningComponentSlot::Sill2D | OpeningComponentSlot::ElevationSill2D => {
                 Some(OpeningLookRole::ExteriorSill)
             }
@@ -958,8 +968,8 @@ impl OpeningEditorGroup {
             OpeningEditorGroup::FixedFrame,
             OpeningEditorGroup::Leaf,
             OpeningEditorGroup::Glazing,
-            OpeningEditorGroup::ExteriorSill,
             OpeningEditorGroup::InteriorBoard,
+            OpeningEditorGroup::ExteriorSill,
             OpeningEditorGroup::Threshold,
             OpeningEditorGroup::ShutterBox,
             OpeningEditorGroup::Lintel,
@@ -2202,6 +2212,21 @@ mod tests {
         ));
         assert!(!OpeningEditorGroup::Ratings.applies_to(OpeningKind::Window));
         assert!(OpeningEditorGroup::Symbol.applies_to(OpeningKind::Breakthrough));
+    }
+
+    #[test]
+    fn interior_board_precedes_exterior_sill_in_editor_groups() {
+        let groups = OpeningEditorGroup::all();
+        let interior_board = groups
+            .iter()
+            .position(|group| *group == OpeningEditorGroup::InteriorBoard)
+            .unwrap();
+        let exterior_sill = groups
+            .iter()
+            .position(|group| *group == OpeningEditorGroup::ExteriorSill)
+            .unwrap();
+
+        assert!(interior_board < exterior_sill);
     }
 
     #[test]
