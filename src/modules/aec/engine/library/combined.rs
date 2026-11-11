@@ -1,0 +1,520 @@
+use super::*;
+
+/// Builds a combined material list from the Standard library and (when present)
+/// the project's embedded library. Project entries win on id collision.
+pub fn combined_material_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedMaterialEntry> {
+    combined_material_entries_with_session(project, None)
+}
+
+/// Like [`combined_material_entries`], with a session overlay after project
+/// and before Standard. Project and session win on id; Standard fills gaps.
+pub fn combined_material_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedMaterialEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for material in &project.material_wall_style_library.materials {
+            seen.insert(material.id.clone());
+            entries.push(CombinedMaterialEntry {
+                material: material.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for material in &session.materials {
+            if seen.insert(material.id.clone()) {
+                entries.push(CombinedMaterialEntry {
+                    material: material.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for material in standard.materials {
+        if seen.insert(material.id.clone()) {
+            entries.push(CombinedMaterialEntry {
+                material,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for e in &mut entries {
+        e.material.style.origin = e.source.into();
+    }
+    entries
+}
+
+/// Builds a combined wall-style list from the Standard library and (when
+/// present) the project's embedded library. Project entries win on id collision.
+pub fn combined_wall_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedWallStyleEntry> {
+    combined_wall_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_wall_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_wall_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedWallStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for wall_style in &project.material_wall_style_library.wall_styles {
+            seen.insert(wall_style.style.id.clone());
+            entries.push(CombinedWallStyleEntry {
+                wall_style: wall_style.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for wall_style in &session.wall_styles {
+            if seen.insert(wall_style.style.id.clone()) {
+                entries.push(CombinedWallStyleEntry {
+                    wall_style: wall_style.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for wall_style in standard.wall_styles {
+        if seen.insert(wall_style.style.id.clone()) {
+            entries.push(CombinedWallStyleEntry {
+                wall_style,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for e in &mut entries {
+        e.wall_style.common_mut().origin = e.source.into();
+    }
+    entries
+}
+
+/// Builds a combined opening-style list. Project wins, then session, then Standard.
+pub fn combined_opening_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedOpeningStyleEntry> {
+    combined_opening_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_opening_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_opening_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedOpeningStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for opening_style in &project.material_wall_style_library.opening_styles {
+            seen.insert(opening_style.style.id.clone());
+            entries.push(CombinedOpeningStyleEntry {
+                opening_style: opening_style.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for opening_style in &session.opening_styles {
+            if seen.insert(opening_style.style.id.clone()) {
+                entries.push(CombinedOpeningStyleEntry {
+                    opening_style: opening_style.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for opening_style in standard.opening_styles {
+        if seen.insert(opening_style.style.id.clone()) {
+            entries.push(CombinedOpeningStyleEntry {
+                opening_style,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for e in &mut entries {
+        e.opening_style.common_mut().origin = e.source.into();
+    }
+    entries
+}
+
+/// Builds a combined slab-style list. Project wins, then session, then Standard.
+pub fn combined_slab_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedSlabStyleEntry> {
+    combined_slab_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_slab_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_slab_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedSlabStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for slab_style in &project.material_wall_style_library.slab_styles {
+            seen.insert(slab_style.style.id.clone());
+            entries.push(CombinedSlabStyleEntry {
+                slab_style: slab_style.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for slab_style in &session.slab_styles {
+            if seen.insert(slab_style.style.id.clone()) {
+                entries.push(CombinedSlabStyleEntry {
+                    slab_style: slab_style.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for slab_style in standard.slab_styles {
+        if seen.insert(slab_style.style.id.clone()) {
+            entries.push(CombinedSlabStyleEntry {
+                slab_style,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for e in &mut entries {
+        e.slab_style.common_mut().origin = e.source.into();
+    }
+    entries
+}
+
+/// Builds a combined structural slab-style list. Project wins, then session, then Standard.
+pub fn combined_slab_structural_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedSlabStructuralStyleEntry> {
+    combined_slab_structural_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_slab_structural_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_slab_structural_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedSlabStructuralStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for s in &project.material_wall_style_library.slab_structural_styles {
+            seen.insert(s.style.id.clone());
+            entries.push(CombinedSlabStructuralStyleEntry {
+                structural_style: s.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for s in &session.slab_structural_styles {
+            if seen.insert(s.style.id.clone()) {
+                entries.push(CombinedSlabStructuralStyleEntry {
+                    structural_style: s.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for s in standard.slab_structural_styles {
+        if seen.insert(s.style.id.clone()) {
+            entries.push(CombinedSlabStructuralStyleEntry {
+                structural_style: s,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for e in &mut entries {
+        e.structural_style.common_mut().origin = e.source.into();
+    }
+    entries
+}
+
+/// Builds a combined floor finish style list. Project wins, then session, then Standard.
+pub fn combined_floor_finish_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedFloorFinishStyleEntry> {
+    combined_floor_finish_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_floor_finish_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_floor_finish_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedFloorFinishStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for s in &project.material_wall_style_library.floor_finish_styles {
+            seen.insert(s.style.id.clone());
+            entries.push(CombinedFloorFinishStyleEntry {
+                finish_style: s.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for s in &session.floor_finish_styles {
+            if seen.insert(s.style.id.clone()) {
+                entries.push(CombinedFloorFinishStyleEntry {
+                    finish_style: s.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for s in standard.floor_finish_styles {
+        if seen.insert(s.style.id.clone()) {
+            entries.push(CombinedFloorFinishStyleEntry {
+                finish_style: s,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for e in &mut entries {
+        e.finish_style.common_mut().origin = e.source.into();
+    }
+    entries
+}
+
+/// Builds a combined section-profile list. Project wins, then session, then Standard.
+pub fn combined_section_profile_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedSectionProfileEntry> {
+    combined_section_profile_entries_with_session(project, None)
+}
+
+/// Like [`combined_section_profile_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_section_profile_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedSectionProfileEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for profile in &project.material_wall_style_library.profiles {
+            seen.insert(profile.style.id.clone());
+            entries.push(CombinedSectionProfileEntry {
+                profile: profile.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for profile in &session.profiles {
+            if seen.insert(profile.style.id.clone()) {
+                entries.push(CombinedSectionProfileEntry {
+                    profile: profile.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for profile in standard.profiles {
+        if seen.insert(profile.style.id.clone()) {
+            entries.push(CombinedSectionProfileEntry {
+                profile,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for entry in &mut entries {
+        entry.profile.style.origin = entry.source.into();
+    }
+    entries
+}
+
+/// Merged Standard+Project style library for UI lookups (project wins on id).
+pub fn combined_style_library(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> StyleLibrary {
+    combined_style_library_with_session(project, None)
+}
+
+/// Merged Project + Session + Standard library (project, then session, then Standard).
+pub fn combined_style_library_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> StyleLibrary {
+    let mut lib = StyleLibrary::empty();
+    for entry in combined_material_entries_with_session(project, session) {
+        lib.upsert_material(entry.material);
+    }
+    for entry in combined_wall_style_entries_with_session(project, session) {
+        lib.upsert_wall_style(entry.wall_style);
+    }
+    for entry in combined_opening_style_entries_with_session(project, session) {
+        lib.upsert_opening_style(entry.opening_style);
+    }
+    for entry in combined_slab_style_entries_with_session(project, session) {
+        lib.upsert_slab_style(entry.slab_style);
+    }
+    for entry in combined_slab_structural_style_entries_with_session(project, session) {
+        lib.upsert_slab_structural_style(entry.structural_style);
+    }
+    for entry in combined_floor_finish_style_entries_with_session(project, session) {
+        lib.upsert_floor_finish_style(entry.finish_style);
+    }
+    for entry in combined_section_profile_entries_with_session(project, session) {
+        lib.upsert_section_profile(entry.profile);
+    }
+    lib
+}
+
+/// Source of a material id in the combined view, if present.
+pub fn material_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    material_library_source_with_session(project, None, id)
+}
+
+pub fn material_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_material_entries_with_session(project, session)
+        .into_iter()
+        .find(|e| e.material.id == id)
+        .map(|e| e.source)
+}
+
+/// Source of a wall-style id in the combined view, if present.
+pub fn wall_style_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    wall_style_library_source_with_session(project, None, id)
+}
+
+pub fn wall_style_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_wall_style_entries_with_session(project, session)
+        .into_iter()
+        .find(|e| e.wall_style.style.id == id)
+        .map(|e| e.source)
+}
+
+/// Source of an opening-style id in the combined view, if present.
+pub fn opening_style_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    opening_style_library_source_with_session(project, None, id)
+}
+
+pub fn opening_style_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_opening_style_entries_with_session(project, session)
+        .into_iter()
+        .find(|e| e.opening_style.style.id == id)
+        .map(|e| e.source)
+}
+
+/// Source of a slab-style id in the combined view, if present.
+pub fn slab_style_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    slab_style_library_source_with_session(project, None, id)
+}
+
+pub fn slab_style_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_slab_style_entries_with_session(project, session)
+        .into_iter()
+        .find(|e| e.slab_style.style.id == id)
+        .map(|e| e.source)
+}
+
+/// Source of a floor-finish-style id in the combined view, if present.
+pub fn floor_finish_style_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    floor_finish_style_library_source_with_session(project, None, id)
+}
+
+pub fn floor_finish_style_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_floor_finish_style_entries_with_session(project, session)
+        .into_iter()
+        .find(|e| e.finish_style.style.id == id)
+        .map(|e| e.source)
+}
+
+/// Checks whether copying `material` into `target` would collide.
+pub fn material_copy_conflict(target: &StyleLibrary, material: &Material) -> CopyConflict {
+    if let Some(existing) = target.materials.iter().find(|m| m.id == material.id) {
+        if existing == material {
+            CopyConflict::IdenticalAlreadyPresent
+        } else {
+            CopyConflict::DifferentContentCollision
+        }
+    } else {
+        CopyConflict::None
+    }
+}
+
