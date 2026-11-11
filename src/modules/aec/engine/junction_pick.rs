@@ -204,17 +204,6 @@ pub fn point_in_closed_loop_xy(x: f64, y: f64, poly: &[(f64, f64)]) -> bool {
     inside
 }
 
-pub(crate) fn polygon_area_xy(poly: &[(f64, f64)]) -> f64 {
-    if poly.len() < 3 {
-        return 0.0;
-    }
-    let mut a = 0.0;
-    for i in 0..poly.len() - 1 {
-        a += poly[i].0 * poly[i + 1].1 - poly[i + 1].0 * poly[i].1;
-    }
-    a.abs() * 0.5
-}
-
 /// Layer strip under `(x, y)` at the junction, preferring the smallest
 /// containing contour so inner layers win over the outer stack.
 pub fn pick_junction_wall_layer(
@@ -253,7 +242,7 @@ pub fn pick_junction_wall_layer(
             if !point_in_closed_loop_xy(x, y, &loop_xy) {
                 continue;
             }
-            let area = polygon_area_xy(&loop_xy);
+            let area = crate::modules::aec::engine::geometry::signed_area(&loop_xy).abs();
             if area < best_area {
                 best_area = area;
                 best = Some((part.axis_handle, idx, layer.material_id.clone()));
