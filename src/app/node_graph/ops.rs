@@ -1072,7 +1072,10 @@ impl AppHost<'_> {
             }
             "Join" => one(self.run("JOIN", selection(&a[0]).map(|s| vec![s, Enter]))),
             "Explode" => one(self.run("EXPLODE", selection(&a[0]).map(|s| vec![s, Enter]))),
-            "Reverse" => one(self.run("REVERSE", selection(&a[0]).map(|s| vec![s, Enter]))),
+            "Reverse" => one(self.run(
+                "REVERSE",
+                list(&a[0]).first().and_then(pick_on).map(|p| vec![p]),
+            )),
             "Convert To Polyline" => {
                 let steps = pick(&a[0], &a[1]).map(|p| vec![p, typed("Y"), Enter]);
                 one(self.run("PEDIT", steps))
