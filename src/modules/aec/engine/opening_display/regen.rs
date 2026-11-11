@@ -331,6 +331,148 @@ fn emit_label_2d(scene: &mut Scene, ctx: &RegenCtx) {
 }
 
 fn emit_3d_bodies(scene: &mut Scene, ctx: &RegenCtx) {
+    let b = Body3d::new(ctx);
+    emit_frame_3d(scene, ctx, &b);
+    emit_leaf_3d(scene, ctx, &b);
+    emit_glazing_3d(scene, ctx, &b);
+    emit_accessories_3d(scene, ctx, &b);
+}
+
+/// Resolved sections and visibility flags shared by the 3D body phases.
+struct Body3d {
+    fixed_frame_section: ResolvedSection,
+    leaf_frame_section: ResolvedSection,
+    exterior_sill_section: ResolvedSection,
+    interior_board_section: ResolvedSection,
+    threshold_section: ResolvedSection,
+    shutter_section: ResolvedSection,
+    lintel_section: ResolvedSection,
+    division_post_width: f64,
+    division_depth: f64,
+    frame_3d_vis: bool,
+    leaf_component_visible: bool,
+    glazing_3d_vis: bool,
+    leaf_glazing_visible: bool,
+    accessories_3d_vis: bool,
+}
+
+impl Body3d {
+    fn new(ctx: &RegenCtx) -> Body3d {
+    let grid = ctx.grid;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let opening = ctx.opening;
+    let slots = &ctx.slots;
+    let style = ctx.style;
+    let wall_y_max = ctx.wall_y_max;
+    let wall_y_min = ctx.wall_y_min;
+        let frame_3d_vis = merged_rules
+            .as_ref()
+            .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Frame3D))
+            && (slots.contains_key(&OpeningComponentSlot::Frame3D)
+                || slots.contains_key(&OpeningComponentSlot::Solid3D));
+        let fixed_frame_section = resolve_component_section(
+            library,
+            style.parts.fixed_frame.profile_id.as_deref(),
+            style.parts.fixed_frame.face_width,
+            style.parts.fixed_frame.wall_depth,
+        );
+        let leaf_frame_section = resolve_component_section(
+            library,
+            style.parts.leaf_frame.profile_id.as_deref(),
+            style.parts.leaf_frame.face_width,
+            style.parts.leaf_frame.depth,
+        );
+        let division_profile = grid
+            .muntin_profile_id
+            .as_deref()
+            .and_then(|id| library?.find_section_profile(id))
+            .filter(|profile| profile.is_valid());
+        let division_section = resolve_component_section(
+            library,
+            grid.muntin_profile_id.as_deref(),
+            style.parts.fixed_frame.face_width,
+            style.parts.fixed_frame.wall_depth,
+        );
+        let exterior_sill_section = resolve_component_section(
+            library,
+            style.parts.exterior_sill.profile_id.as_deref(),
+            style.parts.exterior_sill.thickness,
+            style.parts.exterior_sill.thickness,
+        );
+        let interior_board_section = resolve_component_section(
+            library,
+            style.parts.interior_board.profile_id.as_deref(),
+            style.parts.interior_board.thickness,
+            style.parts.interior_board.thickness,
+        );
+        let threshold_section = resolve_component_section(
+            library,
+            style.parts.threshold.profile_id.as_deref(),
+            style.parts.threshold.height,
+            style.parts.threshold.width,
+        );
+        let shutter_section = resolve_component_section(
+            library,
+            style.parts.shutter_box.profile_id.as_deref(),
+            style.parts.shutter_box.height,
+            style.parts.shutter_box.depth,
+        );
+        let lintel_section = resolve_component_section(
+            library,
+            style.parts.lintel.profile_id.as_deref(),
+            style.parts.lintel.height,
+            wall_y_max - wall_y_min,
+        );
+        let division_post_width = division_profile.map_or(fixed_frame_section.face, |_| division_section.face);
+        let division_depth = division_profile.map_or(fixed_frame_section.depth, |_| division_section.depth);
+        let leaf_3d_vis = merged_rules
+            .as_ref()
+            .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Leaf3D))
+            && (slots.contains_key(&OpeningComponentSlot::Leaf3D)
+                || slots.contains_key(&OpeningComponentSlot::Solid3D));
+        let leaf_component_visible = leaf_3d_vis
+            && opening_component_should_render_with_library(
+                &style.parts,
+                opening.kind,
+                OpeningLookRole::Leaf,
+                library,
+            );
+        let glazing_3d_vis = merged_rules
+            .as_ref()
+            .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Glazing3D))
+            && (slots.contains_key(&OpeningComponentSlot::Glazing3D)
+                || slots.contains_key(&OpeningComponentSlot::Solid3D));
+        let leaf_glazing_visible = glazing_3d_vis
+            && opening_component_should_render_with_library(
+                &style.parts,
+                opening.kind,
+                OpeningLookRole::Glazing,
+                library,
+            );
+        let accessories_3d_vis = merged_rules
+            .as_ref()
+            .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Solid3D));
+        Body3d {
+            fixed_frame_section,
+            leaf_frame_section,
+            exterior_sill_section,
+            interior_board_section,
+            threshold_section,
+            shutter_section,
+            lintel_section,
+            division_post_width,
+            division_depth,
+            frame_3d_vis,
+            leaf_component_visible,
+            glazing_3d_vis,
+            leaf_glazing_visible,
+            accessories_3d_vis,
+        }
+    }
+}
+
+fn emit_frame_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
     let default_opening_layer = &ctx.default_opening_layer;
     let grid = ctx.grid;
     let levels = &ctx.levels;
@@ -341,75 +483,16 @@ fn emit_3d_bodies(scene: &mut Scene, ctx: &RegenCtx) {
     let opening_handle = ctx.opening_handle;
     let origin = ctx.origin;
     let params = ctx.params;
-    let slots = &ctx.slots;
     let style = ctx.style;
     let wall_base_z = ctx.wall_base_z;
-    let wall_y_max = ctx.wall_y_max;
-    let wall_y_min = ctx.wall_y_min;
     let opening_owner_handle = ctx.owner;
     let (tx, ty) = ctx.tangent;
     let layer_for = |scene: &mut Scene, role: Option<OpeningLookRole>| ctx.layer_for(scene, role);
-    let frame_3d_vis = merged_rules
-        .as_ref()
-        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Frame3D))
-        && (slots.contains_key(&OpeningComponentSlot::Frame3D)
-            || slots.contains_key(&OpeningComponentSlot::Solid3D));
-    let fixed_frame_section = resolve_component_section(
-        library,
-        style.parts.fixed_frame.profile_id.as_deref(),
-        style.parts.fixed_frame.face_width,
-        style.parts.fixed_frame.wall_depth,
-    );
-    let leaf_frame_section = resolve_component_section(
-        library,
-        style.parts.leaf_frame.profile_id.as_deref(),
-        style.parts.leaf_frame.face_width,
-        style.parts.leaf_frame.depth,
-    );
-    let division_profile = grid
-        .muntin_profile_id
-        .as_deref()
-        .and_then(|id| library?.find_section_profile(id))
-        .filter(|profile| profile.is_valid());
-    let division_section = resolve_component_section(
-        library,
-        grid.muntin_profile_id.as_deref(),
-        style.parts.fixed_frame.face_width,
-        style.parts.fixed_frame.wall_depth,
-    );
-    let exterior_sill_section = resolve_component_section(
-        library,
-        style.parts.exterior_sill.profile_id.as_deref(),
-        style.parts.exterior_sill.thickness,
-        style.parts.exterior_sill.thickness,
-    );
-    let interior_board_section = resolve_component_section(
-        library,
-        style.parts.interior_board.profile_id.as_deref(),
-        style.parts.interior_board.thickness,
-        style.parts.interior_board.thickness,
-    );
-    let threshold_section = resolve_component_section(
-        library,
-        style.parts.threshold.profile_id.as_deref(),
-        style.parts.threshold.height,
-        style.parts.threshold.width,
-    );
-    let shutter_section = resolve_component_section(
-        library,
-        style.parts.shutter_box.profile_id.as_deref(),
-        style.parts.shutter_box.height,
-        style.parts.shutter_box.depth,
-    );
-    let lintel_section = resolve_component_section(
-        library,
-        style.parts.lintel.profile_id.as_deref(),
-        style.parts.lintel.height,
-        wall_y_max - wall_y_min,
-    );
-    let division_post_width = division_profile.map_or(fixed_frame_section.face, |_| division_section.face);
-    let division_depth = division_profile.map_or(fixed_frame_section.depth, |_| division_section.depth);
-
+    let fixed_frame_section = &b.fixed_frame_section;
+    let leaf_frame_section = &b.leaf_frame_section;
+    let division_post_width = b.division_post_width;
+    let division_depth = b.division_depth;
+    let frame_3d_vis = b.frame_3d_vis;
     if frame_3d_vis && opening.kind != OpeningKind::Breakthrough {
         if opening_component_should_render_with_library(
             &style.parts,
@@ -485,32 +568,29 @@ fn emit_3d_bodies(scene: &mut Scene, ctx: &RegenCtx) {
             }
         }
     }
+}
 
-    let leaf_3d_vis = merged_rules
-        .as_ref()
-        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Leaf3D))
-        && (slots.contains_key(&OpeningComponentSlot::Leaf3D)
-            || slots.contains_key(&OpeningComponentSlot::Solid3D));
-    let leaf_component_visible = leaf_3d_vis
-        && opening_component_should_render_with_library(
-            &style.parts,
-            opening.kind,
-            OpeningLookRole::Leaf,
-            library,
-        );
-    let glazing_3d_vis = merged_rules
-        .as_ref()
-        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Glazing3D))
-        && (slots.contains_key(&OpeningComponentSlot::Glazing3D)
-            || slots.contains_key(&OpeningComponentSlot::Solid3D));
-    let leaf_glazing_visible = glazing_3d_vis
-        && opening_component_should_render_with_library(
-            &style.parts,
-            opening.kind,
-            OpeningLookRole::Glazing,
-            library,
-        );
-
+fn emit_leaf_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let grid = ctx.grid;
+    let levels = &ctx.levels;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let params = ctx.params;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let fixed_frame_section = &b.fixed_frame_section;
+    let leaf_frame_section = &b.leaf_frame_section;
+    let division_post_width = b.division_post_width;
+    let frame_3d_vis = b.frame_3d_vis;
+    let leaf_component_visible = b.leaf_component_visible;
+    let leaf_glazing_visible = b.leaf_glazing_visible;
     if leaf_component_visible {
         {
             let divisions_visible = levels.divisions != DivisionLevel::Off
@@ -628,7 +708,26 @@ fn emit_3d_bodies(scene: &mut Scene, ctx: &RegenCtx) {
             }
         }
     }
+}
 
+fn emit_glazing_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let grid = ctx.grid;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let params = ctx.params;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let fixed_frame_section = &b.fixed_frame_section;
+    let leaf_frame_section = &b.leaf_frame_section;
+    let leaf_component_visible = b.leaf_component_visible;
+    let glazing_3d_vis = b.glazing_3d_vis;
     if glazing_3d_vis
         && opening_component_should_render_with_library(
             &style.parts,
@@ -717,10 +816,29 @@ fn emit_3d_bodies(scene: &mut Scene, ctx: &RegenCtx) {
             }
         }
     }
+}
 
-    let accessories_3d_vis = merged_rules
-        .as_ref()
-        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Solid3D));
+fn emit_accessories_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let wall_y_max = ctx.wall_y_max;
+    let wall_y_min = ctx.wall_y_min;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let fixed_frame_section = &b.fixed_frame_section;
+    let exterior_sill_section = &b.exterior_sill_section;
+    let interior_board_section = &b.interior_board_section;
+    let threshold_section = &b.threshold_section;
+    let shutter_section = &b.shutter_section;
+    let lintel_section = &b.lintel_section;
+    let accessories_3d_vis = b.accessories_3d_vis;
     if accessories_3d_vis {
         let sill = &style.parts.exterior_sill;
         if opening_component_should_render_with_library(
