@@ -3744,8 +3744,7 @@ impl OpenCADStudio {
                     self.adopt_view_display(idx);
                     // Ortho / running OSNAP follow the newly active drawing.
                     self.adopt_header_sysvars(idx);
-                    self.aec_refresh_combined_style_library();
-                    self.aec_sync_active_storey_for_tab(idx);
+                    self.aec_on_tab_activated(idx);
                     // Shared CJK ideographs follow the newly active drawing's
                     // language; re-tessellate if it differs from the last. (#141)
                     if crate::scene::text::web_font::set_cjk_lang_from_codepage(

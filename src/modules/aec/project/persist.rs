@@ -203,6 +203,13 @@ impl OpenCADStudio {
         }
     }
 
+    /// Refreshes the combined style library and syncs the storey selection
+    /// after tab `tab_index` became active.
+    pub(crate) fn aec_on_tab_activated(&mut self, tab_index: usize) {
+        self.aec_refresh_combined_style_library();
+        self.aec_sync_active_storey_for_tab(tab_index);
+    }
+
     /// Synchronizes the selected building and storey in Project Explorer with the drawing
     /// open in `tab_index`.
     pub(crate) fn aec_sync_active_storey_for_tab(&mut self, tab_index: usize) {
