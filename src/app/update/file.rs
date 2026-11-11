@@ -4401,21 +4401,8 @@ impl OpenCADStudio {
 
     pub(super) fn on_save_dialog_confirm(&mut self) -> Task<Message> {
         let (ext, version) = crate::io::parse_save_format(&self.save_dialog_format);
-        // Warn before a lossy Save-As that would drop unsupported
-        // (AEC / application) objects kept only as verbatim
-        // source-version bytes — let the user keep them by saving in the
-        // source version, or proceed and drop them.
-        if !self.aec.aec_drop_acknowledged && ocs_save::external_format(ext).is_none() {            let is_dxf = ext.eq_ignore_ascii_case("dxf");
-            let n = crate::io::dropped_on_save_count(
-                &self.tabs[self.active_tab].scene.document,
-                version,
-                is_dxf,
-            );
-            if n > 0 {
-                self.aec.aec_drop_count = n;
-                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::DropWarning));
-                return Task::none();
-            }
+        if self.aec_save_drop_warning(ext, version) {
+            return Task::none();
         }
         // The user need not type an extension: append the selected
         // format's one when the entered name carries none.

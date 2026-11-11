@@ -10,6 +10,7 @@ pub(crate) mod aec_ui_util;
 pub mod color_pick;
 pub mod modal_kind;
 pub mod modal_views;
+pub mod save_drop;
 pub mod style_manager;
 
 pub use aec_ui_util::{acad_color_to_editor_string, editor_string_to_acad_color};
