@@ -1985,6 +1985,28 @@ pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handl
     handle
 }
 
+/// The single wall/slab/slab-opening/opening package that all `handles`
+/// resolve to, if any.
+pub fn single_selected_package(
+    scene: &crate::scene::Scene,
+    handles: impl IntoIterator<Item = Handle>,
+) -> Option<Handle> {
+    let owners: Vec<Handle> = handles
+        .into_iter()
+        .map(|h| resolve_aec_package(scene, h))
+        .collect();
+    owners.first().copied().filter(|owner| {
+        !owner.is_null()
+            && owners.iter().all(|h| h == owner)
+            && scene.document.get_entity(*owner).is_some_and(|e| {
+                wall_from_entity(e)
+                    || slab_from_entity(e)
+                    || slab_opening_from_entity(e)
+                    || opening_from_entity(e)
+            })
+    })
+}
+
 pub fn wall_from_entity(entity: &EntityType) -> bool {
     xdata::wall_from_entity(entity).is_some()
 }

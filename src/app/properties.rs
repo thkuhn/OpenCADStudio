@@ -3656,29 +3656,10 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         let group_boxes;
         let (new_handle, new_grips, new_grip_handles) = {
             let selected = self.tabs[i].scene.selected_entities();
-            let aec_owners: Vec<Handle> = selected
-                .iter()
-                .map(|(handle, _)| {
-                    crate::modules::aec::properties::resolve_aec_package(
-                        &self.tabs[i].scene,
-                        *handle,
-                    )
-                })
-                .collect();
-            let single_aec = aec_owners.first().copied().filter(|owner| {
-                !owner.is_null()
-                    && aec_owners.iter().all(|h| h == owner)
-                    && self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(*owner)
-                        .is_some_and(|e| {
-                            crate::modules::aec::properties::wall_from_entity(e)
-                                || crate::modules::aec::properties::slab_from_entity(e)
-                                || crate::modules::aec::properties::slab_opening_from_entity(e)
-                                || crate::modules::aec::properties::opening_from_entity(e)
-                        })
-            });
+            let single_aec = crate::modules::aec::properties::single_selected_package(
+                &self.tabs[i].scene,
+                selected.iter().map(|(handle, _)| *handle),
+            );
             let single_handle = if let Some(owner) = single_aec {
                 (!self.tabs[i].scene.is_layer_locked(owner)
                     && !self.tabs[i].scene.is_reference_only(owner))
