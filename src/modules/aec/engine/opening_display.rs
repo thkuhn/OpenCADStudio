@@ -3621,6 +3621,20 @@ pub(crate) fn interior_board_y_bounds(
     (frame_inner, wall_max + overhang.max(0.0))
 }
 
+/// Depth interval (min, max) of a sill/board upstand: it stands on the sill at
+/// the outer face of the fixed frame and runs `away` (-1 exterior, +1
+/// interior) from `frame_edge`, at most as deep as the frame.
+pub(crate) fn sill_upstand_interval(
+    frame_edge: f64,
+    away: f64,
+    section_depth: f64,
+    frame_depth: f64,
+) -> (f64, f64) {
+    let depth = section_depth.min(frame_depth).max(0.0);
+    let far = frame_edge + away * depth;
+    (far.min(frame_edge), far.max(frame_edge))
+}
+
 pub fn build_opening_glazing_3d(
     width: f64,
     height: f64,
@@ -4874,15 +4888,15 @@ pub fn regenerate_opening_display(
                     merged_rules.as_ref(),
                 );
                 if upstand > 0.0 {
-                    let depth = exterior_sill_section.depth.min(fixed_frame_section.depth);
+                    let (up_min, up_max) = sill_upstand_interval(
+                        frame_outer,
+                        -1.0,
+                        exterior_sill_section.depth,
+                        fixed_frame_section.depth,
+                    );
                     emit_opening_accessory_3d(
                         scene,
-                        build_opening_box_3d_with_bounds(
-                            width,
-                            upstand,
-                            frame_outer - depth,
-                            frame_outer,
-                        ),
+                        build_opening_box_3d_with_bounds(width, upstand, up_min, up_max),
                         opening_handle,
                         opening_owner_handle,
                         default_opening_layer.as_deref(),
@@ -5001,15 +5015,15 @@ pub fn regenerate_opening_display(
                     merged_rules.as_ref(),
                 );
                 if upstand > 0.0 {
-                    let depth = interior_board_section.depth.min(fixed_frame_section.depth);
+                    let (up_min, up_max) = sill_upstand_interval(
+                        frame_inner,
+                        1.0,
+                        interior_board_section.depth,
+                        fixed_frame_section.depth,
+                    );
                     emit_opening_accessory_3d(
                         scene,
-                        build_opening_box_3d_with_bounds(
-                            width,
-                            upstand,
-                            frame_inner,
-                            frame_inner + depth,
-                        ),
+                        build_opening_box_3d_with_bounds(width, upstand, up_min, up_max),
                         opening_handle,
                         opening_owner_handle,
                         default_opening_layer.as_deref(),
@@ -5969,6 +5983,13 @@ mod tests {
             .iter()
             .flat_map(|path| &path.points)
             .all(|(_, y)| *y <= 1e-9), "{sill_paths:#?}");
+    }
+
+    #[test]
+    fn sill_upstand_interval_stands_outside_frame_and_clamps_to_frame_depth() {
+        assert_eq!(sill_upstand_interval(-0.04, -1.0, 0.03, 0.08), (-0.07, -0.04));
+        assert_eq!(sill_upstand_interval(0.04, 1.0, 0.03, 0.08), (0.04, 0.07));
+        assert_eq!(sill_upstand_interval(0.04, 1.0, 0.2, 0.08), (0.04, 0.12));
     }
 
     #[test]

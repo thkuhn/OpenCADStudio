@@ -1200,8 +1200,12 @@ fn emit_opening_cut_details(
                     exterior_sill_style.clone(),
                 )?;
                 if exterior_sill.upstand > 0.0 {
-                    let depth = exterior_sill_section.depth.min(frame_depth);
-                    let upstand_outer = frame_outer - inward * depth;
+                    let (upstand_lo, upstand_hi) = crate::modules::aec::engine::opening_display::sill_upstand_interval(
+                        frame_outer,
+                        -inward,
+                        exterior_sill_section.depth,
+                        frame_depth,
+                    );
                     emit_opening_section_region(
                         op,
                         wall,
@@ -1209,8 +1213,8 @@ fn emit_opening_cut_details(
                         primitives,
                         counter,
                         (
-                            upstand_outer.min(frame_outer),
-                            upstand_outer.max(frame_outer),
+                            upstand_lo,
+                            upstand_hi,
                             cell_sill + exterior_sill_section.face,
                             cell_sill + exterior_sill_section.face + exterior_sill.upstand,
                         ),
@@ -1294,8 +1298,12 @@ fn emit_opening_cut_details(
                     interior_board_style.clone(),
                 )?;
                 if interior_board.upstand > 0.0 {
-                    let depth = interior_board_section.depth.min(frame_depth);
-                    let upstand_inner = frame_inner + inward * depth;
+                    let (upstand_lo, upstand_hi) = crate::modules::aec::engine::opening_display::sill_upstand_interval(
+                        frame_inner,
+                        inward,
+                        interior_board_section.depth,
+                        frame_depth,
+                    );
                     emit_opening_section_region(
                         op,
                         wall,
@@ -1303,8 +1311,8 @@ fn emit_opening_cut_details(
                         primitives,
                         counter,
                         (
-                            frame_inner.min(upstand_inner),
-                            frame_inner.max(upstand_inner),
+                            upstand_lo,
+                            upstand_hi,
                             cell_sill + interior_board_section.face,
                             cell_sill + interior_board_section.face + interior_board.upstand,
                         ),

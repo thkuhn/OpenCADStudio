@@ -1413,14 +1413,19 @@ pub fn preview_baked_paths_for_mode_with_library(
                     );
                     if sill.upstand > 0.0 {
                         let frame_outer = (-fixed_frame_section.depth * 0.5).clamp(-ht, ht);
-                        let depth = exterior_sill_section.depth.min(fixed_frame_section.depth);
+                        let (up_min, up_max) = crate::modules::aec::engine::opening_display::sill_upstand_interval(
+                            frame_outer,
+                            -1.0,
+                            exterior_sill_section.depth,
+                            fixed_frame_section.depth,
+                        );
                         push_preview_wire_box(
                             &mut paths,
                             &iso_proj,
                             x_min,
                             x_max,
-                            frame_outer - depth,
-                            frame_outer,
+                            up_min,
+                            up_max,
                             sill_z + exterior_sill_section.face,
                             sill_z + exterior_sill_section.face + sill.upstand,
                             OpeningComponentSlot::Solid3D,
@@ -1500,14 +1505,19 @@ pub fn preview_baked_paths_for_mode_with_library(
                     );
                     if board.upstand > 0.0 {
                         let frame_inner = (fixed_frame_section.depth * 0.5).clamp(-ht, ht);
-                        let depth = interior_board_section.depth.min(fixed_frame_section.depth);
+                        let (up_min, up_max) = crate::modules::aec::engine::opening_display::sill_upstand_interval(
+                            frame_inner,
+                            1.0,
+                            interior_board_section.depth,
+                            fixed_frame_section.depth,
+                        );
                         push_preview_wire_box(
                             &mut paths,
                             &iso_proj,
                             x_min,
                             x_max,
-                            frame_inner,
-                            frame_inner + depth,
+                            up_min,
+                            up_max,
                             sill_z + interior_board_section.face,
                             sill_z + interior_board_section.face + board.upstand,
                             OpeningComponentSlot::Solid3D,
@@ -2092,12 +2102,18 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
                 sill_z + exterior_sill.thickness,
             );
             if exterior_sill.upstand > 0.0 {
+                let (up_min, up_max) = crate::modules::aec::engine::opening_display::sill_upstand_interval(
+                    frame_x0,
+                    -1.0,
+                    section.depth,
+                    frame_x1 - frame_x0,
+                );
                 push_rect(
                     OpeningLookRole::ExteriorSill,
                     OpeningComponentSlot::Sill2D,
-                    frame_x0,
+                    up_min,
                     sill_z + exterior_sill.thickness,
-                    (frame_x0 + exterior_sill.thickness).min(frame_x1),
+                    up_max,
                     sill_z + exterior_sill.thickness + exterior_sill.upstand,
                 );
             }
@@ -2163,12 +2179,18 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
                 sill_z + interior_board.thickness,
             );
             if interior_board.upstand > 0.0 {
+                let (up_min, up_max) = crate::modules::aec::engine::opening_display::sill_upstand_interval(
+                    frame_x1,
+                    1.0,
+                    section.depth,
+                    frame_x1 - frame_x0,
+                );
                 push_rect(
                     OpeningLookRole::InteriorBoard,
                     OpeningComponentSlot::Sill2D,
-                    (frame_x1 - interior_board.thickness).max(frame_x0),
+                    up_min,
                     sill_z + interior_board.thickness,
-                    frame_x1,
+                    up_max,
                     sill_z + interior_board.thickness + interior_board.upstand,
                 );
             }
