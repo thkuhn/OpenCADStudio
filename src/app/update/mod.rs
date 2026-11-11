@@ -6218,30 +6218,11 @@ impl OpenCADStudio {
                 // end_index) it's anchored on so the menu can offer the
                 // per-junction join-override actions (#join-constraints step 4).
                 let junction = self.grip_hover.as_ref().and_then(|h| {
-                    let axis = crate::modules::aec::engine::wall_package::resolve_wall_package(
+                    crate::modules::aec::ui::context_menu::junction_from_grip_hover(
                         &self.tabs[i].scene,
                         h.handle,
-                    );
-                    let vertices = crate::modules::aec::engine::xdata::get_wall_vertices(
-                        &self.tabs[i].scene,
-                        axis,
-                    );
-                    if vertices.len() < 2 {
-                        return None;
-                    }
-                    if let Some(end) =
-                        crate::modules::aec::engine::junction_pick::wall_junction_end_from_dropdown_grip(
-                            h.grip_id,
-                        )
-                    {
-                        Some((axis, end))
-                    } else if h.grip_id == 0 {
-                        Some((axis, 0usize))
-                    } else if h.grip_id == vertices.len() - 1 {
-                        Some((axis, 1usize))
-                    } else {
-                        None
-                    }
+                        h.grip_id,
+                    )
                 });
                 self.tabs[i]
                     .scene
@@ -6249,21 +6230,12 @@ impl OpenCADStudio {
                     .borrow_mut()
                     .junction_menu = junction;
                 if let Some(h) = self.grip_hover.as_ref() {
-                    if h.grip_id == crate::modules::aec::properties::OPENING_DROPDOWN_GRIP_ID
-                        || (h.grip_id <= 4 && crate::modules::aec::engine::opening_display::opening_owner_if_any(&self.tabs[i].scene, h.handle).is_some())
-                    {
-                        let op_h = crate::modules::aec::engine::opening_display::opening_owner_if_any(&self.tabs[i].scene, h.handle).unwrap_or(h.handle);
-                        self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::OpeningGrip(op_h, h.grip_id));
-                    } else if h.grip_id == crate::modules::aec::properties::WALL_BASE_DROPDOWN_GRIP_ID {
-                        let wall_h = crate::modules::aec::engine::wall_package::resolve_wall_package(&self.tabs[i].scene, h.handle);
-                        self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::WallBaseGrip(wall_h));
-                    } else if h.grip_id == crate::modules::aec::properties::SLAB_BOTTOM_DROPDOWN_GRIP_ID {
-                        let slab_h = crate::modules::aec::engine::slab_package::resolve_slab_package(&self.tabs[i].scene, h.handle);
-                        self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::SlabBottomGrip(slab_h));
-                    } else if h.grip_id >= crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE
-                        && h.grip_id < crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE + 100
-                    {
-                        self.aec.aec_active_grip_menu = crate::modules::aec::ui::context_menu::derived_view_dropdown_menu(&self.tabs[i].scene, h.handle, h.grip_id);
+                    if let Some(ex) = crate::modules::aec::ui::context_menu::hover_grip_exclusive(
+                        &self.tabs[i].scene,
+                        h.handle,
+                        h.grip_id,
+                    ) {
+                        self.aec.aec_active_grip_menu = Some(ex);
                     }
                 }
                 // Take the keyboard away from the command-line field so keys

@@ -429,6 +429,53 @@ pub fn grip_dropdown_exclusive(
     None
 }
 
+/// Wall junction (axis handle, end index) anchored by the hovered grip.
+pub fn junction_from_grip_hover(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    grip_id: usize,
+) -> Option<(Handle, usize)> {
+    let axis = crate::modules::aec::engine::wall_package::resolve_wall_package(scene, handle);
+    let vertices = crate::modules::aec::engine::xdata::get_wall_vertices(scene, axis);
+    if vertices.len() < 2 {
+        return None;
+    }
+    if let Some(end) =
+        crate::modules::aec::engine::junction_pick::wall_junction_end_from_dropdown_grip(grip_id)
+    {
+        Some((axis, end))
+    } else if grip_id == 0 {
+        Some((axis, 0usize))
+    } else if grip_id == vertices.len() - 1 {
+        Some((axis, 1usize))
+    } else {
+        None
+    }
+}
+
+/// Exclusive menu to open for a right-click on the hovered grip.
+pub fn hover_grip_exclusive(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    grip_id: usize,
+) -> Option<AecMenuExclusive> {
+    use crate::modules::aec::engine::opening_display;
+    use crate::modules::aec::properties as props;
+    let opening_owner = opening_display::opening_owner_if_any(scene, handle);
+    if grip_id == props::OPENING_DROPDOWN_GRIP_ID || (grip_id <= 4 && opening_owner.is_some()) {
+        return Some(AecMenuExclusive::OpeningGrip(
+            opening_owner.unwrap_or(handle),
+            grip_id,
+        ));
+    }
+    if (props::DERIVED_VIEW_DROPDOWN_GRIP_BASE..props::DERIVED_VIEW_DROPDOWN_GRIP_BASE + 100)
+        .contains(&grip_id)
+    {
+        return derived_view_dropdown_menu(scene, handle, grip_id);
+    }
+    grip_dropdown_exclusive(scene, handle, grip_id)
+}
+
 fn junction_detail_items(axis_handle: Handle, end_index: usize) -> Vec<MenuItem> {
     vec![
         item(
