@@ -239,16 +239,14 @@ impl OpenCADStudio {
         }
         // Display-profiles opened from the wall style manager behaves as a child modal.
         if let Some(Aec(kind)) = self.active_modal {
-            if let Some(parent) = kind.parent_on_close() {
-                if let Some((parent_offset, parent_resize)) =
-                    self.aec.styles.wall_parent_geometry.take()
-                {
-                    self.active_modal = Some(Aec(parent));
-                    self.reset_modal_geometry();
-                    self.modal_offset = parent_offset;
-                    self.modal_resize = parent_resize;
-                    return;
-                }
+            if let Some((parent, parent_offset, parent_resize)) =
+                self.aec.take_parent_modal_on_close(kind)
+            {
+                self.active_modal = Some(Aec(parent));
+                self.reset_modal_geometry();
+                self.modal_offset = parent_offset;
+                self.modal_resize = parent_resize;
+                return;
             }
         }
         if self.active_modal == Some(Plot) && self.print_all_options {
@@ -406,12 +404,7 @@ impl OpenCADStudio {
             Some(Recovery) => self.recovery_report = None,
             // Dismissing without picking/creating a project: forget the tool
             // that was about to run so it isn't replayed unexpectedly later.
-            Some(Aec(kind)) => {
-                if kind.clears_project_resume_on_close() {
-                    self.aec.aec_project_required_resume = None;
-                }
-                self.aec_reset_control_plane_highlights();
-            }
+            Some(Aec(kind)) => self.aec_on_modal_closed(kind),
             _ => {}
         }
         // The tool that opened this dialog is done with it now. Keep the

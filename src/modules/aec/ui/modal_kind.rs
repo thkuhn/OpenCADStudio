@@ -58,6 +58,18 @@ impl AecModalKind {
     }
 }
 
+impl crate::modules::aec::state::AecState {
+    /// Parent modal and its saved geometry to restore when `kind` closes.
+    pub(crate) fn take_parent_modal_on_close(
+        &mut self,
+        kind: AecModalKind,
+    ) -> Option<(AecModalKind, iced::Vector, iced::Vector)> {
+        let parent = kind.parent_on_close()?;
+        let (offset, resize) = self.styles.wall_parent_geometry.take()?;
+        Some((parent, offset, resize))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

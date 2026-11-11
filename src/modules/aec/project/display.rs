@@ -738,6 +738,14 @@ impl OpenCADStudio {
         }
     }
 
+    /// AEC cleanup when a nested AEC modal is dismissed.
+    pub(crate) fn aec_on_modal_closed(&mut self, kind: crate::modules::aec::ui::modal_kind::AecModalKind) {
+        if kind.clears_project_resume_on_close() {
+            self.aec.aec_project_required_resume = None;
+        }
+        self.aec_reset_control_plane_highlights();
+    }
+
     /// Resets any temporary orange highlight on control plane or facet preview entities
     /// across all storeys in the active project back to their default colors (cyan / yellow).
     pub(crate) fn aec_reset_control_plane_highlights(&mut self) {
