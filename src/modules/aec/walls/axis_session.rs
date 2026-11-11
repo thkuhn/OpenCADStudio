@@ -6,6 +6,39 @@
 use crate::app::OpenCADStudio;
 
 impl OpenCADStudio {
+    /// Re-commit AEC opening instances whose grips were just edited.
+    pub(crate) fn aec_commit_opening_instances_after_grip(
+        &mut self,
+        i: usize,
+        handles: &[acadrust::Handle],
+    ) {
+        use crate::modules::aec::engine::{opening_display, opening_xdata, project};
+        for &handle in handles {
+            let Some(owner) = opening_display::opening_owner_if_any(&self.tabs[i].scene, handle)
+            else {
+                continue;
+            };
+            let Some(opening) = self.tabs[i]
+                .scene
+                .document
+                .get_entity(owner)
+                .and_then(|entity| opening_xdata::opening_from_entity(entity, owner))
+            else {
+                continue;
+            };
+            let style_library =
+                project::resolve_style_library(self.aec.aec_project_explorer_file.as_ref());
+            let (rules, _) =
+                self.resolve_active_display_config_wall_rules(i, Some(opening.host_wall));
+            opening_display::commit_opening_instance(
+                &mut self.tabs[i].scene,
+                &opening,
+                Some(&style_library),
+                rules.as_ref(),
+            );
+        }
+    }
+
     /// Apply one interactive opening grip without letting the native POINT
     /// grip handler move the host marker independently of its XDATA.
     pub(crate) fn apply_aec_opening_grip(

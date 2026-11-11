@@ -351,6 +351,84 @@ pub fn derived_primitive_context_menu(scene: &crate::scene::Scene, handle: Handl
     derived_view_dropdown_menu(scene, handle, crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE)
 }
 
+/// Builds the AEC part of the idle/exclusive viewport context menu.
+/// Core only passes its inputs and uses the result.
+pub fn menu_snapshot(
+    state: &crate::modules::aec::state::AecState,
+    scene: &crate::scene::Scene,
+    junction: Option<(Handle, usize)>,
+    junction_menu_only: bool,
+) -> AecMenuSnapshot {
+    use crate::modules::aec::properties as props;
+    let exclusive = if let Some(ex) = state.aec_active_grip_menu {
+        ex
+    } else if scene.selected.len() == 1 {
+        let h = *scene.selected.iter().next().unwrap();
+        let resolved = props::resolve_aec_package(scene, h);
+        let ent = scene.document.get_entity(resolved);
+        if ent
+            .and_then(|e| crate::modules::aec::engine::opening_xdata::opening_from_entity(e, resolved))
+            .is_some()
+        {
+            AecMenuExclusive::OpeningGrip(resolved, 0)
+        } else if let Some(ex) = derived_primitive_context_menu(scene, h) {
+            ex
+        } else if ent.is_some_and(props::slab_from_entity) {
+            AecMenuExclusive::SlabBottomGrip(resolved)
+        } else {
+            AecMenuExclusive::None
+        }
+    } else if state
+        .aec_layer_pair_draw
+        .as_ref()
+        .is_some_and(|p| p.awaiting_style)
+    {
+        AecMenuExclusive::LayerPairStyle
+    } else if junction_menu_only {
+        AecMenuExclusive::JunctionOnly
+    } else {
+        AecMenuExclusive::None
+    };
+    AecMenuSnapshot {
+        only_walls: props::selection_is_all_walls(scene, scene.selected.iter().copied()),
+        junction,
+        exclusive,
+    }
+}
+
+/// Exclusive context menu opened by an AEC dropdown grip, if `grip_id`
+/// belongs to AEC.
+pub fn grip_dropdown_exclusive(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    grip_id: usize,
+) -> Option<AecMenuExclusive> {
+    use crate::modules::aec::engine::{opening_display, slab_package, wall_package};
+    use crate::modules::aec::properties as props;
+    if (props::DERIVED_VIEW_DROPDOWN_GRIP_BASE..props::DERIVED_VIEW_DROPDOWN_GRIP_BASE + 100)
+        .contains(&grip_id)
+    {
+        if let Some(ex) = derived_view_dropdown_menu(scene, handle, grip_id) {
+            return Some(ex);
+        }
+    }
+    if grip_id == props::OPENING_DROPDOWN_GRIP_ID {
+        let owner = opening_display::opening_owner_if_any(scene, handle).unwrap_or(handle);
+        return Some(AecMenuExclusive::OpeningGrip(owner, 0));
+    }
+    if grip_id == props::WALL_BASE_DROPDOWN_GRIP_ID {
+        return Some(AecMenuExclusive::WallBaseGrip(
+            wall_package::resolve_wall_package(scene, handle),
+        ));
+    }
+    if grip_id == props::SLAB_BOTTOM_DROPDOWN_GRIP_ID {
+        return Some(AecMenuExclusive::SlabBottomGrip(
+            slab_package::resolve_slab_package(scene, handle),
+        ));
+    }
+    None
+}
+
 fn junction_detail_items(axis_handle: Handle, end_index: usize) -> Vec<MenuItem> {
     vec![
         item(

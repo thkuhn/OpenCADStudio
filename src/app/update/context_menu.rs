@@ -53,46 +53,19 @@ impl OpenCADStudio {
     /// the view (to render) and by the keyboard handler (to resolve picks), so
     /// both always see the same rows.
     pub(in crate::app) fn context_menu_context(&self) -> MenuContext {
-        use crate::modules::aec::ui::context_menu::{AecMenuExclusive, AecMenuSnapshot};
+        use crate::modules::aec::ui::context_menu::AecMenuExclusive;
         let tab = &self.tabs[self.active_tab];
         let (junction, junction_menu_only) = {
             let sel = tab.scene.selection.borrow();
             (sel.junction_menu, sel.junction_menu_only)
         };
-        let exclusive = if let Some(ex) = self.aec.aec_active_grip_menu {
-            ex
-        } else if tab.scene.selected.len() == 1 {
-            let h = *tab.scene.selected.iter().next().unwrap();
-            let resolved = crate::modules::aec::properties::resolve_aec_package(&tab.scene, h);
-            if let Some(_op) = tab.scene.document.get_entity(resolved).and_then(|e| crate::modules::aec::engine::opening_xdata::opening_from_entity(e, resolved)) {
-                AecMenuExclusive::OpeningGrip(resolved, 0)
-            } else if let Some(ex) = crate::modules::aec::ui::context_menu::derived_primitive_context_menu(&tab.scene, h) {
-                ex
-            } else if tab.scene.document.get_entity(resolved).is_some_and(crate::modules::aec::properties::slab_from_entity) {
-                AecMenuExclusive::SlabBottomGrip(resolved)
-            } else {
-                AecMenuExclusive::None
-            }
-        } else if self
-            .aec
-            .aec_layer_pair_draw
-            .as_ref()
-            .is_some_and(|p| p.awaiting_style)
-        {
-            AecMenuExclusive::LayerPairStyle
-        } else if junction_menu_only {
-            AecMenuExclusive::JunctionOnly
-        } else {
-            AecMenuExclusive::None
-        };
-        let aec = AecMenuSnapshot {
-            only_walls: crate::modules::aec::properties::selection_is_all_walls(
-                &tab.scene,
-                tab.scene.selected.iter().copied(),
-            ),
+        let aec = crate::modules::aec::ui::context_menu::menu_snapshot(
+            &self.aec,
+            &tab.scene,
             junction,
-            exclusive,
-        };
+            junction_menu_only,
+        );
+        let exclusive = aec.exclusive;
         if exclusive != AecMenuExclusive::None {
             return MenuContext::Idle {
                 has_selection: false,

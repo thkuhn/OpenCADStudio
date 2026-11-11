@@ -9,6 +9,16 @@ use crate::modules::aec::engine::junction_pick;
 use crate::modules::aec::engine::xdata;
 
 impl OpenCADStudio {
+    /// `(layer_pair_pick, layer_gap_pick)`: which in-drawing layer pick is live.
+    pub(crate) fn aec_layer_pick_flags(&self) -> (bool, bool) {
+        let pair = self
+            .aec
+            .aec_layer_pair_draw
+            .as_ref()
+            .is_some_and(|pick| !pick.awaiting_style);
+        (pair, self.aec.aec_layer_gap_draw.is_some())
+    }
+
     /// Fill the Junction Editor's currently chosen wall layer(s) in the
     /// viewport (transparent orange). Cleared when nothing is selected or the panel closes.
     pub(crate) fn sync_junction_editor_layer_highlight(&mut self) {
@@ -436,5 +446,18 @@ impl OpenCADStudio {
         self.refresh_properties();
         self.command_line
             .push_info(crate::t!("Schichtverbindung gesetzt.").as_ref());
+    }
+}
+
+impl crate::modules::aec::state::AecState {
+    /// Drop a layer-pair pick that waits for a style choice (menu dismissed).
+    pub(crate) fn cancel_layer_pair_style_wait(&mut self) {
+        if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+            if pick.awaiting_style {
+                pick.awaiting_style = false;
+                pick.layer_b = None;
+                pick.layer_b_outer = false;
+            }
+        }
     }
 }

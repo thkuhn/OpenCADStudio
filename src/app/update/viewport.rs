@@ -3136,12 +3136,7 @@ impl OpenCADStudio {
 
         // In-drawing wall-layer pick (junction context menu): suppress
         // entity rollover and highlight a single layer instead.
-        let layer_pair_pick = self
-            .aec
-            .aec_layer_pair_draw
-            .as_ref()
-            .is_some_and(|p| !p.awaiting_style);
-        let layer_gap_pick = self.aec.aec_layer_gap_draw.is_some();
+        let (layer_pair_pick, layer_gap_pick) = self.aec_layer_pick_flags();
         if layer_pair_pick || layer_gap_pick {
             self.tabs[i].scene.set_hover_highlight(None);
             self.hover_dwell = None;
@@ -5629,13 +5624,7 @@ impl OpenCADStudio {
         {
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
             if sel.menu.open_at.take().is_some() {
-                if let Some(pick) = self.aec.aec_layer_pair_draw.as_mut() {
-                    if pick.awaiting_style {
-                        pick.awaiting_style = false;
-                        pick.layer_b = None;
-                        pick.layer_b_outer = false;
-                    }
-                }
+                self.aec.cancel_layer_pair_style_wait();
                 return Task::none();
             }
         }
@@ -5665,12 +5654,7 @@ impl OpenCADStudio {
         };
         let (vw, vh) = vp_size;
 
-        let layer_pair_pick = self
-            .aec
-            .aec_layer_pair_draw
-            .as_ref()
-            .is_some_and(|pick| !pick.awaiting_style);
-        let layer_gap_pick = self.aec.aec_layer_gap_draw.is_some();
+        let (layer_pair_pick, layer_gap_pick) = self.aec_layer_pick_flags();
         if layer_pair_pick || layer_gap_pick {
             let edit_frame = self.tabs[i].scene.viewport_edit_frame((vw, vh));
             let tile_b = match &edit_frame {
@@ -6025,51 +6009,13 @@ impl OpenCADStudio {
                             self.grip_popup = None;
                             return Task::none();
                         }
-                        if grip_id >= crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE
-                            && grip_id < crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE + 100
-                        {
-                            if let Some(menu_exclusive) =
-                                crate::modules::aec::ui::context_menu::derived_view_dropdown_menu(
-                                    &self.tabs[i].scene,
-                                    handle,
-                                    grip_id,
-                                )
-                            {
-                                self.aec.aec_active_grip_menu = Some(menu_exclusive);
-                                let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                                sel.open_context_menu(p_full);
-                                drop(sel);
-                                self.grip_hover = None;
-                                self.grip_popup = None;
-                                return Task::none();
-                            }
-                        }
-                        if grip_id == crate::modules::aec::properties::OPENING_DROPDOWN_GRIP_ID {
-                            let op_handle = crate::modules::aec::engine::opening_display::opening_owner_if_any(&self.tabs[i].scene, handle).unwrap_or(handle);
-                            self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::OpeningGrip(op_handle, 0));
-                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                            sel.open_context_menu(p_full);
-                            drop(sel);
-                            self.grip_hover = None;
-                            self.grip_popup = None;
-                            return Task::none();
-                        }
-                        if grip_id == crate::modules::aec::properties::WALL_BASE_DROPDOWN_GRIP_ID {
-                            let wall_handle = crate::modules::aec::engine::wall_package::resolve_wall_package(&self.tabs[i].scene, handle);
-                            self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::WallBaseGrip(wall_handle));
-                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                            sel.open_context_menu(p_full);
-                            drop(sel);
-                            self.grip_hover = None;
-                            self.grip_popup = None;
-                            return Task::none();
-                        }
-                        if grip_id == crate::modules::aec::properties::SLAB_BOTTOM_DROPDOWN_GRIP_ID {
-                            let slab_handle = crate::modules::aec::engine::slab_package::resolve_slab_package(&self.tabs[i].scene, handle);
-                            self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::SlabBottomGrip(slab_handle));
-                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                            sel.open_context_menu(p_full);
-                            drop(sel);
+                        if let Some(ex) = crate::modules::aec::ui::context_menu::grip_dropdown_exclusive(
+                            &self.tabs[i].scene,
+                            handle,
+                            grip_id,
+                        ) {
+                            self.aec.aec_active_grip_menu = Some(ex);
+                            self.tabs[i].scene.selection.borrow_mut().open_context_menu(p_full);
                             self.grip_hover = None;
                             self.grip_popup = None;
                             return Task::none();
@@ -10265,36 +10211,7 @@ was_selected={}",
                 .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                 .collect();
             let undo_stack_len_before = self.tabs[i].history.undo_stack.len();
-            for &handle in &handles {
-                if let Some(opening_owner) =
-                    crate::modules::aec::engine::opening_display::opening_owner_if_any(
-                        &self.tabs[i].scene,
-                        handle,
-                    )
-                {
-                    if let Some(entity) = self.tabs[i].scene.document.get_entity(opening_owner) {
-                        if let Some(opening) =
-                            crate::modules::aec::engine::opening_xdata::opening_from_entity(
-                                entity,
-                                opening_owner,
-                            )
-                        {
-                            let style_library =
-                                crate::modules::aec::engine::project::resolve_style_library(
-                                    self.aec.aec_project_explorer_file.as_ref(),
-                                );
-                            let (rules, _) = self
-                                .resolve_active_display_config_wall_rules(i, Some(opening.host_wall));
-                            crate::modules::aec::engine::opening_display::commit_opening_instance(
-                                &mut self.tabs[i].scene,
-                                &opening,
-                                Some(&style_library),
-                                rules.as_ref(),
-                            );
-                        }
-                    }
-                }
-            }
+            self.aec_commit_opening_instances_after_grip(i, &handles);
             self.reapply_active_display_config_to_wall_packages(i, &handles);
             self.sync_wall_axis_layer_for_session(i);
             for &handle in &handles {
