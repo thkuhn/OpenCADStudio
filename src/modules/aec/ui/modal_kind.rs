@@ -22,13 +22,13 @@ impl AecModalKind {
         match self {
             Self::DropWarning => crate::tr!("modal", "save-warning"),
             Self::Styles => crate::tr!("aec", "styles-title"),
-            Self::WallStyleDisplayProfiles => crate::t!("Display Profiles").into_owned(),
-            Self::JunctionEditor => crate::t!("Junction Editor").into_owned(),
-            Self::ProjectExplorer => crate::t!("AEC Project Explorer").into_owned(),
-            Self::StoreySettings => crate::t!("Storey settings").into_owned(),
-            Self::StylePicker { .. } => crate::t!("Style Picker").into_owned(),
-            Self::StyleCopyConflict => crate::t!("Overwrite?").into_owned(),
-            Self::ProjectRequired => crate::t!("Project Required").into_owned(),
+            Self::WallStyleDisplayProfiles => crate::tr!("aec", "dialog-display-profiles"),
+            Self::JunctionEditor => crate::tr!("aec", "dialog-junction-editor"),
+            Self::ProjectExplorer => crate::tr!("aec", "dialog-project-explorer"),
+            Self::StoreySettings => crate::tr!("aec", "dialog-storey-settings"),
+            Self::StylePicker { .. } => crate::tr!("aec", "dialog-style-picker"),
+            Self::StyleCopyConflict => crate::tr!("aec", "dialog-overwrite"),
+            Self::ProjectRequired => crate::tr!("aec", "dialog-project-required"),
         }
     }
 
@@ -81,6 +81,46 @@ mod tests {
             Some(AecModalKind::Styles)
         );
         assert_eq!(AecModalKind::Styles.parent_on_close(), None);
+    }
+
+    #[test]
+    fn dialog_title_keys_exist_in_every_locale() {
+        const KEYS: [&str; 7] = [
+            "dialog-display-profiles",
+            "dialog-junction-editor",
+            "dialog-project-explorer",
+            "dialog-storey-settings",
+            "dialog-style-picker",
+            "dialog-overwrite",
+            "dialog-project-required",
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let file = entry.unwrap().path().join("opencadstudio.ftl");
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let aec = text
+                .split("\naec =\n")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{}: missing aec group", file.display()));
+            let group = aec.split("\n\n").next().unwrap_or(aec);
+            let group = group
+                .lines()
+                .take_while(|l| l.starts_with(' '))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for key in KEYS {
+                assert!(
+                    group.contains(&format!("    .{key} = ")),
+                    "{}: missing {key}",
+                    file.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked >= 23, "only {checked} locales checked");
     }
 
     #[test]
