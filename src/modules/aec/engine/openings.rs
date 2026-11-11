@@ -520,7 +520,7 @@ pub fn point_and_tangent_at_distance(axis: &[(f64, f64)], s: f64) -> Option<((f6
         walked += seg;
     }
     // Fallback: end point, last non-zero tangent.
-    let last = *axis.last().unwrap();
+    let last = *axis.last()?;
     for w in axis.windows(2).rev() {
         let dx = w[1].0 - w[0].0;
         let dy = w[1].1 - w[0].1;
@@ -785,7 +785,7 @@ pub fn outer_contour_with_niches(
                 stations.push(local_1);
             }
         }
-        stations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        stations.sort_by(|a, b| a.total_cmp(b));
         stations.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
 
         for w in stations.windows(2) {
@@ -798,10 +798,14 @@ pub fn outer_contour_with_niches(
             let d = active_niche.and_then(|o| o.depth).unwrap_or(0.0);
             let current_offset = b1_offset + d;
 
-            let (p_start, t_start) = point_and_tangent_at_distance(sub_axis, w[0]).unwrap();
+            let Some((p_start, t_start)) = point_and_tangent_at_distance(sub_axis, w[0]) else {
+                continue;
+            };
             let n_start = (-t_start.1, t_start.0);
 
-            let (p_end, t_end) = point_and_tangent_at_distance(sub_axis, w[1]).unwrap();
+            let Some((p_end, t_end)) = point_and_tangent_at_distance(sub_axis, w[1]) else {
+                continue;
+            };
             let n_end = (-t_end.1, t_end.0);
 
             b1_pts.push((p_start.0 + n_start.0 * current_offset, p_start.1 + n_start.1 * current_offset));
@@ -830,7 +834,7 @@ pub fn outer_contour_with_niches(
                 stations.push(local_1);
             }
         }
-        stations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        stations.sort_by(|a, b| a.total_cmp(b));
         stations.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
 
         let mut forward_b2 = Vec::new();
@@ -844,10 +848,14 @@ pub fn outer_contour_with_niches(
             let d = active_niche.and_then(|o| o.depth).unwrap_or(0.0);
             let current_offset = b2_offset - d;
 
-            let (p_start, t_start) = point_and_tangent_at_distance(sub_axis, w[0]).unwrap();
+            let Some((p_start, t_start)) = point_and_tangent_at_distance(sub_axis, w[0]) else {
+                continue;
+            };
             let n_start = (-t_start.1, t_start.0);
 
-            let (p_end, t_end) = point_and_tangent_at_distance(sub_axis, w[1]).unwrap();
+            let Some((p_end, t_end)) = point_and_tangent_at_distance(sub_axis, w[1]) else {
+                continue;
+            };
             let n_end = (-t_end.1, t_end.0);
 
             forward_b2.push((p_start.0 + n_start.0 * current_offset, p_start.1 + n_start.1 * current_offset));
