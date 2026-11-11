@@ -8521,21 +8521,9 @@ impl OpenCADStudio {
                 }
                 let mut handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
                 if !handles.is_empty() {
-                    crate::modules::aec::engine::wall_package::expand_with_wall_derived_handles(
-                        &self.tabs[i].scene,
-                        &mut handles,
-                    );
-                    crate::modules::aec::engine::slab_package::expand_with_slab_derived_handles(
-                        &self.tabs[i].scene,
-                        &mut handles,
-                    );
-                    crate::modules::aec::engine::room_package::expand_with_room_derived_handles(
-                        &self.tabs[i].scene,
-                        &mut handles,
-                    );
-                    crate::modules::aec::engine::storey_xdata::unregister_walls_from_storeys(
+                    crate::modules::aec::properties::prepare_erase_handles(
                         &mut self.tabs[i].scene,
-                        &handles,
+                        &mut handles,
                     );
                     // Erase is delta-safe unless a target is in a group (group
                     // cleanup rewrites document.objects).

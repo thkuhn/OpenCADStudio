@@ -2024,6 +2024,16 @@ pub fn single_selected_package(
     })
 }
 
+/// Expands an erase selection with derived AEC handles and unregisters
+/// erased walls from their storeys.
+pub fn prepare_erase_handles(scene: &mut crate::scene::Scene, handles: &mut Vec<Handle>) {
+    use crate::modules::aec::engine::{room_package, slab_package, storey_xdata, wall_package};
+    wall_package::expand_with_wall_derived_handles(scene, handles);
+    slab_package::expand_with_slab_derived_handles(scene, handles);
+    room_package::expand_with_room_derived_handles(scene, handles);
+    storey_xdata::unregister_walls_from_storeys(scene, handles);
+}
+
 pub fn wall_from_entity(entity: &EntityType) -> bool {
     xdata::wall_from_entity(entity).is_some()
 }
