@@ -1,5 +1,40 @@
 use super::*;
 
+/// Shared inputs of the emit phases of `regenerate_opening_display`.
+struct RegenCtx<'a> {
+    opening: &'a Opening,
+    opening_handle: Handle,
+    wall_base_z: f64,
+    origin: (f64, f64),
+    tangent: (f64, f64),
+    normal: (f64, f64),
+    owner: Handle,
+    xref_layer_prefix: Option<String>,
+    default_opening_layer: Option<String>,
+    style: &'a OpeningStyle,
+    library: Option<&'a StyleLibrary>,
+    merged_rules: Option<ComponentRuleSet>,
+    slots: HashMap<OpeningComponentSlot, SlotGeometry>,
+    levels: OpeningRepresentationLevels,
+    params: OpeningBakeParams,
+    grid: &'a ConstructionGrid,
+    wall_y_min: f64,
+    wall_y_max: f64,
+    retained_label_scale: Option<Handle>,
+    axis: &'a [(f64, f64)],
+}
+
+impl RegenCtx<'_> {
+    fn layer_for(&self, scene: &mut Scene, role: Option<OpeningLookRole>) -> Option<String> {
+        if role == Some(OpeningLookRole::Division) {
+            Some(ensure_opening_grid_layer(scene, self.xref_layer_prefix.as_deref()))
+        } else {
+            self.default_opening_layer.clone()
+        }
+    }
+}
+
+
 /// Recreate `OPENING_REP` children for one opening.
 pub fn regenerate_opening_display(
     scene: &mut Scene,
@@ -100,17 +135,46 @@ pub fn regenerate_opening_display(
         }
         None => None,
     };
-    let layer_for = |scene: &mut Scene, role: Option<OpeningLookRole>| -> Option<String> {
-        if role == Some(OpeningLookRole::Division) {
-            Some(ensure_opening_grid_layer(
-                scene,
-                xref_layer_prefix.as_deref(),
-            ))
-        } else {
-            default_opening_layer.clone()
-        }
+    let ctx = RegenCtx {
+        opening: &opening,
+        opening_handle,
+        wall_base_z,
+        origin,
+        tangent: (tx, ty),
+        normal,
+        owner: opening_owner_handle,
+        xref_layer_prefix,
+        default_opening_layer,
+        style: &style,
+        library,
+        merged_rules,
+        slots,
+        levels,
+        params,
+        grid,
+        wall_y_min,
+        wall_y_max,
+        retained_label_scale,
+        axis: &axis,
     };
+    emit_plan_and_elevation(scene, &ctx, local);
+    emit_label_2d(scene, &ctx);
+    emit_3d_bodies(scene, &ctx);
+}
 
+
+fn emit_plan_and_elevation(scene: &mut Scene, ctx: &RegenCtx, local: Vec<BakedPath>) {
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let layer_for = |scene: &mut Scene, role: Option<OpeningLookRole>| ctx.layer_for(scene, role);
     for baked in local {
         if baked.points.len() < 2 {
             continue;
@@ -206,10 +270,18 @@ pub fn regenerate_opening_display(
         write_opening_display_tag(scene, handle, opening_handle, baked.slot);
         engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
     }
+}
 
-    let plan = rules.map(|r| &r.opening_profiles);
-    let (slots, _) = resolved_slots_for_plan(&opening, library, plan);
-    let merged_rules = rules_with_plan_visibility(&opening, library, rules);
+fn emit_label_2d(scene: &mut Scene, ctx: &RegenCtx) {
+    let axis = ctx.axis;
+    let default_opening_layer = &ctx.default_opening_layer;
+    let merged_rules = &ctx.merged_rules;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let retained_label_scale = ctx.retained_label_scale;
+    let slots = &ctx.slots;
+    let wall_base_z = ctx.wall_base_z;
+    let opening_owner_handle = ctx.owner;
     if merged_rules
         .as_ref()
         .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::OpeningLabel2D))
@@ -256,7 +328,27 @@ pub fn regenerate_opening_display(
             engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
         }
     }
+}
 
+fn emit_3d_bodies(scene: &mut Scene, ctx: &RegenCtx) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let grid = ctx.grid;
+    let levels = &ctx.levels;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let params = ctx.params;
+    let slots = &ctx.slots;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let wall_y_max = ctx.wall_y_max;
+    let wall_y_min = ctx.wall_y_min;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let layer_for = |scene: &mut Scene, role: Option<OpeningLookRole>| ctx.layer_for(scene, role);
     let frame_3d_vis = merged_rules
         .as_ref()
         .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Frame3D))
@@ -1059,4 +1151,5 @@ pub fn sync_opening_from_point_location(
     let _ = commit_opening_instance(scene, &opening, library, rules);
     true
 }
+
 
