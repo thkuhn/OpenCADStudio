@@ -335,7 +335,7 @@ impl StatusBar {
                 t!("Active AEC project\nClick to change · Right-click opens the Project Explorer"),
                 tooltip_hidden,
             ),
-            crate::ui::popup::plan_popup::project_menu_entries(active_project_name.as_deref()),
+            crate::modules::aec::ui::plan_popup::project_menu_entries(active_project_name.as_deref()),
             150.0,
         ))
         .on_right_press(Message::Aec(AecMessage::AecProjectExplorerOpen))
@@ -362,7 +362,7 @@ impl StatusBar {
                     t!("Planart und Darstellung 2D / 3D / Alle\nClick to change · Right-click opens the Styles manager"),
                     tooltip_hidden,
                 ),
-                crate::ui::popup::plan_popup::menu_entries(
+                crate::modules::aec::ui::plan_popup::menu_entries(
                     active_plan_name.as_deref(),
                     plan_names,
                     representation_override,
@@ -370,7 +370,7 @@ impl StatusBar {
                 150.0,
             ),
         )
-        .on_right_press(crate::ui::popup::plan_popup::styles_open_message())
+        .on_right_press(crate::modules::aec::ui::plan_popup::styles_open_message())
         .into();
         // Build the right-side pills, honouring the user's per-pill visibility.
         // They live in a flex-wrap flow (WrapFlow) so they spill onto extra rows

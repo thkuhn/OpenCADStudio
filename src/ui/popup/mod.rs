@@ -1,7 +1,6 @@
 pub mod context_menu;
 pub mod cycle_popup;
 pub mod isolate_popup;
-pub mod plan_popup;
 pub mod polar_popup;
 pub mod quad_menu;
 pub mod quad_overlay;
