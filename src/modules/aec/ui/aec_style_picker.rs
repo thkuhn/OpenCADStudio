@@ -44,6 +44,15 @@ fn list_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
     }
 }
 
+/// Message opening the style picker for the properties-panel picker `field`.
+pub fn open_for_properties_message(field: &str, handles: Vec<acadrust::Handle>) -> Message {
+    Message::Aec(match field {
+        "opening_style" => AecMessage::AecStylePickerOpenForOpeningProperties(handles),
+        "slab_style" => AecMessage::AecStylePickerOpenForSlabProperties(handles),
+        _ => AecMessage::AecStylePickerOpenForWallProperties(handles),
+    })
+}
+
 pub fn view_window<'a>(
     library: Option<&'a StyleLibrary>,
     project: Option<&'a ProjectFile>,

@@ -2099,13 +2099,7 @@ fn render_picker_row<'a>(
     value: &'a str,
     handles: Vec<acadrust::Handle>,
 ) -> Element<'a, Message> {
-    let press = if field == "opening_style" {
-        Message::Aec(AecMessage::AecStylePickerOpenForOpeningProperties(handles))
-    } else if field == "slab_style" {
-        Message::Aec(AecMessage::AecStylePickerOpenForSlabProperties(handles))
-    } else {
-        Message::Aec(AecMessage::AecStylePickerOpenForWallProperties(handles))
-    };
+    let press = crate::modules::aec::ui::aec_style_picker::open_for_properties_message(field, handles);
     let btn = button(
         row![
             text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
