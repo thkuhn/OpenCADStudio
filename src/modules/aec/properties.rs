@@ -961,6 +961,23 @@ pub fn opening_prop_section(
     }
 }
 
+/// Like `extend_entity_sections`, but works without a scene (then only the
+/// wall section is added).
+pub fn extend_sections_opt(
+    scene: Option<&crate::scene::Scene>,
+    handle: Handle,
+    entity: &EntityType,
+    style_library: Option<&StyleLibrary>,
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    sections: &mut Vec<crate::scene::model::object::PropSection>,
+) {
+    if let Some(scene) = scene {
+        extend_entity_sections(scene, handle, entity, style_library, project, sections);
+    } else if let Some(wall_section) = wall_prop_section(entity, style_library, project) {
+        sections.push(wall_section);
+    }
+}
+
 pub fn extend_entity_sections(
     scene: &crate::scene::Scene,
     handle: Handle,

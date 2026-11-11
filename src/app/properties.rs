@@ -4799,20 +4799,14 @@ pub(super) fn aggregate_sections(
         return vec![];
     };
     let mut result = dispatch::properties_sectioned(*first_handle, first_entity, text_style_names);
-    if let Some(scene) = scene {
-        crate::modules::aec::properties::extend_entity_sections(
-            scene,
-            *first_handle,
-            first_entity,
-            style_library,
-            project,
-            &mut result,
-        );
-    } else if let Some(wall_section) =
-        crate::modules::aec::properties::wall_prop_section(first_entity, style_library, project)
-    {
-        result.push(wall_section);
-    }
+    crate::modules::aec::properties::extend_sections_opt(
+        scene,
+        *first_handle,
+        first_entity,
+        style_library,
+        project,
+        &mut result,
+    );
     let rest = &selected[1..];
 
     // `refresh_properties` seeds the unit context and the focused vertex on
@@ -4847,20 +4841,14 @@ pub(super) fn aggregate_sections(
                 break;
             }
             let mut sections = dispatch::properties_sectioned(*handle, entity, text_style_names);
-            if let Some(scene) = scene {
-                crate::modules::aec::properties::extend_entity_sections(
-                    scene,
-                    *handle,
-                    entity,
-                    style_library,
-                    project,
-                    &mut sections,
-                );
-            } else if let Some(wall_section) =
-                crate::modules::aec::properties::wall_prop_section(entity, style_library, project)
-            {
-                sections.push(wall_section);
-            }
+            crate::modules::aec::properties::extend_sections_opt(
+                scene,
+                *handle,
+                entity,
+                style_library,
+                project,
+                &mut sections,
+            );
             intersect_into(&mut result, &sections);
         }
     }
