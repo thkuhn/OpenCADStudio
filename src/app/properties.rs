@@ -4019,42 +4019,10 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
             &self.tabs[i].scene.document,
             handle,
         ));
-        crate::modules::aec::properties::append_wall_junction_grips(
+        crate::modules::aec::properties::append_aec_grips(
             &self.tabs[i].scene,
             handle,
             contextual.as_ref(),
-            &mut entity_grips,
-        );
-        crate::modules::aec::properties::append_slab_base_grips(
-            &self.tabs[i].scene,
-            handle,
-            contextual.as_ref(),
-            &mut entity_grips,
-        );
-        crate::modules::aec::properties::append_opening_axis_grips(
-            &self.tabs[i].scene,
-            handle,
-            &mut entity_grips,
-        );
-        crate::modules::aec::properties::append_room_grips(
-            &self.tabs[i].scene,
-            handle,
-            contextual.as_ref(),
-            &mut entity_grips,
-        );
-        crate::modules::aec::properties::append_section_marker_grips(
-            &self.tabs[i].scene,
-            handle,
-            &mut entity_grips,
-        );
-        crate::modules::aec::properties::append_derived_view_grips(
-            &self.tabs[i].scene,
-            handle,
-            &mut entity_grips,
-        );
-        crate::modules::aec::properties::append_view_carrier_grips(
-            &self.tabs[i].scene,
-            handle,
             &mut entity_grips,
         );
 

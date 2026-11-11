@@ -3860,6 +3860,22 @@ pub fn append_room_grips(
     ));
 }
 
+/// Appends all AEC grips (walls, slabs, openings, rooms, derived views).
+pub fn append_aec_grips(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    entity: &EntityType,
+    entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
+) {
+    append_wall_junction_grips(scene, handle, entity, entity_grips);
+    append_slab_base_grips(scene, handle, entity, entity_grips);
+    append_opening_axis_grips(scene, handle, entity_grips);
+    append_room_grips(scene, handle, entity, entity_grips);
+    append_section_marker_grips(scene, handle, entity_grips);
+    append_derived_view_grips(scene, handle, entity_grips);
+    append_view_carrier_grips(scene, handle, entity_grips);
+}
+
 pub fn append_wall_junction_grips(
     scene: &crate::scene::Scene,
     handle: Handle,
