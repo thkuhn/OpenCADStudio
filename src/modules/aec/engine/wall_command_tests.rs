@@ -12611,7 +12611,9 @@ fn test_elevation_components_world_regeneration_creates_3d_polylines() {
 
     // Elevation sill drop goes to sill - 0.05 = 0.85:
     assert!((min_z - 0.85).abs() < 1e-4, "Min Z must match elevation sill drop (0.85)");
-    assert!((max_z - (0.90 + 1.20 - 0.06)).abs() < 1e-4, "Max Z must match fixed-frame top (2.04): {max_z}");
+    // The leaf swing schema overlaps the fixed frame by the leaf rebate/lateral
+    // overlap (default 0.01), so it reaches 2.10 - 0.06 + 0.01 = 2.05.
+    assert!((max_z - (0.90 + 1.20 - 0.06 + 0.01)).abs() < 1e-4, "Max Z must match leaf swing schema top (2.05): {max_z}");
 }
 
 #[test]
