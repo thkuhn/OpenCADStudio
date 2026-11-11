@@ -16,7 +16,7 @@ use glam::DVec3;
 use std::f64::consts::PI;
 
 use crate::command::{CadCommand, CmdOption, CmdResult, LiveCommandField, LiveCommandProperties, LiveFieldValue, WorkingPlane};
-use crate::modules::aec::engine::geometry::signed_area;
+use crate::modules::aec::engine::geometry::{point_in_polygon, signed_area};
 use crate::modules::aec::engine::slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
 use crate::modules::aec::engine::slab_package::{
     resolve_slab_package, AEC_SLAB_OPENING_LAYER,
@@ -105,26 +105,6 @@ impl SlabOpeningCommand {
         self
     }
 
-    /// Checks if a 2D point lies inside the polygon formed by slab vertices.
-    fn point_in_polygon(pt: (f64, f64), poly: &[(f64, f64)]) -> bool {
-        if poly.len() < 3 {
-            return false;
-        }
-        let mut inside = false;
-        let mut j = poly.len() - 1;
-        for i in 0..poly.len() {
-            let (xi, yi) = poly[i];
-            let (xj, yj) = poly[j];
-            let intersect = ((yi > pt.1) != (yj > pt.1))
-                && (pt.0 < (xj - xi) * (pt.1 - yi) / (yj - yi) + xi);
-            if intersect {
-                inside = !inside;
-            }
-            j = i;
-        }
-        inside
-    }
-
     /// Finds a slab entity at `world_pt`.
     pub fn find_slab_at_point(&self, scene: &Scene, world_pt: DVec3) -> Option<Handle> {
         let local_pt = self.plane.to_local(world_pt);
@@ -139,7 +119,7 @@ impl SlabOpeningCommand {
                         .iter()
                         .map(|v| (v.location.x, v.location.y))
                         .collect();
-                    if Self::point_in_polygon(pt2d, &poly) {
+                    if point_in_polygon(pt2d, &poly) {
                         return Some(handle);
                     }
                 }
