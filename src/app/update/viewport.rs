@@ -2947,13 +2947,7 @@ impl OpenCADStudio {
                     .find(|(h, _)| *h == handle)
                     .map(|(_, e)| e.clone());
                 if !rebuilt_arcs.contains(&handle)
-                    && !self.apply_aec_opening_grip(i, handle, grip_id, &apply)
-                    && !self.apply_aec_slab_grip(i, handle, grip_id, &apply)
-                    && !self.apply_aec_slab_opening_grip(i, handle, grip_id, &apply)
-                    && !self.apply_aec_room_grip(i, handle, grip_id, &apply)
-                    && !self.apply_aec_section_marker_grip(i, handle, grip_id, &apply, orig_ent.as_ref())
-                    && !self.apply_aec_derived_view_grip(i, handle, grip_id, &apply, orig_ent.as_ref())
-                    && !self.apply_aec_carrier_grip(i, handle, grip_id, &apply)
+                    && !self.apply_aec_grip(i, handle, grip_id, &apply, orig_ent.as_ref())
                 {
                     self.tabs[i].scene.apply_grip(handle, grip_id, apply);
                 }

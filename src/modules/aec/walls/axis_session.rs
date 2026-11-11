@@ -6,6 +6,24 @@
 use crate::app::OpenCADStudio;
 
 impl OpenCADStudio {
+    /// Dispatches a grip edit to the AEC grip handlers; true if one handled it.
+    pub(crate) fn apply_aec_grip(
+        &mut self,
+        tab: usize,
+        handle: acadrust::Handle,
+        grip_id: usize,
+        apply: &crate::scene::model::object::GripApply,
+        orig_ent: Option<&acadrust::EntityType>,
+    ) -> bool {
+        self.apply_aec_opening_grip(tab, handle, grip_id, apply)
+            || self.apply_aec_slab_grip(tab, handle, grip_id, apply)
+            || self.apply_aec_slab_opening_grip(tab, handle, grip_id, apply)
+            || self.apply_aec_room_grip(tab, handle, grip_id, apply)
+            || self.apply_aec_section_marker_grip(tab, handle, grip_id, apply, orig_ent)
+            || self.apply_aec_derived_view_grip(tab, handle, grip_id, apply, orig_ent)
+            || self.apply_aec_carrier_grip(tab, handle, grip_id, apply)
+    }
+
     /// Re-commit AEC opening instances whose grips were just edited.
     pub(crate) fn aec_commit_opening_instances_after_grip(
         &mut self,
