@@ -1126,7 +1126,7 @@ common =
     .nav-style-tinkercad = TinkerCAD: right button orbits
     .nav-style-touchpad = Touchpad: Shift pans, Alt orbits
     .add-row = Add row
-   .slice-the-plane-does-not-cross-the-solid-on-th = SLICE: Die Ebene kreuzt den Volumenkörper auf der gehaltenen Seite nicht.    .both = Both
+    .both = Both
     .slice-select-at-least-one-target = SLICE: select at least one solid or surface.
     .slice-invalid-plane = SLICE: the cutting plane is invalid.
     .slice-side-point-on-plane = SLICE: choose a point away from the cutting plane.
@@ -2730,6 +2730,7 @@ common =
     .parametric-symmetric = Symmetric
     .parametric-equal = Equal
     .parametric-fix = Fix
+    .slice-the-plane-does-not-cross-the-solid-on-th = SLICE: Die Ebene kreuzt den Volumenkörper auf der gehaltenen Seite nicht.
 
 errors =
     .save-warning = Warnhinweise speichern
