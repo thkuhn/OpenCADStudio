@@ -1,5 +1,729 @@
 use super::*;
 
+/// Read-only inputs shared by every layer of one wall regeneration.
+#[derive(Clone, Copy)]
+struct WallLayerCtx<'a> {
+    layers: &'a [WallLayer],
+    wall: &'a Wall,
+    display: &'a engine::representation::WallDisplaySet,
+    extrusions: &'a [WallLayerExtrusion],
+    centerline: &'a [(f64, f64)],
+    wall_openings: &'a [engine::openings::Opening],
+    contour_openings: &'a [engine::openings::Opening],
+    mitered_footprints: &'a [Option<Vec<(f64, f64)>>],
+    base_footprints: &'a [Vec<(f64, f64)>],
+    base_footprint_bulges: &'a [Vec<f64>],
+    extended_footprints: &'a [Vec<(f64, f64)>],
+    substituted_layer_styles: &'a Option<Vec<(String, Option<String>)>>,
+    library: &'a StyleLibrary,
+    rules: Option<&'a engine::display_component::ComponentRuleSet>,
+    wall_hatch_override: Option<&'a engine::display_component::ComponentStyleOverride>,
+    peer_at_end0: &'a Option<(Vec<engine::miter::MiterLayer>, Option<usize>)>,
+    peer_at_end1: &'a Option<(Vec<engine::miter::MiterLayer>, Option<usize>)>,
+    self_axis_2d: &'a [(f64, f64)],
+    xref_layer_prefix: &'a Option<String>,
+    wall_owner_handle: Handle,
+    wall_handle: Handle,
+    wall_base_z: f64,
+    height: f64,
+    wall_angle_rad: f64,
+    host_cut_visible: bool,
+    layers2d_visible: bool,
+    contour2d_visible: bool,
+    layer_hatch_visible: bool,
+    contour_hatch_visible: bool,
+    solid_visible: bool,
+}
+
+/// Emits the 2D contour, hatch and 3D solids of every wall layer.
+fn emit_wall_layers(
+    scene: &mut Scene,
+    ctx: &WallLayerCtx<'_>,
+    reusable_contours: &mut Vec<Handle>,
+    new_derived: &mut Vec<Handle>,
+) {
+    use engine::display_component::{LayerSelection, WallComponentSlot};
+    let WallLayerCtx {
+        layers,
+        wall,
+        display,
+        extrusions,
+        centerline,
+        wall_openings,
+        contour_openings,
+        mitered_footprints,
+        base_footprints,
+        base_footprint_bulges,
+        extended_footprints,
+        substituted_layer_styles,
+        library,
+        rules,
+        wall_hatch_override,
+        peer_at_end0,
+        peer_at_end1,
+        self_axis_2d,
+        xref_layer_prefix,
+        wall_owner_handle,
+        wall_handle,
+        wall_base_z,
+        height,
+        wall_angle_rad,
+        host_cut_visible,
+        layers2d_visible,
+        contour2d_visible,
+        layer_hatch_visible,
+        contour_hatch_visible,
+        solid_visible,
+    } = *ctx;
+    for (i, layer) in layers.iter().enumerate() {
+        let mat_name = &layer.material;
+        // Prefer a true per-layer miter when the join helper could match this
+        // layer index against the other wall; otherwise fall back to the
+        // corner-extended footprint (or the plain base footprint) from
+        // WallRepresentation.
+        // Prefer a true per-layer miter / corner-extended footprint when
+        // available (those paths are still straight-only). Otherwise use the
+        // bulge-aware base footprint so curved axes keep exact offset arcs.
+        // With openings and no miter/corner override, emit one 2D contour+hatch
+        // per disconnected piece (through-cut splits the band).
+        let uncut_footprint: (Vec<(f64, f64)>, Vec<f64>) =
+            if let Some(Some(mitered)) = mitered_footprints.get(i) {
+                let bg = retarget_closed_footprint_bulges(
+                    &base_footprints[i],
+                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                    mitered,
+                );
+                (mitered.clone(), bg)
+            } else if let Some(fp) = extended_footprints.get(i) {
+                let bg = retarget_closed_footprint_bulges(
+                    &base_footprints[i],
+                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                    fp,
+                );
+                (fp.clone(), bg)
+            } else {
+                (
+                    base_footprints[i].clone(),
+                    base_footprint_bulges
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| vec![0.0; base_footprints[i].len()]),
+                )
+            };
+
+        let pieces_for_openings = |openings: &[engine::openings::Opening]| {
+            if !openings.is_empty() {
+                engine::miter::split_mitered_footprint_by_openings(
+                    &uncut_footprint.0,
+                    &centerline,
+                    openings,
+                )
+                .into_iter()
+                .map(|piece| {
+                    let bulges = if uncut_footprint.1.is_empty()
+                        || uncut_footprint.1.iter().all(|&bulge| bulge.abs() < 1e-12)
+                    {
+                        vec![0.0; piece.len()]
+                    } else {
+                        retarget_closed_footprint_bulges(
+                            &base_footprints[i],
+                            base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                            &piece,
+                        )
+                    };
+                    (piece, bulges)
+                })
+                .collect()
+            } else {
+                let rings = engine::miter::split_footprint_rings(&uncut_footprint.0);
+                if rings.len() > 1 {
+                    rings
+                        .into_iter()
+                        .map(|ring| {
+                            let n = ring.len();
+                            (ring, vec![0.0; n])
+                        })
+                        .collect()
+                } else if !uncut_footprint.0.is_empty() {
+                    vec![uncut_footprint.clone()]
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+        let pieces_2d = pieces_for_openings(contour_openings);
+        let pieces_3d = if host_cut_visible {
+            pieces_2d.clone()
+        } else {
+            pieces_for_openings(&wall_openings)
+        };
+
+        // Stable per-layer identity, used to match `layer_filter` /
+        // `layer_style_override` entries against this layer (mirrors
+        // `layer_refs_from_materials`'s convention: `WallLayer` carries no
+        // `role_tag`, so it's always `None` here).
+        let layer_ref = join::LayerRef {
+            material_id: mat_name.clone(),
+            role_tag: None,
+            index: i,
+            layer_id: Some(layer.layer_id),
+        };
+        // `layer_filter_for(slot)` gates `Contour2D`/`Solid3D` independently
+        // (Step 2/3): the 2D contour below consults the `Contour2D` slot,
+        // while the 3D solid further down consults `Solid3D` separately —
+        // so e.g. a 5-layer wall can show only the masonry layer as its 2D
+        // contour while still extruding every layer's solid. `All` (or no
+        // rules) keeps every layer, exactly like before this feature
+        // existed.
+        let layer_included_contour = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Contour2D)) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
+        let layer_included_layers2d = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Layers2D)) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
+        let layer_included_hatch = match rules.map(|r| r.layer_filter_for(WallComponentSlot::LayerHatch2D)) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
+        let layer_included_solid = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Solid3D)) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
+
+        // `StyleSubstitution` (precedence tier c): swap the *style* source
+        // (material id + its own hatch override) for this layer index from
+        // the resolved target wall style, while `layer`'s own geometry
+        // (thickness/gaps/offsets) is untouched. Falls back to this layer's
+        // own material/hatch_override when the target has no layer at this
+        // index (or no substitution applies at all).
+        let (effective_mat_name, effective_hatch_override): (&str, Option<&str>) =
+            match substituted_layer_styles.as_ref().and_then(|v| v.get(i)) {
+                Some((sub_mat, sub_hatch)) => (sub_mat.as_str(), sub_hatch.as_deref()),
+                None => (mat_name.as_str(), layer.hatch_override.as_deref()),
+            };
+        let material = library.materials.iter().find(|m| {
+            m.id == effective_mat_name || m.name == effective_mat_name
+        });
+
+        // Envelope (overall 2D contour) prefers `Contour2D` so phase extras
+        // (Abbruch/Bestand) win over per-layer `Layers2D` overrides.
+        let is_envelope = i == 0 || i + 1 == layers.len();
+        let contour_slots = if is_envelope {
+            [WallComponentSlot::Contour2D, WallComponentSlot::Layers2D]
+        } else {
+            [WallComponentSlot::Layers2D, WallComponentSlot::Contour2D]
+        };
+        let contour_style_override =
+            resolve_layer_style_override(rules, &contour_slots, &layer_ref);
+        let hatch_slots = if is_envelope {
+            [
+                WallComponentSlot::ContourHatch2D,
+                WallComponentSlot::LayerHatch2D,
+            ]
+        } else {
+            [
+                WallComponentSlot::LayerHatch2D,
+                WallComponentSlot::ContourHatch2D,
+            ]
+        };
+        let mut hatch_style_override =
+            resolve_layer_style_override(rules, &hatch_slots, &layer_ref);
+        if is_envelope {
+            if let Some(slot_style) = rules.and_then(|r| {
+                r.style_for(WallComponentSlot::ContourHatch2D)
+            }) {
+                hatch_style_override.overlay_from(slot_style);
+            }
+        }
+
+        // Layer-level `hatch_override` (Step 4) takes precedence over the
+        // material's own `hatch_pattern`; both fall back to "ANSI31" so a
+        // layer/material without an explicit pattern still renders a hatch.
+        let pattern_name = hatch_style_override
+            .hatch_pattern
+            .clone()
+            .or_else(|| {
+                effective_hatch_override
+                    .filter(|p| !p.is_empty())
+                    .map(|p| p.to_string())
+            })
+            .or_else(|| material.map(|m| m.hatch_pattern.clone()).filter(|p| !p.is_empty()))
+            .unwrap_or_else(|| "ANSI31".to_string());
+        let hatch_acad_color = hatch_style_override
+            .hatch_color
+            .or_else(|| material.and_then(|m| m.hatch_color))
+            .or_else(|| material.map(|m| material_line_color_as_acad(m.line_color)));
+        let color = hatch_acad_color
+            .map(wall_hatch_color)
+            .unwrap_or([0.6, 0.6, 0.6, 0.85]);
+        let mut hatch_scale = hatch_style_override
+            .hatch_scale
+            .or_else(|| material.map(|m| m.hatch_scale))
+            .unwrap_or(1.0);
+        if hatch_scale <= 0.0 {
+            hatch_scale = 0.01;
+        }
+        let hatch_scale = hatch_scale as f32;
+        // Hatch direction: either the material's own hatch angle applied on
+        // top of the wall's run direction ("relative"), or used verbatim as
+        // a fixed/global angle. Both are stored in degrees on `Material` and
+        // converted to the radians `HatchModel::angle_offset` expects.
+        // Override precedence: `Wall.hatch_override` (per-instance) >
+        // style-profile `hatch_style_override` > `Material` default.
+        let hatch_angle_deg = wall_hatch_override
+            .and_then(|ov| ov.hatch_angle)
+            .or(hatch_style_override.hatch_angle)
+            .or_else(|| material.map(|m| m.hatch_angle))
+            .unwrap_or(0.0);
+        let hatch_angle_relative = wall_hatch_override
+            .and_then(|ov| ov.hatch_angle_relative)
+            .or(hatch_style_override.hatch_angle_relative)
+            .or_else(|| material.map(|m| m.hatch_angle_relative))
+            .unwrap_or(true);
+        let hatch_angle_offset = if hatch_angle_relative {
+            wall_angle_rad + hatch_angle_deg.to_radians()
+        } else {
+            hatch_angle_deg.to_radians()
+        } as f32;
+        let line_color = contour_style_override
+            .line_color
+            .or_else(|| material.map(|m| material_line_color_as_acad(m.line_color)));
+        let fill_color = contour_style_override.fill_color;
+        let families = crate::scene::model::hatch_patterns::find(&pattern_name)
+            .and_then(|e| {
+                if let crate::scene::model::hatch_model::HatchPattern::Pattern(f) = &e.gpu {
+                    Some(f.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        let has_explicit_contour_filter = matches!(
+            rules.map(|r| r.layer_filter_for(WallComponentSlot::Contour2D)),
+            Some(LayerSelection::Explicit(_))
+        );
+        let has_explicit_layers2d_filter = matches!(
+            rules.map(|r| r.layer_filter_for(WallComponentSlot::Layers2D)),
+            Some(LayerSelection::Explicit(_))
+        );
+
+        let same_mat_end0 = layer_has_same_material_peer(layer, i, 0, &layers, peer_at_end0.as_ref());
+        let same_mat_end1 = layer_has_same_material_peer(
+            layer,
+            i,
+            self_axis_2d.len().saturating_sub(1),
+            &layers,
+            peer_at_end1.as_ref(),
+        );
+
+        let (p_start, t_start) = if centerline.len() >= 2 {
+            let p0 = centerline[0];
+            let p1 = centerline[1];
+            let dx = p1.0 - p0.0;
+            let dy = p1.1 - p0.1;
+            let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+            (p0, (dx / len, dy / len))
+        } else {
+            ((0.0, 0.0), (1.0, 0.0))
+        };
+        let (p_end, t_end) = if centerline.len() >= 2 {
+            let p0 = centerline[centerline.len() - 2];
+            let p1 = centerline[centerline.len() - 1];
+            let dx = p1.0 - p0.0;
+            let dy = p1.1 - p0.1;
+            let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+            (p1, (dx / len, dy / len))
+        } else {
+            ((0.0, 0.0), (1.0, 0.0))
+        };
+
+        // 2D contour + hatch for each remaining piece after openings.
+        for (footprint, footprint_bulges) in &pieces_2d {
+            if footprint.len() < 3 {
+                continue;
+            }
+
+            let draw_contour = if has_explicit_contour_filter {
+                contour2d_visible && layer_included_contour
+            } else if has_explicit_layers2d_filter {
+                layers2d_visible && layer_included_layers2d
+            } else {
+                (layers2d_visible && layer_included_layers2d)
+                    || (contour2d_visible && is_envelope && layer_included_contour)
+            };
+            let draw_hatch = (layer_hatch_visible && layer_included_hatch)
+                || (contour_hatch_visible && is_envelope);
+
+            if draw_contour {
+                let n = footprint.len();
+                let total_thick: f64 = layers.iter().map(|l| l.thickness).sum();
+                let cap0 = if same_mat_end0 {
+                    find_cap_edge_index(footprint, p_start, t_start, total_thick.max(0.2) * 2.5)
+                } else {
+                    None
+                };
+                let cap1 = if same_mat_end1 {
+                    find_cap_edge_index(footprint, p_end, t_end, total_thick.max(0.2) * 2.5)
+                } else {
+                    None
+                };
+
+                let polylines_to_emit: Vec<LwPolyline> = match (cap0, cap1) {
+                    (Some(c0), Some(c1)) if c0 != c1 && n >= 4 => {
+                        let imin = c0.min(c1);
+                        let imax = c0.max(c1);
+                        let mut pl1 = LwPolyline::new();
+                        for step in 0..=(imax - imin - 1) {
+                            let idx = imin + 1 + step;
+                            let bulge = if step < imax - imin - 1 {
+                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            let (x, y) = footprint[idx];
+                            pl1.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl1.is_closed = false;
+
+                        let mut pl2 = LwPolyline::new();
+                        let count2 = n - (imax - imin);
+                        for step in 0..count2 {
+                            let idx = (imax + 1 + step) % n;
+                            let bulge = if step < count2 - 1 {
+                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            let (x, y) = footprint[idx];
+                            pl2.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl2.is_closed = false;
+                        vec![pl1, pl2]
+                    }
+                    (Some(c), _) | (_, Some(c)) if n >= 3 => {
+                        let mut pl = LwPolyline::new();
+                        for step in 0..n {
+                            let idx = (c + 1 + step) % n;
+                            let bulge = if step < n - 1 {
+                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            let (x, y) = footprint[idx];
+                            pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl.is_closed = false;
+                        vec![pl]
+                    }
+                    _ => {
+                        let mut pl = LwPolyline::new();
+                        for (idx, &(x, y)) in footprint.iter().enumerate() {
+                            let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
+                            pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl.is_closed = true;
+                        vec![pl]
+                    }
+                };
+
+                for mut pl in polylines_to_emit {
+                    pl.elevation = wall_base_z;
+                    let contour_handle =
+                        reuse_or_add_wall_contour(scene, reusable_contours, pl, Some(wall_owner_handle));
+                    let layer_name = layer
+                        .layer_override
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("0");
+                    let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                    scene.ensure_layer(&prefixed_layer);
+                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                        e.as_entity_mut().set_layer(prefixed_layer);
+                    }
+                    if let Some(color) = line_color {
+                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                            e.as_entity_mut().set_color(color);
+                        }
+                    }
+                    if let Some(lt) = contour_style_override.line_type.as_deref().filter(|s| !s.is_empty()) {
+                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                            e.common_mut().linetype = lt.to_string();
+                        }
+                    }
+                    write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
+                    new_derived.push(contour_handle);
+                }
+            }
+
+            if draw_hatch {
+                let tessellated = tessellate_ring_with_bulges(footprint, footprint_bulges);
+                let (rel, origin, wcs) = pack_wall_ring(&tessellated);
+                let phased = crate::modules::aec::project::hatch_origin::phase_families_wcs0(
+                    &families,
+                    origin,
+                );
+                let hatch_model = crate::scene::model::hatch_model::HatchModel {
+                    pattern_origin: None,
+                    render_instance: None,
+                    boundary: std::sync::Arc::new(rel.clone()),
+                    pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(phased),
+                    name: pattern_name.clone(),
+                    color,
+                    aci: 0,
+                    line_weight_px: 1.0,
+                    angle_offset: hatch_angle_offset,
+                    scale: hatch_scale,
+                    world_origin: origin,
+                    boundary_wcs: Some(std::sync::Arc::new(wcs)),
+                    fill_plane: Some(crate::scene::model::hatch_model::FillPlane {
+                        origin: [origin[0], origin[1], wall_base_z],
+                        x_axis: [1.0, 0.0, 0.0],
+                        y_axis: [0.0, 1.0, 0.0],
+                    }),
+                    fill_plane_boundary: Some(std::sync::Arc::new(rel)),
+                    boundary_exterior: None,
+                    boundary_sources: None,
+                    boundary_paths: None,
+                    style: acadrust::entities::HatchStyleType::Normal,
+                    draw_depth: 0.0,
+                };
+                let hatch_style = hatch_acad_color.map(|c| {
+                    (c, acadrust::types::Transparency::from_percent(0.0))
+                });
+                let hatch_handle = scene.add_hatch(hatch_model, None, hatch_style);
+                if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
+                    if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
+                        e.common_mut().owner_handle = wall_owner_handle;
+                    }
+                }
+                let layer_name = layer
+                    .layer_override
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("0");
+                let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                scene.ensure_layer(&prefixed_layer);
+                if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
+                    e.as_entity_mut().set_layer(prefixed_layer);
+                }
+                if let Some(c) = hatch_acad_color {
+                    if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
+                        e.as_entity_mut().set_color(c);
+                    }
+                }
+                write_wall_display_tag(scene, hatch_handle, wall_handle, WALL_REP_ROLE_HATCH);
+                new_derived.push(hatch_handle);
+            }
+        }
+
+        // Rest-wall solids: Z-extrude remaining band pieces (or mitered /
+        // corner-extended footprints). Opening-zone remainders are extruded
+        // through the layer thickness separately below.
+        let rest_for_layer: Vec<&engine::representation::WallLayerSolidPath> = display
+            .solids
+            .iter()
+            .filter(|s| s.layer_index == i)
+            .collect();
+        let (solid_height, solid_base) = if let Some(ex) = extrusions.get(i) {
+            (ex.height, ex.base_offset + wall_base_z)
+        } else if let Some(solid) = rest_for_layer.first() {
+            (solid.height, solid.base_offset + wall_base_z)
+        } else {
+            (height, wall_base_z)
+        };
+        let solid_rings: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if !wall.top_facets.is_empty() || !wall.base_facets.is_empty() {
+            let mut all_facets = wall.top_facets.clone();
+            all_facets.extend(wall.base_facets.clone());
+            let mut partitioned = Vec::new();
+            for (fp, bulges) in &pieces_3d {
+                partitioned.extend(partition_footprint_by_facets(fp, bulges, &all_facets));
+            }
+            partitioned
+        } else {
+            pieces_3d
+        };
+        if solid_visible && layer_included_solid && solid_height.abs() > 1e-9 {
+            for (footprint, footprint_bulges) in &solid_rings {
+                if footprint.len() < 3 {
+                    continue;
+                }
+                let mut pl = LwPolyline::new();
+                for (idx, &(x, y)) in footprint.iter().enumerate() {
+                    let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
+                    pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                }
+                pl.is_closed = true;
+                let contour_entity = EntityType::LwPolyline(pl);
+
+                let to_extrude = if solid_base.abs() > 1e-9 {
+                    let mut clone = contour_entity.clone();
+                    if let EntityType::LwPolyline(ref mut pl) = clone {
+                        pl.elevation = solid_base;
+                    }
+                    Some(clone)
+                } else {
+                    None
+                };
+                let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
+
+                let body = if wall.is_sloped() {
+                    build_sloped_layer_solid_3d(
+                        footprint,
+                        footprint_bulges,
+                        &wall,
+                        layers.get(i),
+                        wall_base_z,
+                        solid_height,
+                    )
+                } else {
+                    crate::scene::model::sweep_model::extruded(entity_to_use, solid_height)
+                };
+
+                if let Some(body) = body {
+                    let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
+                    let mut s3d_entity = EntityType::Solid3D(s3d);
+                    if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
+                        s3d_entity.common_mut().owner_handle = wall_owner_handle;
+                    }
+                    let solid_handle = scene.add_entity(s3d_entity);
+                    let layer_name = layer
+                        .layer_override
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("0");
+                    let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                    scene.ensure_layer(&prefixed_layer);
+                    if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                        e.as_entity_mut().set_layer(prefixed_layer);
+                    }
+                    if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
+                        let mut miter_seams = Vec::new();
+                        let total_thick: f64 = layers.iter().map(|l| l.thickness).sum();
+                        if same_mat_end0 {
+                            if let Some(c0) = find_cap_edge_index(footprint, p_start, t_start, total_thick.max(0.2) * 2.5) {
+                                miter_seams.push((footprint[c0], footprint[(c0 + 1) % footprint.len()]));
+                            }
+                        }
+                        if same_mat_end1 {
+                            if let Some(c1) = find_cap_edge_index(footprint, p_end, t_end, total_thick.max(0.2) * 2.5) {
+                                miter_seams.push((footprint[c1], footprint[(c1 + 1) % footprint.len()]));
+                            }
+                        }
+                        if !miter_seams.is_empty() {
+                            filter_miter_deck_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                &miter_seams,
+                                &wall,
+                                layers.get(i),
+                                solid_base,
+                                solid_base + solid_height,
+                            );
+                        }
+                        if solid_rings.len() > 1 {
+                            filter_facet_partition_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                footprint,
+                                &solid_rings,
+                                &wall,
+                                layers.get(i),
+                                solid_base,
+                                solid_height,
+                            );
+                        }
+                        if !wall_openings.is_empty() {
+                            filter_opening_surface_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                &wall_openings,
+                                &centerline,
+                                solid_height,
+                                solid_base,
+                                wall_base_z,
+                            );
+                        }
+                        scene.register_prepared_solid_model(solid_handle, body, display_geom);
+                    }
+                    if let Some(color) = fill_color {
+                        if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                            e.as_entity_mut().set_color(color);
+                        }
+                    }
+                    write_wall_display_tag(scene, solid_handle, wall_handle, WALL_REP_ROLE_SOLID);
+                    new_derived.push(solid_handle);
+                }
+            }
+            // Opening zone: elevation remainder extruded through the layer
+            // thickness.
+            if solid_visible && layer_included_solid && !wall_openings.is_empty() {
+                for zone in display.zone_solids.iter().filter(|z| z.layer_index == i) {
+                    if zone.loop_xyz.len() < 3 {
+                        continue;
+                    }
+                    let pts: Vec<Vector3> = zone
+                        .loop_xyz
+                        .iter()
+                        .map(|p| Vector3::new(p[0], p[1], p[2] + wall_base_z))
+                        .collect();
+                    let mut pl = Polyline3D::from_points(pts);
+                    pl.flags.closed = true;
+                    let entity = EntityType::Polyline3D(pl);
+                    if let Some(body) = crate::scene::model::sweep_model::extruded_direction(
+                        &entity,
+                        zone.direction,
+                        0.0,
+                    ) {
+                        let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
+                        let mut s3d_entity = EntityType::Solid3D(s3d);
+                        if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
+                            s3d_entity.common_mut().owner_handle = wall_owner_handle;
+                        }
+                        let solid_handle = scene.add_entity(s3d_entity);
+                        let layer_name = layer
+                            .layer_override
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("0");
+                        let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                        scene.ensure_layer(&prefixed_layer);
+                        if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                            e.as_entity_mut().set_layer(prefixed_layer);
+                        }
+                        if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
+                            filter_opening_surface_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                &wall_openings,
+                                &centerline,
+                                solid_height,
+                                solid_base,
+                                wall_base_z,
+                            );
+                            scene.register_prepared_solid_model(solid_handle, body, display_geom);
+                        }
+                        if let Some(color) = fill_color {
+                            if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                                e.as_entity_mut().set_color(color);
+                            }
+                        }
+                        write_wall_display_tag(
+                            scene,
+                            solid_handle,
+                            wall_handle,
+                            WALL_REP_ROLE_SOLID,
+                        );
+                        new_derived.push(solid_handle);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn regenerate_wall_representation_inner(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -423,653 +1147,39 @@ pub(crate) fn regenerate_wall_representation_inner(
     };
 
     let mut new_derived: Vec<Handle> = Vec::new();
-    for (i, layer) in layers.iter().enumerate() {
-        let mat_name = &layer.material;
-        // Prefer a true per-layer miter when the join helper could match this
-        // layer index against the other wall; otherwise fall back to the
-        // corner-extended footprint (or the plain base footprint) from
-        // WallRepresentation.
-        // Prefer a true per-layer miter / corner-extended footprint when
-        // available (those paths are still straight-only). Otherwise use the
-        // bulge-aware base footprint so curved axes keep exact offset arcs.
-        // With openings and no miter/corner override, emit one 2D contour+hatch
-        // per disconnected piece (through-cut splits the band).
-        let uncut_footprint: (Vec<(f64, f64)>, Vec<f64>) =
-            if let Some(Some(mitered)) = mitered_footprints.get(i) {
-                let bg = retarget_closed_footprint_bulges(
-                    &base_footprints[i],
-                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
-                    mitered,
-                );
-                (mitered.clone(), bg)
-            } else if let Some(fp) = extended_footprints.get(i) {
-                let bg = retarget_closed_footprint_bulges(
-                    &base_footprints[i],
-                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
-                    fp,
-                );
-                (fp.clone(), bg)
-            } else {
-                (
-                    base_footprints[i].clone(),
-                    base_footprint_bulges
-                        .get(i)
-                        .cloned()
-                        .unwrap_or_else(|| vec![0.0; base_footprints[i].len()]),
-                )
-            };
-
-        let pieces_for_openings = |openings: &[engine::openings::Opening]| {
-            if !openings.is_empty() {
-                engine::miter::split_mitered_footprint_by_openings(
-                    &uncut_footprint.0,
-                    &centerline,
-                    openings,
-                )
-                .into_iter()
-                .map(|piece| {
-                    let bulges = if uncut_footprint.1.is_empty()
-                        || uncut_footprint.1.iter().all(|&bulge| bulge.abs() < 1e-12)
-                    {
-                        vec![0.0; piece.len()]
-                    } else {
-                        retarget_closed_footprint_bulges(
-                            &base_footprints[i],
-                            base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
-                            &piece,
-                        )
-                    };
-                    (piece, bulges)
-                })
-                .collect()
-            } else {
-                let rings = engine::miter::split_footprint_rings(&uncut_footprint.0);
-                if rings.len() > 1 {
-                    rings
-                        .into_iter()
-                        .map(|ring| {
-                            let n = ring.len();
-                            (ring, vec![0.0; n])
-                        })
-                        .collect()
-                } else if !uncut_footprint.0.is_empty() {
-                    vec![uncut_footprint.clone()]
-                } else {
-                    Vec::new()
-                }
-            }
-        };
-        let pieces_2d = pieces_for_openings(contour_openings);
-        let pieces_3d = if host_cut_visible {
-            pieces_2d.clone()
-        } else {
-            pieces_for_openings(&wall_openings)
-        };
-
-        // Stable per-layer identity, used to match `layer_filter` /
-        // `layer_style_override` entries against this layer (mirrors
-        // `layer_refs_from_materials`'s convention: `WallLayer` carries no
-        // `role_tag`, so it's always `None` here).
-        let layer_ref = join::LayerRef {
-            material_id: mat_name.clone(),
-            role_tag: None,
-            index: i,
-            layer_id: Some(layer.layer_id),
-        };
-        // `layer_filter_for(slot)` gates `Contour2D`/`Solid3D` independently
-        // (Step 2/3): the 2D contour below consults the `Contour2D` slot,
-        // while the 3D solid further down consults `Solid3D` separately —
-        // so e.g. a 5-layer wall can show only the masonry layer as its 2D
-        // contour while still extruding every layer's solid. `All` (or no
-        // rules) keeps every layer, exactly like before this feature
-        // existed.
-        let layer_included_contour = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Contour2D)) {
-            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
-            _ => true,
-        };
-        let layer_included_layers2d = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Layers2D)) {
-            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
-            _ => true,
-        };
-        let layer_included_hatch = match rules.map(|r| r.layer_filter_for(WallComponentSlot::LayerHatch2D)) {
-            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
-            _ => true,
-        };
-        let layer_included_solid = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Solid3D)) {
-            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
-            _ => true,
-        };
-
-        // `StyleSubstitution` (precedence tier c): swap the *style* source
-        // (material id + its own hatch override) for this layer index from
-        // the resolved target wall style, while `layer`'s own geometry
-        // (thickness/gaps/offsets) is untouched. Falls back to this layer's
-        // own material/hatch_override when the target has no layer at this
-        // index (or no substitution applies at all).
-        let (effective_mat_name, effective_hatch_override): (&str, Option<&str>) =
-            match substituted_layer_styles.as_ref().and_then(|v| v.get(i)) {
-                Some((sub_mat, sub_hatch)) => (sub_mat.as_str(), sub_hatch.as_deref()),
-                None => (mat_name.as_str(), layer.hatch_override.as_deref()),
-            };
-        let material = library.materials.iter().find(|m| {
-            m.id == effective_mat_name || m.name == effective_mat_name
-        });
-
-        // Envelope (overall 2D contour) prefers `Contour2D` so phase extras
-        // (Abbruch/Bestand) win over per-layer `Layers2D` overrides.
-        let is_envelope = i == 0 || i + 1 == layers.len();
-        let contour_slots = if is_envelope {
-            [WallComponentSlot::Contour2D, WallComponentSlot::Layers2D]
-        } else {
-            [WallComponentSlot::Layers2D, WallComponentSlot::Contour2D]
-        };
-        let contour_style_override =
-            resolve_layer_style_override(rules, &contour_slots, &layer_ref);
-        let hatch_slots = if is_envelope {
-            [
-                WallComponentSlot::ContourHatch2D,
-                WallComponentSlot::LayerHatch2D,
-            ]
-        } else {
-            [
-                WallComponentSlot::LayerHatch2D,
-                WallComponentSlot::ContourHatch2D,
-            ]
-        };
-        let mut hatch_style_override =
-            resolve_layer_style_override(rules, &hatch_slots, &layer_ref);
-        if is_envelope {
-            if let Some(slot_style) = rules.and_then(|r| {
-                r.style_for(WallComponentSlot::ContourHatch2D)
-            }) {
-                hatch_style_override.overlay_from(slot_style);
-            }
-        }
-
-        // Layer-level `hatch_override` (Step 4) takes precedence over the
-        // material's own `hatch_pattern`; both fall back to "ANSI31" so a
-        // layer/material without an explicit pattern still renders a hatch.
-        let pattern_name = hatch_style_override
-            .hatch_pattern
-            .clone()
-            .or_else(|| {
-                effective_hatch_override
-                    .filter(|p| !p.is_empty())
-                    .map(|p| p.to_string())
-            })
-            .or_else(|| material.map(|m| m.hatch_pattern.clone()).filter(|p| !p.is_empty()))
-            .unwrap_or_else(|| "ANSI31".to_string());
-        let hatch_acad_color = hatch_style_override
-            .hatch_color
-            .or_else(|| material.and_then(|m| m.hatch_color))
-            .or_else(|| material.map(|m| material_line_color_as_acad(m.line_color)));
-        let color = hatch_acad_color
-            .map(wall_hatch_color)
-            .unwrap_or([0.6, 0.6, 0.6, 0.85]);
-        let mut hatch_scale = hatch_style_override
-            .hatch_scale
-            .or_else(|| material.map(|m| m.hatch_scale))
-            .unwrap_or(1.0);
-        if hatch_scale <= 0.0 {
-            hatch_scale = 0.01;
-        }
-        let hatch_scale = hatch_scale as f32;
-        // Hatch direction: either the material's own hatch angle applied on
-        // top of the wall's run direction ("relative"), or used verbatim as
-        // a fixed/global angle. Both are stored in degrees on `Material` and
-        // converted to the radians `HatchModel::angle_offset` expects.
-        // Override precedence: `Wall.hatch_override` (per-instance) >
-        // style-profile `hatch_style_override` > `Material` default.
-        let hatch_angle_deg = wall_hatch_override
-            .and_then(|ov| ov.hatch_angle)
-            .or(hatch_style_override.hatch_angle)
-            .or_else(|| material.map(|m| m.hatch_angle))
-            .unwrap_or(0.0);
-        let hatch_angle_relative = wall_hatch_override
-            .and_then(|ov| ov.hatch_angle_relative)
-            .or(hatch_style_override.hatch_angle_relative)
-            .or_else(|| material.map(|m| m.hatch_angle_relative))
-            .unwrap_or(true);
-        let hatch_angle_offset = if hatch_angle_relative {
-            wall_angle_rad + hatch_angle_deg.to_radians()
-        } else {
-            hatch_angle_deg.to_radians()
-        } as f32;
-        let line_color = contour_style_override
-            .line_color
-            .or_else(|| material.map(|m| material_line_color_as_acad(m.line_color)));
-        let fill_color = contour_style_override.fill_color;
-        let families = crate::scene::model::hatch_patterns::find(&pattern_name)
-            .and_then(|e| {
-                if let crate::scene::model::hatch_model::HatchPattern::Pattern(f) = &e.gpu {
-                    Some(f.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default();
-
-        let has_explicit_contour_filter = matches!(
-            rules.map(|r| r.layer_filter_for(WallComponentSlot::Contour2D)),
-            Some(LayerSelection::Explicit(_))
-        );
-        let has_explicit_layers2d_filter = matches!(
-            rules.map(|r| r.layer_filter_for(WallComponentSlot::Layers2D)),
-            Some(LayerSelection::Explicit(_))
-        );
-
-        let same_mat_end0 = layer_has_same_material_peer(layer, i, 0, &layers, peer_at_end0.as_ref());
-        let same_mat_end1 = layer_has_same_material_peer(
-            layer,
-            i,
-            self_axis_2d.len().saturating_sub(1),
-            &layers,
-            peer_at_end1.as_ref(),
-        );
-
-        let (p_start, t_start) = if centerline.len() >= 2 {
-            let p0 = centerline[0];
-            let p1 = centerline[1];
-            let dx = p1.0 - p0.0;
-            let dy = p1.1 - p0.1;
-            let len = (dx * dx + dy * dy).sqrt().max(1e-9);
-            (p0, (dx / len, dy / len))
-        } else {
-            ((0.0, 0.0), (1.0, 0.0))
-        };
-        let (p_end, t_end) = if centerline.len() >= 2 {
-            let p0 = centerline[centerline.len() - 2];
-            let p1 = centerline[centerline.len() - 1];
-            let dx = p1.0 - p0.0;
-            let dy = p1.1 - p0.1;
-            let len = (dx * dx + dy * dy).sqrt().max(1e-9);
-            (p1, (dx / len, dy / len))
-        } else {
-            ((0.0, 0.0), (1.0, 0.0))
-        };
-
-        // 2D contour + hatch for each remaining piece after openings.
-        for (footprint, footprint_bulges) in &pieces_2d {
-            if footprint.len() < 3 {
-                continue;
-            }
-
-            let draw_contour = if has_explicit_contour_filter {
-                contour2d_visible && layer_included_contour
-            } else if has_explicit_layers2d_filter {
-                layers2d_visible && layer_included_layers2d
-            } else {
-                (layers2d_visible && layer_included_layers2d)
-                    || (contour2d_visible && is_envelope && layer_included_contour)
-            };
-            let draw_hatch = (layer_hatch_visible && layer_included_hatch)
-                || (contour_hatch_visible && is_envelope);
-
-            if draw_contour {
-                let n = footprint.len();
-                let total_thick: f64 = layers.iter().map(|l| l.thickness).sum();
-                let cap0 = if same_mat_end0 {
-                    find_cap_edge_index(footprint, p_start, t_start, total_thick.max(0.2) * 2.5)
-                } else {
-                    None
-                };
-                let cap1 = if same_mat_end1 {
-                    find_cap_edge_index(footprint, p_end, t_end, total_thick.max(0.2) * 2.5)
-                } else {
-                    None
-                };
-
-                let polylines_to_emit: Vec<LwPolyline> = match (cap0, cap1) {
-                    (Some(c0), Some(c1)) if c0 != c1 && n >= 4 => {
-                        let imin = c0.min(c1);
-                        let imax = c0.max(c1);
-                        let mut pl1 = LwPolyline::new();
-                        for step in 0..=(imax - imin - 1) {
-                            let idx = imin + 1 + step;
-                            let bulge = if step < imax - imin - 1 {
-                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
-                            } else {
-                                0.0
-                            };
-                            let (x, y) = footprint[idx];
-                            pl1.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-                        }
-                        pl1.is_closed = false;
-
-                        let mut pl2 = LwPolyline::new();
-                        let count2 = n - (imax - imin);
-                        for step in 0..count2 {
-                            let idx = (imax + 1 + step) % n;
-                            let bulge = if step < count2 - 1 {
-                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
-                            } else {
-                                0.0
-                            };
-                            let (x, y) = footprint[idx];
-                            pl2.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-                        }
-                        pl2.is_closed = false;
-                        vec![pl1, pl2]
-                    }
-                    (Some(c), _) | (_, Some(c)) if n >= 3 => {
-                        let mut pl = LwPolyline::new();
-                        for step in 0..n {
-                            let idx = (c + 1 + step) % n;
-                            let bulge = if step < n - 1 {
-                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
-                            } else {
-                                0.0
-                            };
-                            let (x, y) = footprint[idx];
-                            pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-                        }
-                        pl.is_closed = false;
-                        vec![pl]
-                    }
-                    _ => {
-                        let mut pl = LwPolyline::new();
-                        for (idx, &(x, y)) in footprint.iter().enumerate() {
-                            let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
-                            pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-                        }
-                        pl.is_closed = true;
-                        vec![pl]
-                    }
-                };
-
-                for mut pl in polylines_to_emit {
-                    pl.elevation = wall_base_z;
-                    let contour_handle =
-                        reuse_or_add_wall_contour(scene, &mut reusable_contours, pl, Some(wall_owner_handle));
-                    let layer_name = layer
-                        .layer_override
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or("0");
-                    let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
-                    scene.ensure_layer(&prefixed_layer);
-                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                        e.as_entity_mut().set_layer(prefixed_layer);
-                    }
-                    if let Some(color) = line_color {
-                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                            e.as_entity_mut().set_color(color);
-                        }
-                    }
-                    if let Some(lt) = contour_style_override.line_type.as_deref().filter(|s| !s.is_empty()) {
-                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                            e.common_mut().linetype = lt.to_string();
-                        }
-                    }
-                    write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
-                    new_derived.push(contour_handle);
-                }
-            }
-
-            if draw_hatch {
-                let tessellated = tessellate_ring_with_bulges(footprint, footprint_bulges);
-                let (rel, origin, wcs) = pack_wall_ring(&tessellated);
-                let phased = crate::modules::aec::project::hatch_origin::phase_families_wcs0(
-                    &families,
-                    origin,
-                );
-                let hatch_model = crate::scene::model::hatch_model::HatchModel {
-                    pattern_origin: None,
-                    render_instance: None,
-                    boundary: std::sync::Arc::new(rel.clone()),
-                    pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(phased),
-                    name: pattern_name.clone(),
-                    color,
-                    aci: 0,
-                    line_weight_px: 1.0,
-                    angle_offset: hatch_angle_offset,
-                    scale: hatch_scale,
-                    world_origin: origin,
-                    boundary_wcs: Some(std::sync::Arc::new(wcs)),
-                    fill_plane: Some(crate::scene::model::hatch_model::FillPlane {
-                        origin: [origin[0], origin[1], wall_base_z],
-                        x_axis: [1.0, 0.0, 0.0],
-                        y_axis: [0.0, 1.0, 0.0],
-                    }),
-                    fill_plane_boundary: Some(std::sync::Arc::new(rel)),
-                    boundary_exterior: None,
-                    boundary_sources: None,
-                    boundary_paths: None,
-                    style: acadrust::entities::HatchStyleType::Normal,
-                    draw_depth: 0.0,
-                };
-                let hatch_style = hatch_acad_color.map(|c| {
-                    (c, acadrust::types::Transparency::from_percent(0.0))
-                });
-                let hatch_handle = scene.add_hatch(hatch_model, None, hatch_style);
-                if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
-                    if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                        e.common_mut().owner_handle = wall_owner_handle;
-                    }
-                }
-                let layer_name = layer
-                    .layer_override
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("0");
-                let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
-                scene.ensure_layer(&prefixed_layer);
-                if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                    e.as_entity_mut().set_layer(prefixed_layer);
-                }
-                if let Some(c) = hatch_acad_color {
-                    if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                        e.as_entity_mut().set_color(c);
-                    }
-                }
-                write_wall_display_tag(scene, hatch_handle, wall_handle, WALL_REP_ROLE_HATCH);
-                new_derived.push(hatch_handle);
-            }
-        }
-
-        // Rest-wall solids: Z-extrude remaining band pieces (or mitered /
-        // corner-extended footprints). Opening-zone remainders are extruded
-        // through the layer thickness separately below.
-        let rest_for_layer: Vec<&engine::representation::WallLayerSolidPath> = display
-            .solids
-            .iter()
-            .filter(|s| s.layer_index == i)
-            .collect();
-        let (solid_height, solid_base) = if let Some(ex) = extrusions.get(i) {
-            (ex.height, ex.base_offset + wall_base_z)
-        } else if let Some(solid) = rest_for_layer.first() {
-            (solid.height, solid.base_offset + wall_base_z)
-        } else {
-            (height, wall_base_z)
-        };
-        let solid_rings: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if !wall.top_facets.is_empty() || !wall.base_facets.is_empty() {
-            let mut all_facets = wall.top_facets.clone();
-            all_facets.extend(wall.base_facets.clone());
-            let mut partitioned = Vec::new();
-            for (fp, bulges) in &pieces_3d {
-                partitioned.extend(partition_footprint_by_facets(fp, bulges, &all_facets));
-            }
-            partitioned
-        } else {
-            pieces_3d
-        };
-        if solid_visible && layer_included_solid && solid_height.abs() > 1e-9 {
-            for (footprint, footprint_bulges) in &solid_rings {
-                if footprint.len() < 3 {
-                    continue;
-                }
-                let mut pl = LwPolyline::new();
-                for (idx, &(x, y)) in footprint.iter().enumerate() {
-                    let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
-                    pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-                }
-                pl.is_closed = true;
-                let contour_entity = EntityType::LwPolyline(pl);
-
-                let to_extrude = if solid_base.abs() > 1e-9 {
-                    let mut clone = contour_entity.clone();
-                    if let EntityType::LwPolyline(ref mut pl) = clone {
-                        pl.elevation = solid_base;
-                    }
-                    Some(clone)
-                } else {
-                    None
-                };
-                let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
-
-                let body = if wall.is_sloped() {
-                    build_sloped_layer_solid_3d(
-                        footprint,
-                        footprint_bulges,
-                        &wall,
-                        layers.get(i),
-                        wall_base_z,
-                        solid_height,
-                    )
-                } else {
-                    crate::scene::model::sweep_model::extruded(entity_to_use, solid_height)
-                };
-
-                if let Some(body) = body {
-                    let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
-                    let mut s3d_entity = EntityType::Solid3D(s3d);
-                    if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
-                        s3d_entity.common_mut().owner_handle = wall_owner_handle;
-                    }
-                    let solid_handle = scene.add_entity(s3d_entity);
-                    let layer_name = layer
-                        .layer_override
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or("0");
-                    let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
-                    scene.ensure_layer(&prefixed_layer);
-                    if let Some(e) = scene.document.get_entity_mut(solid_handle) {
-                        e.as_entity_mut().set_layer(prefixed_layer);
-                    }
-                    if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
-                        let mut miter_seams = Vec::new();
-                        let total_thick: f64 = layers.iter().map(|l| l.thickness).sum();
-                        if same_mat_end0 {
-                            if let Some(c0) = find_cap_edge_index(footprint, p_start, t_start, total_thick.max(0.2) * 2.5) {
-                                miter_seams.push((footprint[c0], footprint[(c0 + 1) % footprint.len()]));
-                            }
-                        }
-                        if same_mat_end1 {
-                            if let Some(c1) = find_cap_edge_index(footprint, p_end, t_end, total_thick.max(0.2) * 2.5) {
-                                miter_seams.push((footprint[c1], footprint[(c1 + 1) % footprint.len()]));
-                            }
-                        }
-                        if !miter_seams.is_empty() {
-                            filter_miter_deck_edges(
-                                &mut display_geom.0,
-                                &mut display_geom.1,
-                                &miter_seams,
-                                &wall,
-                                layers.get(i),
-                                solid_base,
-                                solid_base + solid_height,
-                            );
-                        }
-                        if solid_rings.len() > 1 {
-                            filter_facet_partition_edges(
-                                &mut display_geom.0,
-                                &mut display_geom.1,
-                                footprint,
-                                &solid_rings,
-                                &wall,
-                                layers.get(i),
-                                solid_base,
-                                solid_height,
-                            );
-                        }
-                        if !wall_openings.is_empty() {
-                            filter_opening_surface_edges(
-                                &mut display_geom.0,
-                                &mut display_geom.1,
-                                &wall_openings,
-                                &centerline,
-                                solid_height,
-                                solid_base,
-                                wall_base_z,
-                            );
-                        }
-                        scene.register_prepared_solid_model(solid_handle, body, display_geom);
-                    }
-                    if let Some(color) = fill_color {
-                        if let Some(e) = scene.document.get_entity_mut(solid_handle) {
-                            e.as_entity_mut().set_color(color);
-                        }
-                    }
-                    write_wall_display_tag(scene, solid_handle, wall_handle, WALL_REP_ROLE_SOLID);
-                    new_derived.push(solid_handle);
-                }
-            }
-            // Opening zone: elevation remainder extruded through the layer
-            // thickness.
-            if solid_visible && layer_included_solid && !wall_openings.is_empty() {
-                for zone in display.zone_solids.iter().filter(|z| z.layer_index == i) {
-                    if zone.loop_xyz.len() < 3 {
-                        continue;
-                    }
-                    let pts: Vec<Vector3> = zone
-                        .loop_xyz
-                        .iter()
-                        .map(|p| Vector3::new(p[0], p[1], p[2] + wall_base_z))
-                        .collect();
-                    let mut pl = Polyline3D::from_points(pts);
-                    pl.flags.closed = true;
-                    let entity = EntityType::Polyline3D(pl);
-                    if let Some(body) = crate::scene::model::sweep_model::extruded_direction(
-                        &entity,
-                        zone.direction,
-                        0.0,
-                    ) {
-                        let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
-                        let mut s3d_entity = EntityType::Solid3D(s3d);
-                        if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
-                            s3d_entity.common_mut().owner_handle = wall_owner_handle;
-                        }
-                        let solid_handle = scene.add_entity(s3d_entity);
-                        let layer_name = layer
-                            .layer_override
-                            .as_deref()
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("0");
-                        let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
-                        scene.ensure_layer(&prefixed_layer);
-                        if let Some(e) = scene.document.get_entity_mut(solid_handle) {
-                            e.as_entity_mut().set_layer(prefixed_layer);
-                        }
-                        if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
-                            filter_opening_surface_edges(
-                                &mut display_geom.0,
-                                &mut display_geom.1,
-                                &wall_openings,
-                                &centerline,
-                                solid_height,
-                                solid_base,
-                                wall_base_z,
-                            );
-                            scene.register_prepared_solid_model(solid_handle, body, display_geom);
-                        }
-                        if let Some(color) = fill_color {
-                            if let Some(e) = scene.document.get_entity_mut(solid_handle) {
-                                e.as_entity_mut().set_color(color);
-                            }
-                        }
-                        write_wall_display_tag(
-                            scene,
-                            solid_handle,
-                            wall_handle,
-                            WALL_REP_ROLE_SOLID,
-                        );
-                        new_derived.push(solid_handle);
-                    }
-                }
-            }
-        }
-    }
+    let ctx = WallLayerCtx {
+        layers: &layers,
+        wall: &wall,
+        display: &display,
+        extrusions: &extrusions,
+        centerline: &centerline,
+        wall_openings: &wall_openings,
+        contour_openings: contour_openings,
+        mitered_footprints: &mitered_footprints,
+        base_footprints: &base_footprints,
+        base_footprint_bulges: &base_footprint_bulges,
+        extended_footprints: &extended_footprints,
+        substituted_layer_styles: &substituted_layer_styles,
+        library: library,
+        rules: rules,
+        wall_hatch_override: wall_hatch_override,
+        peer_at_end0: &peer_at_end0,
+        peer_at_end1: &peer_at_end1,
+        self_axis_2d: &self_axis_2d,
+        xref_layer_prefix: &xref_layer_prefix,
+        wall_owner_handle: wall_owner_handle,
+        wall_handle: wall_handle,
+        wall_base_z: wall_base_z,
+        height: height,
+        wall_angle_rad: wall_angle_rad,
+        host_cut_visible: host_cut_visible,
+        layers2d_visible: layers2d_visible,
+        contour2d_visible: contour2d_visible,
+        layer_hatch_visible: layer_hatch_visible,
+        contour_hatch_visible: contour_hatch_visible,
+        solid_visible: solid_visible,
+    };
+    emit_wall_layers(scene, &ctx, &mut reusable_contours, &mut new_derived);
 
     if !reusable_contours.is_empty() {
         scene.erase_entities(&reusable_contours);
