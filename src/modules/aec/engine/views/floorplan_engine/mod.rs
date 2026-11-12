@@ -393,56 +393,48 @@ fn slab_covers_opening_center(
     false
 }
 
-fn slice_wall_horizontal(
-    wall: &CollectedWall,
-    wall_footprints: Option<&Vec<Option<Vec<(f64, f64)>>>>,
+/// Shared read-only inputs of the horizontal wall slice phases.
+#[derive(Clone, Copy)]
+struct WallSliceCtx<'a> {
+    wall: &'a CollectedWall,
+    wall_footprints: Option<&'a Vec<Option<Vec<(f64, f64)>>>>,
     z_cut: f64,
     z_max: f64,
-    viewpoint: &Viewpoint,
-    model_view: &ModelView,
-    options: &FloorPlanEngineOptions,
-    ctx: &ViewStyleContext,
-    slabs: &[CollectedSlab],
+    viewpoint: &'a Viewpoint,
+    model_view: &'a ModelView,
+    options: &'a FloorPlanEngineOptions,
+    ctx: &'a ViewStyleContext<'a>,
+    slabs: &'a [CollectedSlab],
+    cut_openings: &'a [&'a CollectedOpening],
+    axis_p0: glam::DVec2,
+    axis_dir: glam::DVec2,
+    normal: glam::DVec2,
+    axis_len: f64,
+}
+
+/// Emits the cut contour and fill of every visible wall layer.
+fn emit_cut_layers(
+    c: &WallSliceCtx<'_>,
     primitives: &mut Vec<DerivedPrimitive>,
     primitive_counter: &mut u32,
 ) -> Result<(), ValidationError> {
-    if !is_wall_phase_visible(ctx, wall) {
-        return Ok(());
-    }
-    if wall.axis_points.len() < 2 {
-        return Ok(());
-    }
-
-    let p_start = wall.axis_points[0];
-    let p_end = wall.axis_points[1];
-    let axis_p0 = glam::DVec2::new(p_start.x_m, p_start.y_m);
-    let axis_p1 = glam::DVec2::new(p_end.x_m, p_end.y_m);
-    let axis_vec = axis_p1 - axis_p0;
-    let axis_len = axis_vec.length();
-    if axis_len < EPS {
-        return Ok(());
-    }
-    let axis_dir = axis_vec / axis_len;
-    let normal = glam::DVec2::new(-axis_dir.y, axis_dir.x);
-
-    // Filter openings that cut the horizontal plane at z_cut
-    let mut cut_openings: Vec<&CollectedOpening> = Vec::new();
-
-    for opening in &wall.openings {
-        let op_sill = wall.base_z + opening.sill_height;
-        let op_head = op_sill + opening.height;
-        if op_sill <= z_cut && op_head >= z_cut {
-            cut_openings.push(opening);
-        }
-    }
-
-    // Sort cut openings along wall axis
-    cut_openings.sort_by(|a, b| {
-        a.distance_along_axis
-            .partial_cmp(&b.distance_along_axis)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
+    #[allow(unused_variables)]
+    let WallSliceCtx {
+        wall,
+        wall_footprints,
+        z_cut,
+        z_max,
+        viewpoint,
+        model_view,
+        options,
+        ctx,
+        slabs,
+        cut_openings,
+        axis_p0,
+        axis_dir,
+        normal,
+        axis_len,
+    } = *c;
     let mut current_offset = -wall.total_thickness * 0.5;
 
     for (layer_idx, layer) in wall.layers.iter().enumerate() {
@@ -465,7 +457,7 @@ fn slice_wall_horizontal(
         let mut axis_segments: Vec<(f64, f64)> = Vec::new();
         let mut cur_s = 0.0;
 
-        for op in &cut_openings {
+        for op in cut_openings {
             let op_start = (op.distance_along_axis - op.width * 0.5).max(0.0);
             let op_end = (op.distance_along_axis + op.width * 0.5).min(axis_len);
 
@@ -635,15 +627,35 @@ fn slice_wall_horizontal(
         }
     }
 
-    let host_wall_draw_suppressed = is_draw_suppressed(ctx, &wall.element_ref, None);
+    Ok(())
+}
 
-    // Transient Parapet Occluder for Windows and Breakthroughs with a sill (below sill)
-    // Emitted outside `options.include_openings` because the wall body is partitioned by cut openings
-    // regardless of whether opening symbols (jambs, sills, swings) are rendered.
-    // Preserves transparency for doors while preventing below-cut slab edges from showing solid
-    // through window/breakthrough parapet gaps.
+/// Emits transient occluders for the parapet below window sills.
+fn emit_parapet_occluders(
+    c: &WallSliceCtx<'_>,
+    host_wall_draw_suppressed: bool,
+    primitives: &mut Vec<DerivedPrimitive>,
+    primitive_counter: &mut u32,
+) -> Result<(), ValidationError> {
+    #[allow(unused_variables)]
+    let WallSliceCtx {
+        wall,
+        wall_footprints,
+        z_cut,
+        z_max,
+        viewpoint,
+        model_view,
+        options,
+        ctx,
+        slabs,
+        cut_openings,
+        axis_p0,
+        axis_dir,
+        normal,
+        axis_len,
+    } = *c;
     if !host_wall_draw_suppressed {
-        for op in &cut_openings {
+        for op in cut_openings {
             if !matches!(op.kind, OpeningKind::Door) && op.sill_height > 1e-4 {
                 let op_start_s = (op.distance_along_axis - op.width * 0.5).max(0.0);
                 let op_end_s = (op.distance_along_axis + op.width * 0.5).min(axis_len);
@@ -697,9 +709,35 @@ fn slice_wall_horizontal(
         }
     }
 
-    // 3. Emit Opening details (Jambs, Sill, Swing)
+    Ok(())
+}
+
+/// Emits jambs, sills, swings and overhead edges of the cut openings.
+fn emit_opening_details(
+    c: &WallSliceCtx<'_>,
+    host_wall_draw_suppressed: bool,
+    primitives: &mut Vec<DerivedPrimitive>,
+    primitive_counter: &mut u32,
+) -> Result<(), ValidationError> {
+    #[allow(unused_variables)]
+    let WallSliceCtx {
+        wall,
+        wall_footprints,
+        z_cut,
+        z_max,
+        viewpoint,
+        model_view,
+        options,
+        ctx,
+        slabs,
+        cut_openings,
+        axis_p0,
+        axis_dir,
+        normal,
+        axis_len,
+    } = *c;
     if options.include_openings && !host_wall_draw_suppressed {
-        for op in &cut_openings {
+        for op in cut_openings {
             let op_start_s = (op.distance_along_axis - op.width * 0.5).max(0.0);
             let op_end_s = (op.distance_along_axis + op.width * 0.5).min(axis_len);
 
@@ -1067,6 +1105,80 @@ fn slice_wall_horizontal(
             }
         }
     }
+
+    Ok(())
+}
+
+fn slice_wall_horizontal(
+    wall: &CollectedWall,
+    wall_footprints: Option<&Vec<Option<Vec<(f64, f64)>>>>,
+    z_cut: f64,
+    z_max: f64,
+    viewpoint: &Viewpoint,
+    model_view: &ModelView,
+    options: &FloorPlanEngineOptions,
+    ctx: &ViewStyleContext,
+    slabs: &[CollectedSlab],
+    primitives: &mut Vec<DerivedPrimitive>,
+    primitive_counter: &mut u32,
+) -> Result<(), ValidationError> {
+    if !is_wall_phase_visible(ctx, wall) {
+        return Ok(());
+    }
+    if wall.axis_points.len() < 2 {
+        return Ok(());
+    }
+
+    let p_start = wall.axis_points[0];
+    let p_end = wall.axis_points[1];
+    let axis_p0 = glam::DVec2::new(p_start.x_m, p_start.y_m);
+    let axis_p1 = glam::DVec2::new(p_end.x_m, p_end.y_m);
+    let axis_vec = axis_p1 - axis_p0;
+    let axis_len = axis_vec.length();
+    if axis_len < EPS {
+        return Ok(());
+    }
+    let axis_dir = axis_vec / axis_len;
+    let normal = glam::DVec2::new(-axis_dir.y, axis_dir.x);
+
+    // Filter openings that cut the horizontal plane at z_cut
+    let mut cut_openings: Vec<&CollectedOpening> = Vec::new();
+
+    for opening in &wall.openings {
+        let op_sill = wall.base_z + opening.sill_height;
+        let op_head = op_sill + opening.height;
+        if op_sill <= z_cut && op_head >= z_cut {
+            cut_openings.push(opening);
+        }
+    }
+
+    // Sort cut openings along wall axis
+    cut_openings.sort_by(|a, b| {
+        a.distance_along_axis
+            .partial_cmp(&b.distance_along_axis)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let c = WallSliceCtx {
+        wall,
+        wall_footprints,
+        z_cut,
+        z_max,
+        viewpoint,
+        model_view,
+        options,
+        ctx,
+        slabs,
+        cut_openings: &cut_openings,
+        axis_p0,
+        axis_dir,
+        normal,
+        axis_len,
+    };
+    emit_cut_layers(&c, primitives, primitive_counter)?;
+    let host_wall_draw_suppressed = is_draw_suppressed(ctx, &wall.element_ref, None);
+    emit_parapet_occluders(&c, host_wall_draw_suppressed, primitives, primitive_counter)?;
+    emit_opening_details(&c, host_wall_draw_suppressed, primitives, primitive_counter)?;
 
     Ok(())
 }
