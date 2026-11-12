@@ -819,6 +819,17 @@ fn emit_glazing_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
 }
 
 fn emit_accessories_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    if !b.accessories_3d_vis {
+        return;
+    }
+    emit_exterior_sill_3d(scene, ctx, b);
+    emit_interior_board_3d(scene, ctx, b);
+    emit_threshold_3d(scene, ctx, b);
+    emit_shutter_box_3d(scene, ctx, b);
+    emit_lintel_3d(scene, ctx, b);
+}
+
+fn emit_exterior_sill_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
     let default_opening_layer = &ctx.default_opening_layer;
     let library = ctx.library;
     let merged_rules = &ctx.merged_rules;
@@ -834,279 +845,39 @@ fn emit_accessories_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
     let (tx, ty) = ctx.tangent;
     let fixed_frame_section = &b.fixed_frame_section;
     let exterior_sill_section = &b.exterior_sill_section;
-    let interior_board_section = &b.interior_board_section;
-    let threshold_section = &b.threshold_section;
-    let shutter_section = &b.shutter_section;
-    let lintel_section = &b.lintel_section;
-    let accessories_3d_vis = b.accessories_3d_vis;
-    if accessories_3d_vis {
-        let sill = &style.parts.exterior_sill;
-        if opening_component_should_render_with_library(
-            &style.parts,
-            opening.kind,
-            OpeningLookRole::ExteriorSill,
-            library,
-        )
-            && wall_y_max > wall_y_min
-        {
-            let overhang = sill.overhang.max(0.0);
-            let upstand = sill.upstand.max(0.0);
-            let left = sill.side_overhang_left.max(0.0);
-            let right = sill.side_overhang_right.max(0.0);
-            let width = opening.width + left + right;
-            let x_offset = (right - left) * 0.5;
-            let frame_outer = (-fixed_frame_section.depth * 0.5)
-                .clamp(wall_y_min.min(wall_y_max), wall_y_min.max(wall_y_max));
-            let has_profile = sill
-                .profile_id
-                .as_deref()
-                .and_then(|id| library?.find_section_profile(id))
-                .is_some_and(|profile| profile.is_valid());
-            if has_profile {
-                let profile_outer = frame_outer - exterior_sill_section.depth;
-                let requested_outer = wall_y_min - overhang;
-                let y_min = requested_outer.min(profile_outer);
-                emit_opening_accessory_3d(
-                    scene,
-                    build_opening_profile_prism_3d(
-                        width,
-                        &exterior_sill_section,
-                        profile_outer,
-                        1.0,
-                    ),
-                    opening_handle,
-                    opening_owner_handle,
-                    default_opening_layer.as_deref(),
-                    origin,
-                    (tx, ty),
-                    normal,
-                    wall_base_z + opening.sill_height,
-                    x_offset,
-                    0.0,
-                    OpeningLookRole::ExteriorSill,
-                    &style,
-                    library,
-                    merged_rules.as_ref(),
-                );
-                emit_opening_accessory_3d(
-                    scene,
-                    build_opening_box_3d_with_bounds(
-                        width,
-                        exterior_sill_section.face,
-                        y_min,
-                        profile_outer,
-                    ),
-                    opening_handle,
-                    opening_owner_handle,
-                    default_opening_layer.as_deref(),
-                    origin,
-                    (tx, ty),
-                    normal,
-                    wall_base_z + opening.sill_height,
-                    x_offset,
-                    exterior_sill_section.face * 0.5,
-                    OpeningLookRole::ExteriorSill,
-                    &style,
-                    library,
-                    merged_rules.as_ref(),
-                );
-            } else {
-                let (y_min, y_max) = exterior_sill_y_bounds(
-                    wall_y_min,
-                    wall_y_max,
-                    overhang,
-                    fixed_frame_section.depth,
-                );
-                emit_opening_accessory_3d(
-                    scene,
-                    build_opening_box_3d_with_bounds(
-                        width,
-                        exterior_sill_section.face,
-                        y_min,
-                        y_max,
-                    ),
-                    opening_handle,
-                    opening_owner_handle,
-                    default_opening_layer.as_deref(),
-                    origin,
-                    (tx, ty),
-                    normal,
-                    wall_base_z + opening.sill_height,
-                    x_offset,
-                    exterior_sill_section.face * 0.5,
-                    OpeningLookRole::ExteriorSill,
-                    &style,
-                    library,
-                    merged_rules.as_ref(),
-                );
-                if upstand > 0.0 {
-                    let (up_min, up_max) = sill_upstand_interval(
-                        frame_outer,
-                        -1.0,
-                        exterior_sill_section.depth,
-                        fixed_frame_section.depth,
-                    );
-                    emit_opening_accessory_3d(
-                        scene,
-                        build_opening_box_3d_with_bounds(width, upstand, up_min, up_max),
-                        opening_handle,
-                        opening_owner_handle,
-                        default_opening_layer.as_deref(),
-                        origin,
-                        (tx, ty),
-                        normal,
-                        wall_base_z + opening.sill_height,
-                        x_offset,
-                        exterior_sill_section.face + upstand * 0.5,
-                        OpeningLookRole::ExteriorSill,
-                        &style,
-                        library,
-                        merged_rules.as_ref(),
-                    );
-                }
-            }
-        }
-
-        let board = &style.parts.interior_board;
-        if opening_component_should_render_with_library(
-            &style.parts,
-            opening.kind,
-            OpeningLookRole::InteriorBoard,
-            library,
-        )
-            && wall_y_max > wall_y_min
-        {
-            let overhang = board.overhang.max(0.0);
-            let upstand = board.upstand.max(0.0);
-            let left = board.side_overhang_left.max(0.0);
-            let right = board.side_overhang_right.max(0.0);
-            let width = opening.width + left + right;
-            let x_offset = (right - left) * 0.5;
-            let frame_inner = (fixed_frame_section.depth * 0.5)
-                .clamp(wall_y_min.min(wall_y_max), wall_y_min.max(wall_y_max));
-            let has_profile = board
-                .profile_id
-                .as_deref()
-                .and_then(|id| library?.find_section_profile(id))
-                .is_some_and(|profile| profile.is_valid());
-            if has_profile {
-                let profile_inner = frame_inner + interior_board_section.depth;
-                let requested_inner = wall_y_max + overhang;
-                let y_max = requested_inner.max(profile_inner);
-                emit_opening_accessory_3d(
-                    scene,
-                    build_opening_profile_prism_3d(
-                        width,
-                        &interior_board_section,
-                        frame_inner,
-                        1.0,
-                    ),
-                    opening_handle,
-                    opening_owner_handle,
-                    default_opening_layer.as_deref(),
-                    origin,
-                    (tx, ty),
-                    normal,
-                    wall_base_z + opening.sill_height,
-                    x_offset,
-                    0.0,
-                    OpeningLookRole::InteriorBoard,
-                    &style,
-                    library,
-                    merged_rules.as_ref(),
-                );
-                emit_opening_accessory_3d(
-                    scene,
-                    build_opening_box_3d_with_bounds(
-                        width,
-                        interior_board_section.face,
-                        profile_inner,
-                        y_max,
-                    ),
-                    opening_handle,
-                    opening_owner_handle,
-                    default_opening_layer.as_deref(),
-                    origin,
-                    (tx, ty),
-                    normal,
-                    wall_base_z + opening.sill_height,
-                    x_offset,
-                    interior_board_section.face * 0.5,
-                    OpeningLookRole::InteriorBoard,
-                    &style,
-                    library,
-                    merged_rules.as_ref(),
-                );
-            } else {
-                let (y_min, y_max) = interior_board_y_bounds(
-                    wall_y_min,
-                    wall_y_max,
-                    overhang,
-                    fixed_frame_section.depth,
-                );
-                emit_opening_accessory_3d(
-                    scene,
-                    build_opening_box_3d_with_bounds(
-                        width,
-                        interior_board_section.face,
-                        y_min,
-                        y_max,
-                    ),
-                    opening_handle,
-                    opening_owner_handle,
-                    default_opening_layer.as_deref(),
-                    origin,
-                    (tx, ty),
-                    normal,
-                    wall_base_z + opening.sill_height,
-                    x_offset,
-                    interior_board_section.face * 0.5,
-                    OpeningLookRole::InteriorBoard,
-                    &style,
-                    library,
-                    merged_rules.as_ref(),
-                );
-                if upstand > 0.0 {
-                    let (up_min, up_max) = sill_upstand_interval(
-                        frame_inner,
-                        1.0,
-                        interior_board_section.depth,
-                        fixed_frame_section.depth,
-                    );
-                    emit_opening_accessory_3d(
-                        scene,
-                        build_opening_box_3d_with_bounds(width, upstand, up_min, up_max),
-                        opening_handle,
-                        opening_owner_handle,
-                        default_opening_layer.as_deref(),
-                        origin,
-                        (tx, ty),
-                        normal,
-                        wall_base_z + opening.sill_height,
-                        x_offset,
-                        interior_board_section.face + upstand * 0.5,
-                        OpeningLookRole::InteriorBoard,
-                        &style,
-                        library,
-                        merged_rules.as_ref(),
-                    );
-                }
-            }
-        }
-
-        if opening_component_should_render_with_library(
-            &style.parts,
-            opening.kind,
-            OpeningLookRole::Threshold,
-            library,
-        ) {
+    let sill = &style.parts.exterior_sill;
+    if opening_component_should_render_with_library(
+        &style.parts,
+        opening.kind,
+        OpeningLookRole::ExteriorSill,
+        library,
+    )
+        && wall_y_max > wall_y_min
+    {
+        let overhang = sill.overhang.max(0.0);
+        let upstand = sill.upstand.max(0.0);
+        let left = sill.side_overhang_left.max(0.0);
+        let right = sill.side_overhang_right.max(0.0);
+        let width = opening.width + left + right;
+        let x_offset = (right - left) * 0.5;
+        let frame_outer = (-fixed_frame_section.depth * 0.5)
+            .clamp(wall_y_min.min(wall_y_max), wall_y_min.max(wall_y_max));
+        let has_profile = sill
+            .profile_id
+            .as_deref()
+            .and_then(|id| library?.find_section_profile(id))
+            .is_some_and(|profile| profile.is_valid());
+        if has_profile {
+            let profile_outer = frame_outer - exterior_sill_section.depth;
+            let requested_outer = wall_y_min - overhang;
+            let y_min = requested_outer.min(profile_outer);
             emit_opening_accessory_3d(
                 scene,
-                build_opening_box_3d_with_bounds(
-                    opening.width,
-                    threshold_section.face,
-                    -threshold_section.depth * 0.5,
-                    threshold_section.depth * 0.5,
+                build_opening_profile_prism_3d(
+                    width,
+                    &exterior_sill_section,
+                    profile_outer,
+                    1.0,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -1115,33 +886,47 @@ fn emit_accessories_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
                 (tx, ty),
                 normal,
                 wall_base_z + opening.sill_height,
+                x_offset,
                 0.0,
-                threshold_section.face * 0.5,
-                OpeningLookRole::Threshold,
+                OpeningLookRole::ExteriorSill,
                 &style,
                 library,
                 merged_rules.as_ref(),
             );
-        }
-
-        let shutter = &style.parts.shutter_box;
-        if opening_component_should_render_with_library(
-            &style.parts,
-            opening.kind,
-            OpeningLookRole::ShutterBox,
-            library,
-        ) {
-            let (y_min, y_max) = wall_clamped_interval(
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    width,
+                    exterior_sill_section.face,
+                    y_min,
+                    profile_outer,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                x_offset,
+                exterior_sill_section.face * 0.5,
+                OpeningLookRole::ExteriorSill,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+        } else {
+            let (y_min, y_max) = exterior_sill_y_bounds(
                 wall_y_min,
                 wall_y_max,
-                wall_y_min + shutter.installation_depth.max(0.0),
-                shutter_section.depth,
+                overhang,
+                fixed_frame_section.depth,
             );
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
-                    opening.width,
-                    shutter_section.face,
+                    width,
+                    exterior_sill_section.face,
                     y_min,
                     y_max,
                 ),
@@ -1152,50 +937,333 @@ fn emit_accessories_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
                 (tx, ty),
                 normal,
                 wall_base_z + opening.sill_height,
-                0.0,
-                accessory_bottom(opening.height, shutter.seat_above_frame) + shutter_section.face * 0.5,
-                OpeningLookRole::ShutterBox,
+                x_offset,
+                exterior_sill_section.face * 0.5,
+                OpeningLookRole::ExteriorSill,
                 &style,
                 library,
                 merged_rules.as_ref(),
             );
-        }
-
-        let lintel = &style.parts.lintel;
-        if opening_component_should_render_with_library(
-            &style.parts,
-            opening.kind,
-            OpeningLookRole::Lintel,
-            library,
-        ) {
-            let bearing_left = lintel.bearing_left.max(0.0);
-            let bearing_right = lintel.bearing_right.max(0.0);
-            let (y_min, y_max) = lintel_depth_interval(wall_y_min, wall_y_max, lintel_section.depth);
-            emit_opening_accessory_3d(
-                scene,
-                build_opening_box_3d_with_bounds(
-                    opening.width + bearing_left + bearing_right,
-                    lintel_section.face,
-                    y_min,
-                    y_max,
-                ),
-                opening_handle,
-                opening_owner_handle,
-                default_opening_layer.as_deref(),
-                origin,
-                (tx, ty),
-                normal,
-                wall_base_z + opening.sill_height,
-                (bearing_right - bearing_left) * 0.5,
-                opening.height + lintel_section.face * 0.5,
-                OpeningLookRole::Lintel,
-                &style,
-                library,
-                merged_rules.as_ref(),
-            );
+            if upstand > 0.0 {
+                let (up_min, up_max) = sill_upstand_interval(
+                    frame_outer,
+                    -1.0,
+                    exterior_sill_section.depth,
+                    fixed_frame_section.depth,
+                );
+                emit_opening_accessory_3d(
+                    scene,
+                    build_opening_box_3d_with_bounds(width, upstand, up_min, up_max),
+                    opening_handle,
+                    opening_owner_handle,
+                    default_opening_layer.as_deref(),
+                    origin,
+                    (tx, ty),
+                    normal,
+                    wall_base_z + opening.sill_height,
+                    x_offset,
+                    exterior_sill_section.face + upstand * 0.5,
+                    OpeningLookRole::ExteriorSill,
+                    &style,
+                    library,
+                    merged_rules.as_ref(),
+                );
+            }
         }
     }
 }
+
+fn emit_interior_board_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let wall_y_max = ctx.wall_y_max;
+    let wall_y_min = ctx.wall_y_min;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let fixed_frame_section = &b.fixed_frame_section;
+    let interior_board_section = &b.interior_board_section;
+    let board = &style.parts.interior_board;
+    if opening_component_should_render_with_library(
+        &style.parts,
+        opening.kind,
+        OpeningLookRole::InteriorBoard,
+        library,
+    )
+        && wall_y_max > wall_y_min
+    {
+        let overhang = board.overhang.max(0.0);
+        let upstand = board.upstand.max(0.0);
+        let left = board.side_overhang_left.max(0.0);
+        let right = board.side_overhang_right.max(0.0);
+        let width = opening.width + left + right;
+        let x_offset = (right - left) * 0.5;
+        let frame_inner = (fixed_frame_section.depth * 0.5)
+            .clamp(wall_y_min.min(wall_y_max), wall_y_min.max(wall_y_max));
+        let has_profile = board
+            .profile_id
+            .as_deref()
+            .and_then(|id| library?.find_section_profile(id))
+            .is_some_and(|profile| profile.is_valid());
+        if has_profile {
+            let profile_inner = frame_inner + interior_board_section.depth;
+            let requested_inner = wall_y_max + overhang;
+            let y_max = requested_inner.max(profile_inner);
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_profile_prism_3d(
+                    width,
+                    &interior_board_section,
+                    frame_inner,
+                    1.0,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                x_offset,
+                0.0,
+                OpeningLookRole::InteriorBoard,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    width,
+                    interior_board_section.face,
+                    profile_inner,
+                    y_max,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                x_offset,
+                interior_board_section.face * 0.5,
+                OpeningLookRole::InteriorBoard,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+        } else {
+            let (y_min, y_max) = interior_board_y_bounds(
+                wall_y_min,
+                wall_y_max,
+                overhang,
+                fixed_frame_section.depth,
+            );
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    width,
+                    interior_board_section.face,
+                    y_min,
+                    y_max,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                x_offset,
+                interior_board_section.face * 0.5,
+                OpeningLookRole::InteriorBoard,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+            if upstand > 0.0 {
+                let (up_min, up_max) = sill_upstand_interval(
+                    frame_inner,
+                    1.0,
+                    interior_board_section.depth,
+                    fixed_frame_section.depth,
+                );
+                emit_opening_accessory_3d(
+                    scene,
+                    build_opening_box_3d_with_bounds(width, upstand, up_min, up_max),
+                    opening_handle,
+                    opening_owner_handle,
+                    default_opening_layer.as_deref(),
+                    origin,
+                    (tx, ty),
+                    normal,
+                    wall_base_z + opening.sill_height,
+                    x_offset,
+                    interior_board_section.face + upstand * 0.5,
+                    OpeningLookRole::InteriorBoard,
+                    &style,
+                    library,
+                    merged_rules.as_ref(),
+                );
+            }
+        }
+    }
+}
+
+fn emit_threshold_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let threshold_section = &b.threshold_section;
+    if opening_component_should_render_with_library(
+        &style.parts,
+        opening.kind,
+        OpeningLookRole::Threshold,
+        library,
+    ) {
+        emit_opening_accessory_3d(
+            scene,
+            build_opening_box_3d_with_bounds(
+                opening.width,
+                threshold_section.face,
+                -threshold_section.depth * 0.5,
+                threshold_section.depth * 0.5,
+            ),
+            opening_handle,
+            opening_owner_handle,
+            default_opening_layer.as_deref(),
+            origin,
+            (tx, ty),
+            normal,
+            wall_base_z + opening.sill_height,
+            0.0,
+            threshold_section.face * 0.5,
+            OpeningLookRole::Threshold,
+            &style,
+            library,
+            merged_rules.as_ref(),
+        );
+    }
+}
+
+fn emit_shutter_box_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let wall_y_max = ctx.wall_y_max;
+    let wall_y_min = ctx.wall_y_min;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let shutter_section = &b.shutter_section;
+    let shutter = &style.parts.shutter_box;
+    if opening_component_should_render_with_library(
+        &style.parts,
+        opening.kind,
+        OpeningLookRole::ShutterBox,
+        library,
+    ) {
+        let (y_min, y_max) = wall_clamped_interval(
+            wall_y_min,
+            wall_y_max,
+            wall_y_min + shutter.installation_depth.max(0.0),
+            shutter_section.depth,
+        );
+        emit_opening_accessory_3d(
+            scene,
+            build_opening_box_3d_with_bounds(
+                opening.width,
+                shutter_section.face,
+                y_min,
+                y_max,
+            ),
+            opening_handle,
+            opening_owner_handle,
+            default_opening_layer.as_deref(),
+            origin,
+            (tx, ty),
+            normal,
+            wall_base_z + opening.sill_height,
+            0.0,
+            accessory_bottom(opening.height, shutter.seat_above_frame) + shutter_section.face * 0.5,
+            OpeningLookRole::ShutterBox,
+            &style,
+            library,
+            merged_rules.as_ref(),
+        );
+    }
+}
+
+fn emit_lintel_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
+    let default_opening_layer = &ctx.default_opening_layer;
+    let library = ctx.library;
+    let merged_rules = &ctx.merged_rules;
+    let normal = ctx.normal;
+    let opening = ctx.opening;
+    let opening_handle = ctx.opening_handle;
+    let origin = ctx.origin;
+    let style = ctx.style;
+    let wall_base_z = ctx.wall_base_z;
+    let wall_y_max = ctx.wall_y_max;
+    let wall_y_min = ctx.wall_y_min;
+    let opening_owner_handle = ctx.owner;
+    let (tx, ty) = ctx.tangent;
+    let lintel_section = &b.lintel_section;
+    let lintel = &style.parts.lintel;
+    if opening_component_should_render_with_library(
+        &style.parts,
+        opening.kind,
+        OpeningLookRole::Lintel,
+        library,
+    ) {
+        let bearing_left = lintel.bearing_left.max(0.0);
+        let bearing_right = lintel.bearing_right.max(0.0);
+        let (y_min, y_max) = lintel_depth_interval(wall_y_min, wall_y_max, lintel_section.depth);
+        emit_opening_accessory_3d(
+            scene,
+            build_opening_box_3d_with_bounds(
+                opening.width + bearing_left + bearing_right,
+                lintel_section.face,
+                y_min,
+                y_max,
+            ),
+            opening_handle,
+            opening_owner_handle,
+            default_opening_layer.as_deref(),
+            origin,
+            (tx, ty),
+            normal,
+            wall_base_z + opening.sill_height,
+            (bearing_right - bearing_left) * 0.5,
+            opening.height + lintel_section.face * 0.5,
+            OpeningLookRole::Lintel,
+            &style,
+            library,
+            merged_rules.as_ref(),
+        );
+    }
+}
+
 
 /// Regen every opening hosted by `wall_handle`.
 pub fn regenerate_openings_for_wall(
