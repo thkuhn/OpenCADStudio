@@ -853,6 +853,79 @@ fn emit_wall_layers(
 }
 
 
+/// Builds the display set (per-layer solids and openings) of a wall.
+fn build_wall_display(
+    wall: &Wall,
+    layers: &[WallLayer],
+    centerline: &[(f64, f64)],
+    bulges: &[f64],
+    layer_data: &[(f64, f64)],
+    layer_extrusion: &[(f64, f64)],
+    wall_openings: &[engine::openings::Opening],
+    height: f64,
+    wall_base_z: f64,
+) -> engine::representation::WallDisplaySet {
+    if wall.is_sloped() {
+        let z_bounds = |li: usize, s: f64| {
+            if let Some((pt, _)) = engine::openings::point_and_tangent_at_distance(centerline, s) {
+                if let Some(l) = layers.get(li) {
+                    let zb = wall.layer_base_z_at_xy(l, pt.0, pt.1) - wall_base_z;
+                    let zt = wall.layer_top_z_at_xy(l, pt.0, pt.1) - wall_base_z;
+                    (zb, zt)
+                } else {
+                    let zb = wall.base_z_at_xy(pt.0, pt.1) - wall_base_z;
+                    let zt = wall.top_z_at_xy(pt.0, pt.1) - wall_base_z;
+                    (zb, zt)
+                }
+            } else if let Some(&(h, b)) = layer_extrusion.get(li) {
+                (b, b + h)
+            } else {
+                (0.0, height)
+            }
+        };
+        engine::representation::build_wall_display_set_sloped(
+            centerline,
+            bulges,
+            layer_data,
+            0.0,
+            wall_openings,
+            layer_extrusion,
+            z_bounds,
+        )
+    } else {
+        engine::representation::build_wall_display_set(
+            centerline,
+            bulges,
+            layer_data,
+            0.0,
+            wall_openings,
+            layer_extrusion,
+        )
+    }
+}
+
+/// Axis with one vertex pushed to `corner_override` (legacy corner-overlap
+/// fallback); `None` without a usable override.
+fn extended_corner_axis(
+    axis_entity: &EntityType,
+    corner_override: Option<(usize, DVec3)>,
+) -> Option<EntityType> {
+    let mut extended = axis_entity.clone();
+    let applied = if let (Some((idx, pos)), EntityType::LwPolyline(pl)) =
+        (corner_override, &mut extended)
+    {
+        if let Some(v) = pl.vertices.get_mut(idx) {
+            v.location = Vector2::new(pos.x, pos.y);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    applied.then_some(extended)
+}
+
 pub(crate) fn regenerate_wall_representation_inner(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -986,63 +1059,24 @@ pub(crate) fn regenerate_wall_representation_inner(
             )
         })
         .collect();
-    let display = if wall.is_sloped() {
-        let z_bounds = |li: usize, s: f64| {
-            if let Some((pt, _)) = engine::openings::point_and_tangent_at_distance(&centerline, s) {
-                if let Some(l) = layers.get(li) {
-                    let zb = wall.layer_base_z_at_xy(l, pt.0, pt.1) - wall_base_z;
-                    let zt = wall.layer_top_z_at_xy(l, pt.0, pt.1) - wall_base_z;
-                    (zb, zt)
-                } else {
-                    let zb = wall.base_z_at_xy(pt.0, pt.1) - wall_base_z;
-                    let zt = wall.top_z_at_xy(pt.0, pt.1) - wall_base_z;
-                    (zb, zt)
-                }
-            } else if let Some(&(h, b)) = layer_extrusion.get(li) {
-                (b, b + h)
-            } else {
-                (0.0, height)
-            }
-        };
-        engine::representation::build_wall_display_set_sloped(
-            &centerline,
-            &bulges,
-            &layer_data,
-            0.0,
-            &wall_openings,
-            &layer_extrusion,
-            z_bounds,
-        )
-    } else {
-        engine::representation::build_wall_display_set(
-            &centerline,
-            &bulges,
-            &layer_data,
-            0.0,
-            &wall_openings,
-            &layer_extrusion,
-        )
-    };
+    let display = build_wall_display(
+        &wall,
+        &layers,
+        &centerline,
+        &bulges,
+        &layer_data,
+        &layer_extrusion,
+        &wall_openings,
+        height,
+        wall_base_z,
+    );
 
     // Fallback footprints: axis with a single vertex pushed past the join into
     // the other wall's footprint (legacy corner-overlap path).
-    let mut extended_axis_entity = axis_entity.clone();
-    let has_corner_override = if let (Some((idx, pos)), EntityType::LwPolyline(pl)) =
-        (corner_override, &mut extended_axis_entity)
-    {
-        if let Some(v) = pl.vertices.get_mut(idx) {
-            v.location = Vector2::new(pos.x, pos.y);
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-    let extended_footprints = if has_corner_override {
-        wall_layer_footprints(&extended_axis_entity, &layers)
-    } else {
-        Vec::new()
+    let extended_axis_entity = extended_corner_axis(&axis_entity, corner_override);
+    let extended_footprints = match &extended_axis_entity {
+        Some(e) => wall_layer_footprints(e, &layers),
+        None => Vec::new(),
     };
 
     // Self axis as plain 2D points for the miter helper.
@@ -1229,11 +1263,7 @@ pub(crate) fn regenerate_wall_representation_inner(
 
     // Extrusion height/base come from the (possibly extended) axis so solids
     // stay consistent with the 2D footprint chosen per layer below.
-    let extrusion_axis = if has_corner_override {
-        &extended_axis_entity
-    } else {
-        &axis_entity
-    };
+    let extrusion_axis = extended_axis_entity.as_ref().unwrap_or(&axis_entity);
     let extrusions = wall_layer_extrusions(extrusion_axis, &layers, height);
 
     // `StyleSubstitution`: when the wall's own style has a target entry,
