@@ -3,6 +3,7 @@
 pub mod aec_junction_editor;
 pub mod context_menu;
 pub mod aec_plan_manager;
+mod plan_labels;
 pub mod aec_project_explorer;
 pub mod aec_storey_settings;
 pub mod aec_style_picker;
