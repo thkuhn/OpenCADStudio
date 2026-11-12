@@ -812,7 +812,7 @@ mod modify_node_tests {
             |a| json!({"object": h(a,0), "point": p(5.,0.,0.)}),
         );
         go(
-            &["LINE 0,0 10,0 "],
+            &["LINE 0,0 10,0 ", "LINE 0,5 10,5 "],
             "Reverse",
             |a| json!({"objects": hs(a)}),
         );

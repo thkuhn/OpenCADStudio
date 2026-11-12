@@ -1072,10 +1072,24 @@ impl AppHost<'_> {
             }
             "Join" => one(self.run("JOIN", selection(&a[0]).map(|s| vec![s, Enter]))),
             "Explode" => one(self.run("EXPLODE", selection(&a[0]).map(|s| vec![s, Enter]))),
-            "Reverse" => one(self.run(
-                "REVERSE",
-                list(&a[0]).first().and_then(pick_on).map(|p| vec![p]),
-            )),
+            // REVERSE takes one pick per run, so it runs once per object.
+            "Reverse" => {
+                let mut seen = Vec::new();
+                let mut out = Vec::new();
+                for object in list(&a[0]) {
+                    let Some(h) = handle(&object) else { continue };
+                    if seen.contains(&h) {
+                        continue;
+                    }
+                    seen.push(h);
+                    if let Value::Array(items) =
+                        self.run("REVERSE", pick_on(&object).map(|p| vec![p]))
+                    {
+                        out.extend(items);
+                    }
+                }
+                one(Value::Array(out))
+            }
             "Convert To Polyline" => {
                 let steps = pick(&a[0], &a[1]).map(|p| vec![p, typed("Y"), Enter]);
                 one(self.run("PEDIT", steps))
