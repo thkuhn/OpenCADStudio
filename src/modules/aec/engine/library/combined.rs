@@ -1,5 +1,33 @@
 use super::*;
 
+/// Merges project, session and Standard items (in that order). The first
+/// occurrence of an id wins; project items are all kept as-is.
+fn merge_layers<T: Clone, E>(
+    project: Option<&[T]>,
+    session: Option<&[T]>,
+    standard: Vec<T>,
+    id: impl Fn(&T) -> String,
+    make: impl Fn(T, LibrarySource) -> E,
+) -> Vec<E> {
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in project.unwrap_or_default() {
+        seen.insert(id(item));
+        entries.push(make(item.clone(), LibrarySource::Project));
+    }
+    for item in session.unwrap_or_default() {
+        if seen.insert(id(item)) {
+            entries.push(make(item.clone(), LibrarySource::Session));
+        }
+    }
+    for item in standard {
+        if seen.insert(id(&item)) {
+            entries.push(make(item, LibrarySource::Standard));
+        }
+    }
+    entries
+}
+
 /// Builds a combined material list from the Standard library and (when present)
 /// the project's embedded library. Project entries win on id collision.
 pub fn combined_material_entries(
@@ -15,39 +43,13 @@ pub fn combined_material_entries_with_session(
     session: Option<&StyleLibrary>,
 ) -> Vec<CombinedMaterialEntry> {
     let standard = load_or_seed();
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    if let Some(project) = project {
-        for material in &project.material_wall_style_library.materials {
-            seen.insert(material.id.clone());
-            entries.push(CombinedMaterialEntry {
-                material: material.clone(),
-                source: LibrarySource::Project,
-            });
-        }
-    }
-
-    if let Some(session) = session {
-        for material in &session.materials {
-            if seen.insert(material.id.clone()) {
-                entries.push(CombinedMaterialEntry {
-                    material: material.clone(),
-                    source: LibrarySource::Session,
-                });
-            }
-        }
-    }
-
-    for material in standard.materials {
-        if seen.insert(material.id.clone()) {
-            entries.push(CombinedMaterialEntry {
-                material,
-                source: LibrarySource::Standard,
-            });
-        }
-    }
-
+    let mut entries = merge_layers(
+        project.map(|p| p.material_wall_style_library.materials.as_slice()),
+        session.map(|s| s.materials.as_slice()),
+        standard.materials,
+        |m| m.id.clone(),
+        |material, source| CombinedMaterialEntry { material, source },
+    );
     for e in &mut entries {
         e.material.style.origin = e.source.into();
     }
@@ -69,39 +71,13 @@ pub fn combined_wall_style_entries_with_session(
     session: Option<&StyleLibrary>,
 ) -> Vec<CombinedWallStyleEntry> {
     let standard = load_or_seed();
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    if let Some(project) = project {
-        for wall_style in &project.material_wall_style_library.wall_styles {
-            seen.insert(wall_style.style.id.clone());
-            entries.push(CombinedWallStyleEntry {
-                wall_style: wall_style.clone(),
-                source: LibrarySource::Project,
-            });
-        }
-    }
-
-    if let Some(session) = session {
-        for wall_style in &session.wall_styles {
-            if seen.insert(wall_style.style.id.clone()) {
-                entries.push(CombinedWallStyleEntry {
-                    wall_style: wall_style.clone(),
-                    source: LibrarySource::Session,
-                });
-            }
-        }
-    }
-
-    for wall_style in standard.wall_styles {
-        if seen.insert(wall_style.style.id.clone()) {
-            entries.push(CombinedWallStyleEntry {
-                wall_style,
-                source: LibrarySource::Standard,
-            });
-        }
-    }
-
+    let mut entries = merge_layers(
+        project.map(|p| p.material_wall_style_library.wall_styles.as_slice()),
+        session.map(|s| s.wall_styles.as_slice()),
+        standard.wall_styles,
+        |s| s.style.id.clone(),
+        |wall_style, source| CombinedWallStyleEntry { wall_style, source },
+    );
     for e in &mut entries {
         e.wall_style.common_mut().origin = e.source.into();
     }
@@ -122,39 +98,13 @@ pub fn combined_opening_style_entries_with_session(
     session: Option<&StyleLibrary>,
 ) -> Vec<CombinedOpeningStyleEntry> {
     let standard = load_or_seed();
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    if let Some(project) = project {
-        for opening_style in &project.material_wall_style_library.opening_styles {
-            seen.insert(opening_style.style.id.clone());
-            entries.push(CombinedOpeningStyleEntry {
-                opening_style: opening_style.clone(),
-                source: LibrarySource::Project,
-            });
-        }
-    }
-
-    if let Some(session) = session {
-        for opening_style in &session.opening_styles {
-            if seen.insert(opening_style.style.id.clone()) {
-                entries.push(CombinedOpeningStyleEntry {
-                    opening_style: opening_style.clone(),
-                    source: LibrarySource::Session,
-                });
-            }
-        }
-    }
-
-    for opening_style in standard.opening_styles {
-        if seen.insert(opening_style.style.id.clone()) {
-            entries.push(CombinedOpeningStyleEntry {
-                opening_style,
-                source: LibrarySource::Standard,
-            });
-        }
-    }
-
+    let mut entries = merge_layers(
+        project.map(|p| p.material_wall_style_library.opening_styles.as_slice()),
+        session.map(|s| s.opening_styles.as_slice()),
+        standard.opening_styles,
+        |s| s.style.id.clone(),
+        |opening_style, source| CombinedOpeningStyleEntry { opening_style, source },
+    );
     for e in &mut entries {
         e.opening_style.common_mut().origin = e.source.into();
     }
@@ -175,39 +125,13 @@ pub fn combined_slab_style_entries_with_session(
     session: Option<&StyleLibrary>,
 ) -> Vec<CombinedSlabStyleEntry> {
     let standard = load_or_seed();
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    if let Some(project) = project {
-        for slab_style in &project.material_wall_style_library.slab_styles {
-            seen.insert(slab_style.style.id.clone());
-            entries.push(CombinedSlabStyleEntry {
-                slab_style: slab_style.clone(),
-                source: LibrarySource::Project,
-            });
-        }
-    }
-
-    if let Some(session) = session {
-        for slab_style in &session.slab_styles {
-            if seen.insert(slab_style.style.id.clone()) {
-                entries.push(CombinedSlabStyleEntry {
-                    slab_style: slab_style.clone(),
-                    source: LibrarySource::Session,
-                });
-            }
-        }
-    }
-
-    for slab_style in standard.slab_styles {
-        if seen.insert(slab_style.style.id.clone()) {
-            entries.push(CombinedSlabStyleEntry {
-                slab_style,
-                source: LibrarySource::Standard,
-            });
-        }
-    }
-
+    let mut entries = merge_layers(
+        project.map(|p| p.material_wall_style_library.slab_styles.as_slice()),
+        session.map(|s| s.slab_styles.as_slice()),
+        standard.slab_styles,
+        |s| s.style.id.clone(),
+        |slab_style, source| CombinedSlabStyleEntry { slab_style, source },
+    );
     for e in &mut entries {
         e.slab_style.common_mut().origin = e.source.into();
     }
@@ -228,39 +152,13 @@ pub fn combined_slab_structural_style_entries_with_session(
     session: Option<&StyleLibrary>,
 ) -> Vec<CombinedSlabStructuralStyleEntry> {
     let standard = load_or_seed();
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    if let Some(project) = project {
-        for s in &project.material_wall_style_library.slab_structural_styles {
-            seen.insert(s.style.id.clone());
-            entries.push(CombinedSlabStructuralStyleEntry {
-                structural_style: s.clone(),
-                source: LibrarySource::Project,
-            });
-        }
-    }
-
-    if let Some(session) = session {
-        for s in &session.slab_structural_styles {
-            if seen.insert(s.style.id.clone()) {
-                entries.push(CombinedSlabStructuralStyleEntry {
-                    structural_style: s.clone(),
-                    source: LibrarySource::Session,
-                });
-            }
-        }
-    }
-
-    for s in standard.slab_structural_styles {
-        if seen.insert(s.style.id.clone()) {
-            entries.push(CombinedSlabStructuralStyleEntry {
-                structural_style: s,
-                source: LibrarySource::Standard,
-            });
-        }
-    }
-
+    let mut entries = merge_layers(
+        project.map(|p| p.material_wall_style_library.slab_structural_styles.as_slice()),
+        session.map(|s| s.slab_structural_styles.as_slice()),
+        standard.slab_structural_styles,
+        |s| s.style.id.clone(),
+        |structural_style, source| CombinedSlabStructuralStyleEntry { structural_style, source },
+    );
     for e in &mut entries {
         e.structural_style.common_mut().origin = e.source.into();
     }
@@ -281,39 +179,13 @@ pub fn combined_floor_finish_style_entries_with_session(
     session: Option<&StyleLibrary>,
 ) -> Vec<CombinedFloorFinishStyleEntry> {
     let standard = load_or_seed();
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    if let Some(project) = project {
-        for s in &project.material_wall_style_library.floor_finish_styles {
-            seen.insert(s.style.id.clone());
-            entries.push(CombinedFloorFinishStyleEntry {
-                finish_style: s.clone(),
-                source: LibrarySource::Project,
-            });
-        }
-    }
-
-    if let Some(session) = session {
-        for s in &session.floor_finish_styles {
-            if seen.insert(s.style.id.clone()) {
-                entries.push(CombinedFloorFinishStyleEntry {
-                    finish_style: s.clone(),
-                    source: LibrarySource::Session,
-                });
-            }
-        }
-    }
-
-    for s in standard.floor_finish_styles {
-        if seen.insert(s.style.id.clone()) {
-            entries.push(CombinedFloorFinishStyleEntry {
-                finish_style: s,
-                source: LibrarySource::Standard,
-            });
-        }
-    }
-
+    let mut entries = merge_layers(
+        project.map(|p| p.material_wall_style_library.floor_finish_styles.as_slice()),
+        session.map(|s| s.floor_finish_styles.as_slice()),
+        standard.floor_finish_styles,
+        |s| s.style.id.clone(),
+        |finish_style, source| CombinedFloorFinishStyleEntry { finish_style, source },
+    );
     for e in &mut entries {
         e.finish_style.common_mut().origin = e.source.into();
     }
@@ -334,41 +206,15 @@ pub fn combined_section_profile_entries_with_session(
     session: Option<&StyleLibrary>,
 ) -> Vec<CombinedSectionProfileEntry> {
     let standard = load_or_seed();
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    if let Some(project) = project {
-        for profile in &project.material_wall_style_library.profiles {
-            seen.insert(profile.style.id.clone());
-            entries.push(CombinedSectionProfileEntry {
-                profile: profile.clone(),
-                source: LibrarySource::Project,
-            });
-        }
-    }
-
-    if let Some(session) = session {
-        for profile in &session.profiles {
-            if seen.insert(profile.style.id.clone()) {
-                entries.push(CombinedSectionProfileEntry {
-                    profile: profile.clone(),
-                    source: LibrarySource::Session,
-                });
-            }
-        }
-    }
-
-    for profile in standard.profiles {
-        if seen.insert(profile.style.id.clone()) {
-            entries.push(CombinedSectionProfileEntry {
-                profile,
-                source: LibrarySource::Standard,
-            });
-        }
-    }
-
-    for entry in &mut entries {
-        entry.profile.style.origin = entry.source.into();
+    let mut entries = merge_layers(
+        project.map(|p| p.material_wall_style_library.profiles.as_slice()),
+        session.map(|s| s.profiles.as_slice()),
+        standard.profiles,
+        |s| s.style.id.clone(),
+        |profile, source| CombinedSectionProfileEntry { profile, source },
+    );
+    for e in &mut entries {
+        e.profile.style.origin = e.source.into();
     }
     entries
 }
