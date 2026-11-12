@@ -926,159 +926,27 @@ fn extended_corner_axis(
     applied.then_some(extended)
 }
 
-pub(crate) fn regenerate_wall_representation_inner(
+/// Per-layer footprints after applying join, crossing and through-span
+/// cutouts, plus the peer layers found at each axis end.
+struct JunctionFootprints {
+    self_axis_2d: Vec<(f64, f64)>,
+    mitered_footprints: Vec<Option<Vec<(f64, f64)>>>,
+    peer_at_end0: Option<(Vec<engine::miter::MiterLayer>, Option<usize>)>,
+    peer_at_end1: Option<(Vec<engine::miter::MiterLayer>, Option<usize>)>,
+}
+
+/// Derives the mitered footprints of a wall from its join context and the
+/// junctions found in the scene.
+fn compute_junction_footprints(
     scene: &mut Scene,
     wall_handle: Handle,
-    corner_override: Option<(usize, DVec3)>,
+    layers: &[WallLayer],
+    axis_entity: &EntityType,
+    base_footprints: &[Vec<(f64, f64)>],
     join_miter: Option<&engine::miter::JoinMiterContext>,
     precomputed_miters: Option<&[Option<Vec<(f64, f64)>>]>,
-    rules: Option<&engine::display_component::ComponentRuleSet>,
-    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
-    library_override: Option<&StyleLibrary>,
     skip_junction_rescan: bool,
-) -> Result<Vec<Handle>, WallRegenError> {
-    use engine::display_component::{LayerSelection, WallComponentSlot};
-    // Geometry vs. hatch are independent: layer contours/hatches vs. overall
-    // contour/hatch. Envelope (first/last layer) stands in for overall contour
-    // until a dedicated union path exists. Axis/SurfaceStyle3D/Section/Elevation
-    // remain no-ops here.
-    let layers2d_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Layers2D));
-    let contour2d_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Contour2D));
-    let layer_hatch_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::LayerHatch2D));
-    let contour_hatch_visible =
-        rules.map_or(true, |r| r.is_visible(WallComponentSlot::ContourHatch2D));
-    let solid_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Solid3D));
-    let Some(entity) = scene.document.get_entity(wall_handle) else {
-        return Err(WallRegenError::NotAWall);
-    };
-
-    let Some(wall) = wall_from_entity(entity) else {
-        return Err(WallRegenError::NotAWall);
-    };
-    let (wall_owner_handle, xref_layer_prefix) = wall_owner_and_layer_prefix(scene, wall_handle);
-    let (layers, height, wall_base_z, _old_derived, wall_style_id, wall_hatch_override) = (
-        wall.layers.clone(),
-        wall.height,
-        wall.base_origin[2],
-        wall.derived_handles.clone(),
-        wall.style_id.clone(),
-        wall.hatch_override.clone(),
-    );
-    let wall_hatch_override = wall_hatch_override.as_ref();
-
-    if layers.is_empty() {
-        return Err(WallRegenError::NoLayers);
-    }
-
-    // Keep existing contour polylines so their tessellation handles stay
-    // valid (delete+recreate left the old outline on screen). Hatches and
-    // solids are still replaced; leftover contours are erased after reuse.
-    let stale = collect_wall_display_children(scene, wall_handle);
-    let mut reusable_contours: Vec<Handle> = Vec::new();
-    let mut erase_now: Vec<Handle> = Vec::new();
-    for h in stale {
-        match scene.document.get_entity(h) {
-            Some(EntityType::LwPolyline(_)) => reusable_contours.push(h),
-            _ => erase_now.push(h),
-        }
-    }
-    if !erase_now.is_empty() {
-        scene.erase_entities(&erase_now);
-    }
-
-    // The axis is reference geometry on its own layer. Idle visibility follows
-    // the AxisLine slot when rules are present; otherwise the layer stays off.
-    set_wall_axis_layer_visible(scene, axis_visible_from_rules(rules));
-    let axis_layer = prefix_layer(AEC_WALL_AXIS_LAYER, xref_layer_prefix.as_deref());
-    scene.ensure_layer(&axis_layer);
-    if let Some(e) = scene.document.get_entity_mut(wall_handle) {
-        e.as_entity_mut().set_layer(axis_layer);
-        if let EntityType::LwPolyline(pl) = e {
-            pl.elevation = wall_base_z;
-        }
-    }
-    scene.bump_entities(&[(wall_handle, crate::scene::ChangeKind::Modified)]);
-
-    let axis_entity = scene
-        .document
-        .get_entity(wall_handle)
-        .cloned()
-        .ok_or(WallRegenError::NotAWall)?;
-
-    // Base footprints from the true (persisted) axis via the shared
-    // WallRepresentation builder. Corner extension is only applied as a
-    // per-layer fallback when a join miter can't match layers.
-    let base_footprints_with_bulges = wall_layer_footprints_with_bulges(&axis_entity, &layers);
-    if base_footprints_with_bulges.is_empty() {
-        if !reusable_contours.is_empty() {
-            scene.erase_entities(&reusable_contours);
-        }
-        let _ = set_wall_derived_handles(scene, wall_handle, &[]);
-        return Err(WallRegenError::NoContours);
-    }
-    let base_footprints: Vec<Vec<(f64, f64)>> = base_footprints_with_bulges
-        .iter()
-        .map(|(pts, _)| pts.clone())
-        .collect();
-    let base_footprint_bulges: Vec<Vec<f64>> = base_footprints_with_bulges
-        .iter()
-        .map(|(_, b)| b.clone())
-        .collect();
-
-    let owned_library;
-    let library: &StyleLibrary = match library_override {
-        Some(lib) => lib,
-        None => {
-            owned_library = load_or_seed();
-            &owned_library
-        }
-    };
-
-    // Load host openings independently of the 2D cut slot: rest-wall solids
-    // and opening-zone solids always use them, while contours/hatches only
-    // split when `HostCut2D` is visible.
-    let host_cut_visible = rules.map_or(true, |r| {
-        r.is_opening_visible(engine::display_component::OpeningComponentSlot::HostCut2D)
-    });
-    let mut wall_openings = openings_for_host_wall(scene, wall_handle);
-    fill_missing_opening_grids(&mut wall_openings, library);
-    let contour_openings = if host_cut_visible {
-        wall_openings.as_slice()
-    } else {
-        &[]
-    };
-    let (centerline, bulges) = wall_axis_points_and_bulges(&axis_entity);
-    let layer_data: Vec<(f64, f64)> =
-        layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
-    let layer_extrusion: Vec<(f64, f64)> = layers
-        .iter()
-        .map(|l| {
-            (
-                (height + l.top_offset - l.bottom_offset).max(0.0),
-                l.bottom_offset,
-            )
-        })
-        .collect();
-    let display = build_wall_display(
-        &wall,
-        &layers,
-        &centerline,
-        &bulges,
-        &layer_data,
-        &layer_extrusion,
-        &wall_openings,
-        height,
-        wall_base_z,
-    );
-
-    // Fallback footprints: axis with a single vertex pushed past the join into
-    // the other wall's footprint (legacy corner-overlap path).
-    let extended_axis_entity = extended_corner_axis(&axis_entity, corner_override);
-    let extended_footprints = match &extended_axis_entity {
-        Some(e) => wall_layer_footprints(e, &layers),
-        None => Vec::new(),
-    };
-
+) -> JunctionFootprints {
     // Self axis as plain 2D points for the miter helper.
     let self_axis_2d: Vec<(f64, f64)> = match &axis_entity {
         EntityType::LwPolyline(pl) => pl
@@ -1260,6 +1128,182 @@ pub(crate) fn regenerate_wall_representation_inner(
             }
         }
     }
+    JunctionFootprints {
+        self_axis_2d,
+        mitered_footprints,
+        peer_at_end0,
+        peer_at_end1,
+    }
+}
+
+pub(crate) fn regenerate_wall_representation_inner(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    corner_override: Option<(usize, DVec3)>,
+    join_miter: Option<&engine::miter::JoinMiterContext>,
+    precomputed_miters: Option<&[Option<Vec<(f64, f64)>>]>,
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+    library_override: Option<&StyleLibrary>,
+    skip_junction_rescan: bool,
+) -> Result<Vec<Handle>, WallRegenError> {
+    use engine::display_component::{LayerSelection, WallComponentSlot};
+    // Geometry vs. hatch are independent: layer contours/hatches vs. overall
+    // contour/hatch. Envelope (first/last layer) stands in for overall contour
+    // until a dedicated union path exists. Axis/SurfaceStyle3D/Section/Elevation
+    // remain no-ops here.
+    let layers2d_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Layers2D));
+    let contour2d_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Contour2D));
+    let layer_hatch_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::LayerHatch2D));
+    let contour_hatch_visible =
+        rules.map_or(true, |r| r.is_visible(WallComponentSlot::ContourHatch2D));
+    let solid_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Solid3D));
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return Err(WallRegenError::NotAWall);
+    };
+
+    let Some(wall) = wall_from_entity(entity) else {
+        return Err(WallRegenError::NotAWall);
+    };
+    let (wall_owner_handle, xref_layer_prefix) = wall_owner_and_layer_prefix(scene, wall_handle);
+    let (layers, height, wall_base_z, _old_derived, wall_style_id, wall_hatch_override) = (
+        wall.layers.clone(),
+        wall.height,
+        wall.base_origin[2],
+        wall.derived_handles.clone(),
+        wall.style_id.clone(),
+        wall.hatch_override.clone(),
+    );
+    let wall_hatch_override = wall_hatch_override.as_ref();
+
+    if layers.is_empty() {
+        return Err(WallRegenError::NoLayers);
+    }
+
+    // Keep existing contour polylines so their tessellation handles stay
+    // valid (delete+recreate left the old outline on screen). Hatches and
+    // solids are still replaced; leftover contours are erased after reuse.
+    let stale = collect_wall_display_children(scene, wall_handle);
+    let mut reusable_contours: Vec<Handle> = Vec::new();
+    let mut erase_now: Vec<Handle> = Vec::new();
+    for h in stale {
+        match scene.document.get_entity(h) {
+            Some(EntityType::LwPolyline(_)) => reusable_contours.push(h),
+            _ => erase_now.push(h),
+        }
+    }
+    if !erase_now.is_empty() {
+        scene.erase_entities(&erase_now);
+    }
+
+    // The axis is reference geometry on its own layer. Idle visibility follows
+    // the AxisLine slot when rules are present; otherwise the layer stays off.
+    set_wall_axis_layer_visible(scene, axis_visible_from_rules(rules));
+    let axis_layer = prefix_layer(AEC_WALL_AXIS_LAYER, xref_layer_prefix.as_deref());
+    scene.ensure_layer(&axis_layer);
+    if let Some(e) = scene.document.get_entity_mut(wall_handle) {
+        e.as_entity_mut().set_layer(axis_layer);
+        if let EntityType::LwPolyline(pl) = e {
+            pl.elevation = wall_base_z;
+        }
+    }
+    scene.bump_entities(&[(wall_handle, crate::scene::ChangeKind::Modified)]);
+
+    let axis_entity = scene
+        .document
+        .get_entity(wall_handle)
+        .cloned()
+        .ok_or(WallRegenError::NotAWall)?;
+
+    // Base footprints from the true (persisted) axis via the shared
+    // WallRepresentation builder. Corner extension is only applied as a
+    // per-layer fallback when a join miter can't match layers.
+    let base_footprints_with_bulges = wall_layer_footprints_with_bulges(&axis_entity, &layers);
+    if base_footprints_with_bulges.is_empty() {
+        if !reusable_contours.is_empty() {
+            scene.erase_entities(&reusable_contours);
+        }
+        let _ = set_wall_derived_handles(scene, wall_handle, &[]);
+        return Err(WallRegenError::NoContours);
+    }
+    let base_footprints: Vec<Vec<(f64, f64)>> = base_footprints_with_bulges
+        .iter()
+        .map(|(pts, _)| pts.clone())
+        .collect();
+    let base_footprint_bulges: Vec<Vec<f64>> = base_footprints_with_bulges
+        .iter()
+        .map(|(_, b)| b.clone())
+        .collect();
+
+    let owned_library;
+    let library: &StyleLibrary = match library_override {
+        Some(lib) => lib,
+        None => {
+            owned_library = load_or_seed();
+            &owned_library
+        }
+    };
+
+    // Load host openings independently of the 2D cut slot: rest-wall solids
+    // and opening-zone solids always use them, while contours/hatches only
+    // split when `HostCut2D` is visible.
+    let host_cut_visible = rules.map_or(true, |r| {
+        r.is_opening_visible(engine::display_component::OpeningComponentSlot::HostCut2D)
+    });
+    let mut wall_openings = openings_for_host_wall(scene, wall_handle);
+    fill_missing_opening_grids(&mut wall_openings, library);
+    let contour_openings = if host_cut_visible {
+        wall_openings.as_slice()
+    } else {
+        &[]
+    };
+    let (centerline, bulges) = wall_axis_points_and_bulges(&axis_entity);
+    let layer_data: Vec<(f64, f64)> =
+        layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
+    let layer_extrusion: Vec<(f64, f64)> = layers
+        .iter()
+        .map(|l| {
+            (
+                (height + l.top_offset - l.bottom_offset).max(0.0),
+                l.bottom_offset,
+            )
+        })
+        .collect();
+    let display = build_wall_display(
+        &wall,
+        &layers,
+        &centerline,
+        &bulges,
+        &layer_data,
+        &layer_extrusion,
+        &wall_openings,
+        height,
+        wall_base_z,
+    );
+
+    // Fallback footprints: axis with a single vertex pushed past the join into
+    // the other wall's footprint (legacy corner-overlap path).
+    let extended_axis_entity = extended_corner_axis(&axis_entity, corner_override);
+    let extended_footprints = match &extended_axis_entity {
+        Some(e) => wall_layer_footprints(e, &layers),
+        None => Vec::new(),
+    };
+
+    let JunctionFootprints {
+        self_axis_2d,
+        mitered_footprints,
+        peer_at_end0,
+        peer_at_end1,
+    } = compute_junction_footprints(
+        scene,
+        wall_handle,
+        &layers,
+        &axis_entity,
+        &base_footprints,
+        join_miter,
+        precomputed_miters,
+        skip_junction_rescan,
+    );
 
     // Extrusion height/base come from the (possibly extended) axis so solids
     // stay consistent with the 2D footprint chosen per layer below.
