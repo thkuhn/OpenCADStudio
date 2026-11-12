@@ -2082,13 +2082,19 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
                 closed: true,
                 filled: true,
             });
-            if profile_outer > requested_outer {
+            if let Some((gap_lo, gap_hi)) =
+                crate::modules::aec::engine::opening_display::sill_profile_gap(
+                    profile_outer,
+                    requested_outer,
+                    -1.0,
+                )
+            {
                 push_rect(
                     OpeningLookRole::ExteriorSill,
                     OpeningComponentSlot::Sill2D,
-                    requested_outer,
+                    gap_lo,
                     sill_z,
-                    profile_outer,
+                    gap_hi,
                     sill_z + section.face,
                 );
             }
@@ -2159,13 +2165,19 @@ fn section_preview_paths(style: &OpeningStyle, library: Option<&StyleLibrary>) -
                 closed: true,
                 filled: true,
             });
-            if profile_outer < requested_inner {
+            if let Some((gap_lo, gap_hi)) =
+                crate::modules::aec::engine::opening_display::sill_profile_gap(
+                    profile_outer,
+                    requested_inner,
+                    1.0,
+                )
+            {
                 push_rect(
                     OpeningLookRole::InteriorBoard,
                     OpeningComponentSlot::Sill2D,
-                    profile_outer,
+                    gap_lo,
                     sill_z,
-                    requested_inner,
+                    gap_hi,
                     sill_z + section.face,
                 );
             }

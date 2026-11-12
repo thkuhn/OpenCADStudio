@@ -1164,7 +1164,13 @@ fn emit_opening_cut_details(
                     FeatureKey::OpeningSill,
                     exterior_sill_style.clone(),
                 )?;
-                if (profile_outer - requested_outer) * inward > EPS {
+                if let Some((gap_lo, gap_hi)) =
+                    crate::modules::aec::engine::opening_display::sill_profile_gap(
+                        profile_outer,
+                        requested_outer,
+                        -inward,
+                    )
+                {
                     emit_opening_section_region(
                         op,
                         wall,
@@ -1172,8 +1178,8 @@ fn emit_opening_cut_details(
                         primitives,
                         counter,
                         (
-                            requested_outer.min(profile_outer),
-                            requested_outer.max(profile_outer),
+                            gap_lo,
+                            gap_hi,
                             cell_sill,
                             cell_sill + exterior_sill_section.face,
                         ),
@@ -1262,7 +1268,13 @@ fn emit_opening_cut_details(
                     FeatureKey::OpeningSill,
                     interior_board_style.clone(),
                 )?;
-                if (requested_inner - profile_end) * inward > EPS {
+                if let Some((gap_lo, gap_hi)) =
+                    crate::modules::aec::engine::opening_display::sill_profile_gap(
+                        profile_end,
+                        requested_inner,
+                        inward,
+                    )
+                {
                     emit_opening_section_region(
                         op,
                         wall,
@@ -1270,8 +1282,8 @@ fn emit_opening_cut_details(
                         primitives,
                         counter,
                         (
-                            profile_end.min(requested_inner),
-                            profile_end.max(requested_inner),
+                            gap_lo,
+                            gap_hi,
                             cell_sill,
                             cell_sill + interior_board_section.face,
                         ),

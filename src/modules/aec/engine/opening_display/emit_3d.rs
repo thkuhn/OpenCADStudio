@@ -253,6 +253,22 @@ pub(crate) fn sill_upstand_interval(
     (far.min(frame_edge), far.max(frame_edge))
 }
 
+/// Depth interval (min, max) that a profile sill/board leaves uncovered
+/// between its far end and the requested overhang end, or `None` when the
+/// profile already reaches the overhang. `outward` is -1 for the exterior
+/// sill and +1 for the interior board in wall-depth coordinates.
+pub(crate) fn sill_profile_gap(
+    profile_end: f64,
+    requested_end: f64,
+    outward: f64,
+) -> Option<(f64, f64)> {
+    if (requested_end - profile_end) * outward > 1e-9 {
+        Some((profile_end.min(requested_end), profile_end.max(requested_end)))
+    } else {
+        None
+    }
+}
+
 pub fn build_opening_glazing_3d(
     width: f64,
     height: f64,

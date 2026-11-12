@@ -764,6 +764,18 @@ fn disabled_interior_board_does_not_add_plan_sill_paths_on_inside_face() {
 }
 
 #[test]
+fn sill_profile_gap_covers_only_the_uncovered_overhang() {
+    // Exterior (outward = -1): profile ends at -0.10, overhang wants -0.19.
+    assert_eq!(sill_profile_gap(-0.10, -0.19, -1.0), Some((-0.19, -0.10)));
+    // Profile already reaches or passes the overhang: no gap.
+    assert_eq!(sill_profile_gap(-0.20, -0.19, -1.0), None);
+    assert_eq!(sill_profile_gap(-0.19, -0.19, -1.0), None);
+    // Interior (outward = +1).
+    assert_eq!(sill_profile_gap(0.10, 0.19, 1.0), Some((0.10, 0.19)));
+    assert_eq!(sill_profile_gap(0.20, 0.19, 1.0), None);
+}
+
+#[test]
 fn sill_upstand_interval_stands_outside_frame_and_clamps_to_frame_depth() {
     assert_eq!(sill_upstand_interval(-0.04, -1.0, 0.03, 0.08), (-0.07, -0.04));
     assert_eq!(sill_upstand_interval(0.04, 1.0, 0.03, 0.08), (0.04, 0.07));
