@@ -415,6 +415,10 @@ pub(super) fn bake_swing_arc(slot: OpeningComponentSlot, p: OpeningBakeParams, h
     vec![path(slot, pts, false, false)]
 }
 
+/// Fixed overhangs of the style-less sill generator (no style values available).
+const LEGACY_SILL_OVERHANG: f64 = 0.035;
+const LEGACY_BOARD_OVERHANG: f64 = 0.025;
+
 pub(super) fn bake_sill_lines(
     slot: OpeningComponentSlot,
     hw: f64,
@@ -428,7 +432,7 @@ pub(super) fn bake_sill_lines(
     let frame_half_d = frame_depth * 0.5;
 
     let mut out = Vec::new();
-    let sill_overhang = 0.035;
+    let sill_overhang = LEGACY_SILL_OVERHANG;
     let wall_ext_y = wall_y_min - cross_offset;
     let wall_int_y = wall_y_max - cross_offset;
     let sill_y_outer = wall_ext_y - sill_overhang;
@@ -482,7 +486,7 @@ pub(super) fn bake_sill_lines(
         );
     }
 
-    let board_overhang = 0.025;
+    let board_overhang = LEGACY_BOARD_OVERHANG;
     let board_y_inner = wall_int_y + board_overhang;
     let board_ear = 0.0;
 
@@ -567,7 +571,7 @@ pub(super) fn bake_sill_lines_from_parts(
             parts.exterior_sill.side_overhang_left,
             parts.exterior_sill.side_overhang_right,
         );
-        let sill_outer_y = wall_ext_y - overhang;
+        let sill_outer_y = exterior_sill_y_bounds(wall_ext_y, wall_int_y, overhang, fixed_frame.depth).0;
         if overhang > 1e-9 || x0 < -hw - 1e-9 || x1 > hw + 1e-9 {
             out.push(
                 path(
@@ -606,7 +610,7 @@ pub(super) fn bake_sill_lines_from_parts(
             parts.interior_board.side_overhang_left,
             parts.interior_board.side_overhang_right,
         );
-        let board_inner_y = wall_int_y + overhang;
+        let board_inner_y = interior_board_y_bounds(wall_ext_y, wall_int_y, overhang, fixed_frame.depth).1;
         if overhang > 1e-9 || x0 < -hw - 1e-9 || x1 > hw + 1e-9 {
             out.push(
                 path(
