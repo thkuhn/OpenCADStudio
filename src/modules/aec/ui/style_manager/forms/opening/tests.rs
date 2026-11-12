@@ -219,3 +219,67 @@ fn isometric_presets_reproject_cached_model_points_without_geometry_changes() {
     assert_eq!(front_left[0].points, zoomed[0].points);
     assert_eq!(front_left[0].points_3d, zoomed[0].points_3d);
 }
+
+fn fitted_camera(mode: AecOpeningPreviewMode) -> PreviewCamera {
+    let paths = vec![rect(OpeningComponentSlot::Frame2D, -0.6, -0.1, 0.6, 0.1)];
+    PreviewCamera::fit(
+        Rectangle::new(Point::ORIGIN, iced::Size::new(400.0, 300.0)),
+        &paths,
+        mode,
+        1.2,
+        1.5,
+        0.9,
+        PREVIEW_WALL_THICKNESS,
+    )
+}
+
+#[test]
+fn camera_screen_and_local_round_trip_with_zoom_and_pan() {
+    for mode in [AecOpeningPreviewMode::Plan2D, AecOpeningPreviewMode::Section] {
+        let camera = fitted_camera(mode).with_view(2.5, 13.0, -7.0);
+        let screen = camera.to_screen(0.3, 0.8);
+        let (x, y) = camera.to_local(screen);
+        assert!((x - 0.3).abs() < 1e-4, "{mode:?} x={x}");
+        assert!((y - 0.8).abs() < 1e-4, "{mode:?} y={y}");
+    }
+}
+
+#[test]
+fn camera_zoom_has_a_lower_bound() {
+    let camera = fitted_camera(AecOpeningPreviewMode::Plan2D).with_view(0.0, 0.0, 0.0);
+    assert!((camera.zoom - 0.05).abs() < 1e-6);
+    let negative = fitted_camera(AecOpeningPreviewMode::Plan2D).with_view(-3.0, 0.0, 0.0);
+    assert!((negative.zoom - 0.05).abs() < 1e-6);
+}
+
+#[test]
+fn section_is_mirrored_and_plan_is_not() {
+    let plan = fitted_camera(AecOpeningPreviewMode::Plan2D);
+    let section = fitted_camera(AecOpeningPreviewMode::Section);
+    assert!(!plan.mirror_x);
+    assert!(section.mirror_x);
+    let right = section.to_screen(0.1, 0.0);
+    let left = section.to_screen(-0.1, 0.0);
+    assert!(right.x < left.x);
+}
+
+#[test]
+fn repeated_cursor_zoom_keeps_the_world_point_under_the_cursor() {
+    for mode in [
+        AecOpeningPreviewMode::Plan2D,
+        AecOpeningPreviewMode::Section,
+    ] {
+        let base = fitted_camera(mode);
+        let cursor = Point::new(120.0, 90.0);
+        let camera = fitted_camera(mode);
+        let (wx, wy) = camera.to_local(cursor);
+        let mut zoom = 1.0;
+        for _ in 0..8 {
+            zoom *= 1.1;
+            let (pan_x, pan_y) = preview_pan_for_cursor(&base, cursor, wx, wy, zoom);
+            let camera = fitted_camera(mode).with_view(zoom, pan_x, pan_y);
+            let (x, y) = camera.to_local(cursor);
+            assert!((x - wx).abs() < 1e-3 && (y - wy).abs() < 1e-3, "{mode:?}");
+        }
+    }
+}
