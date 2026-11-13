@@ -2763,7 +2763,7 @@ impl OpenCADStudio {
 
     pub(crate) fn aec_opening_style_manager_cell_span(&mut self, action: &str) {
         use crate::modules::aec::engine::construction_grid::{
-            merge_adjacent_cell, nest_empty_grid, split_cell_span,
+            merge_cell_toward, nest_empty_grid, split_cell_span,
         };
         let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.2).max(0.08);
         let height = parse_dim(&self.aec.styles.opening_height).unwrap_or(1.2).max(0.08);
@@ -2800,9 +2800,13 @@ impl OpenCADStudio {
                 let row = cell.row as u32;
                 match action {
                     "join" => {
-                        merge_adjacent_cell(level, column, row, true)
-                            || merge_adjacent_cell(level, column, row, false)
+                        merge_cell_toward(level, column, row, "right")
+                            || merge_cell_toward(level, column, row, "down")
                     }
+                    "join-left" => merge_cell_toward(level, column, row, "left"),
+                    "join-right" => merge_cell_toward(level, column, row, "right"),
+                    "join-up" => merge_cell_toward(level, column, row, "up"),
+                    "join-down" => merge_cell_toward(level, column, row, "down"),
                     "split" => split_cell_span(level, column, row),
                     "nest" => nest_empty_grid(level, column, row),
                     _ => false,
@@ -3186,13 +3190,15 @@ impl OpenCADStudio {
         if matches!(axis, "vertical" | "horizontal")
             && self.aec.styles.opening_authored_grid.is_some()
         {
-            let _ = index;
             self.mutate_current_grid(|level, _, _| {
-                crate::modules::aec::engine::construction_grid::remove_last_axis_division(
+                crate::modules::aec::engine::construction_grid::remove_axis_division_at(
                     level,
                     axis == "vertical",
+                    index,
                 )
             });
+            self.aec.styles.opening_selected_grid_edge = None;
+            self.aec.styles.opening_grid_measure = None;
             return;
         }
         self.aec.styles.opening_authored_grid = None;

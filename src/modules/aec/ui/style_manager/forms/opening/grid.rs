@@ -117,6 +117,11 @@ pub(super) fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a,
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
+                button(text("\u{00d7}").size(12))
+                    .padding([2, 8])
+                    .on_press(Message::Aec(
+                        AecMessage::AecOpeningStyleManagerDivisionRemove(axis.to_string(), index),
+                    )),
             ]
             .spacing(5)
             .into()
@@ -204,6 +209,22 @@ pub(super) fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a,
             ]
             .spacing(4)
             .align_y(iced::Center),
+            {
+                let span = |label: &'static str, action: &'static str| {
+                    button(text(label).size(12)).padding([2, 8]).on_press(Message::Aec(
+                        AecMessage::AecOpeningStyleManagerCellSpan(action.to_string()),
+                    ))
+                };
+                row![
+                    span("\u{25c0}", "join-left"),
+                    span("\u{25b6}", "join-right"),
+                    span("\u{25b2}", "join-up"),
+                    span("\u{25bc}", "join-down"),
+                    span("\u{229f}", "split"),
+                    span("\u{229e}", "nest"),
+                ]
+                .spacing(4)
+            },
         ]
         .spacing(5)
         .width(FillLen)

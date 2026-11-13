@@ -720,6 +720,114 @@ pub fn remove_last_axis_division(grid: &mut ConstructionGrid, vertical: bool) ->
     true
 }
 
+/// Removes the grid line between track `index` and `index + 1`. The two
+/// tracks become one; cells on both sides merge into one cell (the first
+/// cell wins) and spans across the line shrink by one.
+pub fn remove_axis_division_at(grid: &mut ConstructionGrid, vertical: bool, index: usize) -> bool {
+    let count = if vertical {
+        grid.columns.len()
+    } else {
+        grid.rows.len()
+    };
+    if index + 1 >= count {
+        return false;
+    }
+    ensure_explicit_cells(grid);
+    {
+        let tracks = if vertical {
+            &mut grid.columns
+        } else {
+            &mut grid.rows
+        };
+        let second = tracks.remove(index + 1);
+        let first = &mut tracks[index];
+        first.measure = match (first.measure, second.measure) {
+            (TrackMeasure::Fixed(a), TrackMeasure::Fixed(b)) => TrackMeasure::Fixed(a + b),
+            (TrackMeasure::Percent(a), TrackMeasure::Percent(b)) => TrackMeasure::Percent(a + b),
+            (TrackMeasure::Fraction(a), TrackMeasure::Fraction(b)) => {
+                TrackMeasure::Fraction(a + b)
+            }
+            (a, _) => a,
+        };
+        first.meeting = second.meeting;
+        first.profile_id = second.profile_id;
+    }
+    let boundary = index as u32 + 1;
+    let covers = |start: u32, span: u32, line: u32| start <= line && start + span.max(1) > line;
+    // Cells starting right of the line that share a cross position with a
+    // cell reaching the line from the left are absorbed by that cell.
+    let snapshot = grid.cells.clone();
+    let mut kept = Vec::with_capacity(snapshot.len());
+    for mut cell in snapshot.iter().cloned() {
+        let (start, span, cross, cross_span) = if vertical {
+            (cell.column, cell.columns, cell.row, cell.rows)
+        } else {
+            (cell.row, cell.rows, cell.column, cell.columns)
+        };
+        if start == boundary {
+            let absorbed = snapshot.iter().any(|other| {
+                let (o_start, o_span, o_cross, o_cross_span) = if vertical {
+                    (other.column, other.columns, other.row, other.rows)
+                } else {
+                    (other.row, other.rows, other.column, other.columns)
+                };
+                o_start < boundary
+                    && covers(o_start, o_span, boundary - 1)
+                    && o_start + o_span.max(1) == boundary
+                    && o_cross == cross
+                    && o_cross_span.max(1) == cross_span.max(1)
+            });
+            if absorbed {
+                continue;
+            }
+        }
+        let (start_ref, span_ref) = if vertical {
+            (&mut cell.column, &mut cell.columns)
+        } else {
+            (&mut cell.row, &mut cell.rows)
+        };
+        let crosses = *start_ref < boundary && *start_ref + (*span_ref).max(1) > boundary;
+        if crosses {
+            *span_ref = (*span_ref).max(1) - 1;
+        } else if *start_ref >= boundary {
+            *start_ref -= 1;
+        }
+        kept.push(cell);
+    }
+    grid.cells = kept;
+    true
+}
+
+/// Joins the cell at (`column`, `row`) with its neighbour. `direction` is
+/// `left`, `right`, `up` (smaller row index) or `down` (larger row index).
+pub fn merge_cell_toward(
+    grid: &mut ConstructionGrid,
+    column: u32,
+    row: u32,
+    direction: &str,
+) -> bool {
+    ensure_explicit_cells(grid);
+    match direction {
+        "right" => merge_adjacent_cell(grid, column, row, true),
+        "down" => merge_adjacent_cell(grid, column, row, false),
+        "left" | "up" => {
+            let across = direction == "left";
+            let neighbour = grid.cells.iter().find(|cell| {
+                if across {
+                    cell.row == row && cell.column + cell.columns.max(1) == column
+                } else {
+                    cell.column == column && cell.row + cell.rows.max(1) == row
+                }
+            });
+            let Some((n_column, n_row)) = neighbour.map(|cell| (cell.column, cell.row)) else {
+                return false;
+            };
+            merge_adjacent_cell(grid, n_column, n_row, across)
+        }
+        _ => false,
+    }
+}
+
 fn write_fraction_tracks(
     grid: &mut ConstructionGrid,
     vertical: bool,
@@ -1566,5 +1674,39 @@ mod tests {
         };
         let resolved = resolve_grid(&grid, 1.0, 1.0);
         assert_eq!(resolved.edges[0].meeting, TrackMeeting::Flush);
+    }
+
+    #[test]
+    fn removing_a_chosen_line_merges_tracks_and_cells() {
+        let mut grid = ConstructionGrid {
+            columns: vec![fraction(), fraction(), fraction()],
+            ..ConstructionGrid::default()
+        };
+        assert!(remove_axis_division_at(&mut grid, true, 0));
+        assert_eq!(grid.columns.len(), 2);
+        assert_eq!(grid.columns[0].measure, TrackMeasure::Fraction(2.0));
+        let resolved = resolve_grid(&grid, 3.0, 1.0);
+        assert_eq!(resolved.cells.len(), 2);
+        assert!((resolved.cells[0].right - 2.0).abs() < 1e-9);
+        assert!(!remove_axis_division_at(&mut grid, true, 1));
+    }
+
+    #[test]
+    fn joining_toward_left_and_up_uses_the_neighbour() {
+        let mut grid = ConstructionGrid {
+            columns: vec![fraction(), fraction()],
+            rows: vec![fraction(), fraction()],
+            ..ConstructionGrid::default()
+        };
+        assert!(merge_cell_toward(&mut grid, 1, 0, "left"));
+        assert_eq!(resolve_grid(&grid, 1.0, 1.0).cells.len(), 3);
+        assert!(!merge_cell_toward(&mut grid, 0, 1, "up"));
+        let mut fresh = ConstructionGrid {
+            columns: vec![fraction(), fraction()],
+            rows: vec![fraction(), fraction()],
+            ..ConstructionGrid::default()
+        };
+        assert!(merge_cell_toward(&mut fresh, 1, 1, "up"));
+        assert_eq!(resolve_grid(&fresh, 1.0, 1.0).cells.len(), 3);
     }
 }
