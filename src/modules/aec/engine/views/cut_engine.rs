@@ -510,6 +510,41 @@ fn cut_wall_with_segment(
                         counter,
                     )?;
                     opening_details_emitted = true;
+                    let leaf_intervals: Vec<(f64, f64)> = grid
+                        .layout(op.width, op.height, op.kind)
+                        .map(|cells| {
+                            cells
+                                .iter()
+                                .filter(|cell| {
+                                    (cell.cell.hinge.is_some()
+                                        || cell.cell.kind
+                                            == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf)
+                                        && local_x >= cell.left + op.width * 0.5 - EPS
+                                        && local_x <= cell.right + op.width * 0.5 + EPS
+                                })
+                                .map(|cell| {
+                                    (
+                                        wall.base_z + op.sill_height + cell.bottom,
+                                        wall.base_z + op.sill_height + cell.top,
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    emit_opening_leaf_cut(
+                        op,
+                        wall,
+                        &leaf_intervals,
+                        &style.parts,
+                        opening_center_u,
+                        exterior_u,
+                        interior_u,
+                        (wall_u_min, wall_u_max),
+                        model_view,
+                        ctx,
+                        primitives,
+                        counter,
+                    )?;
                 }
             }
 
@@ -968,6 +1003,84 @@ fn clip_polygon_to_bounds(
         points = clipped;
     }
     points
+}
+
+/// Leaf frame in the construction section. The leaf sits on the swing side
+/// of the fixed frame and overlaps it across the wall by `rebate_overlap`
+/// (same rule as the 3D model); doors cut as a solid plate, windows as
+/// bottom and top rails.
+fn emit_opening_leaf_cut(
+    op: &CollectedOpening,
+    wall: &CollectedWall,
+    leaf_intervals: &[(f64, f64)],
+    parts: &crate::modules::aec::engine::opening_style::OpeningParts,
+    opening_center_u: f64,
+    exterior_u: f64,
+    interior_u: f64,
+    wall_bounds: (f64, f64),
+    model_view: &ModelView,
+    ctx: &ViewStyleContext,
+    primitives: &mut Vec<DerivedPrimitive>,
+    counter: &mut u32,
+) -> Result<(), ValidationError> {
+    let leaf = &parts.leaf_frame;
+    if !leaf.enabled || leaf.face_width <= EPS || leaf_intervals.is_empty() {
+        return Ok(());
+    }
+    let style = resolve_opening_component_cut_style(ctx, op, OpeningLookRole::Leaf);
+    let frame_section = resolve_opening_section(
+        ctx.style_library,
+        parts.fixed_frame.profile_id.as_deref(),
+        parts.fixed_frame.face_width,
+        parts.fixed_frame.wall_depth,
+    );
+    let leaf_section = resolve_opening_section(
+        ctx.style_library,
+        leaf.profile_id.as_deref(),
+        leaf.face_width,
+        leaf.depth,
+    );
+    if leaf_section.depth <= EPS {
+        return Ok(());
+    }
+    let inward = if interior_u >= exterior_u { 1.0 } else { -1.0 };
+    let frame_center = opening_center_u + parts.fixed_frame.axis_offset;
+    let y = leaf.depth_center(
+        0.0,
+        frame_section.depth,
+        leaf_section.depth,
+        op.swing_side,
+    );
+    let center_u = frame_center + inward * y;
+    let (u0, u1) = (
+        center_u - leaf_section.depth * 0.5,
+        center_u + leaf_section.depth * 0.5,
+    );
+    let clip = (wall_bounds.0, wall_bounds.1);
+    let (u0, u1) = (u0.max(clip.0), u1.min(clip.1));
+    let face = leaf_section.face.max(0.0);
+    for &(sill, head) in leaf_intervals {
+        let rails: Vec<(f64, f64)> = if op.kind == OpeningKind::Door {
+            vec![(sill, head)]
+        } else {
+            let rail = face.min((head - sill) * 0.5);
+            vec![(sill, sill + rail), (head - rail, head)]
+        };
+        for (z0, z1) in rails {
+            emit_opening_section_region(
+                op,
+                wall,
+                model_view,
+                primitives,
+                counter,
+                (u0, u1, z0, z1),
+                PrimitiveRole::CutBoundary,
+                FeatureKey::OpeningHead,
+                style.clone(),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Emits section components from their absolute style dimensions.
@@ -2130,6 +2243,42 @@ mod tests {
         let triangle_bounds = bounds(triangle_frame).expect("triangle is a section region");
         assert!((triangle_bounds.1 - triangle_bounds.0 - 0.05).abs() < 1e-9);
         assert!((triangle_bounds.3 - triangle_bounds.2 - 0.07).abs() < 1e-9);
+
+        let mut leaf_primitives = Vec::new();
+        let mut leaf_counter = 0;
+        emit_opening_leaf_cut(
+            &opening,
+            &wall,
+            &[(0.8, 2.2)],
+            &style.parts,
+            1.0,
+            1.15,
+            0.85,
+            (0.85, 1.15),
+            &model_view,
+            &ctx,
+            &mut leaf_primitives,
+            &mut leaf_counter,
+        )
+        .unwrap();
+        assert!(!leaf_primitives.is_empty(), "leaf must appear in the section");
+        let leaf_depth = style.parts.leaf_frame.depth;
+        let leaf_regions: Vec<_> = leaf_primitives.iter().filter_map(&bounds).collect();
+        assert!(
+            leaf_regions
+                .iter()
+                .all(|(u0, u1, _, _)| (u1 - u0 - leaf_depth).abs() < 1e-9)
+        );
+        // The leaf overlaps the fixed frame across the wall by the rebate.
+        let frame_depth = style.parts.fixed_frame.wall_depth;
+        // Exterior swing, exterior at larger u: the leaf's interior edge lies
+        // `rebate_overlap` inside the frame's exterior face.
+        let (u0, _, _, _) = leaf_regions[0];
+        let frame_exterior_face = 1.0 + frame_depth * 0.5;
+        assert!(
+            (u0 - (frame_exterior_face - style.parts.leaf_frame.rebate_overlap)).abs() < 1e-9,
+            "leaf starts at {u0}, frame face {frame_exterior_face}"
+        );
 
         let mut sill_profile_style = style.clone();
         sill_profile_style.parts.exterior_sill.profile_id = Some("sill_section_triangle".into());
