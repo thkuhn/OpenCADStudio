@@ -1642,8 +1642,7 @@ pub fn preview_baked_paths_for_mode_with_library(
             } else {
                 fixed_frame_section.face
             };
-            let overlap = style.parts.leaf_frame.rebate_overlap.max(0.0)
-                + style.parts.leaf_frame.lateral_overlap.max(0.0);
+            let overlap = style.parts.leaf_frame.lateral_overlap.max(0.0);
             let leaf_cells = crate::modules::aec::engine::opening_display::leaf_cells_with_bar_offsets(
                 &style.grid,
                 width,
@@ -1715,7 +1714,12 @@ pub fn preview_baked_paths_for_mode_with_library(
                         leaf_height,
                         leaf_frame_section.face,
                         leaf_frame_section.depth,
-                        style.parts.leaf_frame.depth_offset,
+                        style.parts.leaf_frame.depth_center(
+                            0.0,
+                            fixed_frame_section.depth,
+                            leaf_frame_section.depth,
+                            swing,
+                        ),
                         pivot_x,
                         cell_angle,
                         operation,
@@ -1788,7 +1792,12 @@ pub fn preview_baked_paths_for_mode_with_library(
                         leaf_height,
                         leaf_frame_section.face,
                         leaf_frame_section.depth,
-                        style.parts.leaf_frame.depth_offset,
+                        style.parts.leaf_frame.depth_center(
+                            0.0,
+                            fixed_frame_section.depth,
+                            leaf_frame_section.depth,
+                            swing,
+                        ),
                         pivot_x,
                         cell_angle,
                         operation,

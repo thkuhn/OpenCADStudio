@@ -586,10 +586,33 @@ impl Default for LeafFrameDimensions {
             profile_id: None,
             face_width: 0.04,
             depth: 0.06,
-            rebate_overlap: 0.01,
-            lateral_overlap: 0.0,
+            rebate_overlap: 0.02,
+            lateral_overlap: 0.04,
             depth_offset: 0.0,
         }
+    }
+}
+
+impl LeafFrameDimensions {
+    /// Wall-depth coordinate of the leaf's mid-plane. The leaf sits on the
+    /// swing side of the fixed frame and overlaps it by `rebate_overlap`
+    /// across the wall; `depth_offset` is an extra manual shift.
+    pub fn depth_center(
+        &self,
+        frame_axis_offset: f64,
+        frame_depth: f64,
+        leaf_depth: f64,
+        swing: SwingSide,
+    ) -> f64 {
+        let out = match swing {
+            SwingSide::Exterior => -1.0,
+            SwingSide::Interior => 1.0,
+        };
+        let overlap = self
+            .rebate_overlap
+            .clamp(0.0, frame_depth.min(leaf_depth).max(0.0));
+        let face = frame_axis_offset + out * frame_depth * 0.5;
+        face - out * overlap + out * leaf_depth * 0.5 + self.depth_offset
     }
 }
 

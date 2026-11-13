@@ -396,7 +396,9 @@ pub(crate) fn build_opening_leaf_components_3d(
         crate::modules::aec::engine::construction_grid::TrackEnd::Start => swing_sign * opening_angle_deg.to_radians(),
         crate::modules::aec::engine::construction_grid::TrackEnd::End => -swing_sign * opening_angle_deg.to_radians(),
     };
-    let pivot = [pivot_x, depth_offset, 0.0];
+    // Hinge axis on the leaf edge, at the face on the swing side, so the
+    // hinge-side edge swings away from the jamb instead of into it.
+    let pivot = [pivot_x, depth_offset + swing_sign * leaf_half_depth, 0.0];
     let leaf = if ang.abs() > 1e-6 {
         crate::scene::model::solid_model::turned(&leaf, 2, ang, pivot)?
     } else {

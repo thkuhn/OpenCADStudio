@@ -106,8 +106,9 @@ fn leaf_cell_offsets_reach_all_rendered_frame_sides_and_keep_band_pivots() {
     assert!((cell.right - 0.55).abs() < 1e-9);
     assert!((cell.bottom - 0.05).abs() < 1e-9);
     assert!((cell.top - 1.45).abs() < 1e-9);
-    assert!((cell.pivot_start - -0.52).abs() < 1e-9);
-    assert!((cell.pivot_end - 0.52).abs() < 1e-9);
+    // The hinge axis sits on the leaf's own edges.
+    assert!((cell.pivot_start - -0.55).abs() < 1e-9);
+    assert!((cell.pivot_end - 0.55).abs() < 1e-9);
 
     let door = leaf_cells_with_bar_offsets(
         &ConstructionGrid::default(),
@@ -156,10 +157,10 @@ fn leaf_glazing_rotates_about_the_same_band_side_in_the_leaf_depth() {
         assert!((leaf_center[axis] - glass_center[axis]).abs() < 1e-5);
     }
     assert!((leaf_center[1] - depth_offset).abs() > 0.1);
-    let radius = ((leaf_center[0] - pivot_x).powi(2)
-        + (leaf_center[1] - depth_offset).powi(2))
-    .sqrt();
-    assert!((radius - 0.31).abs() < 1e-5);
+    // The hinge axis sits on the swing-side face of the leaf (exterior: -y).
+    let pivot_y = depth_offset - 0.025;
+    let radius = ((leaf_center[0] - pivot_x).powi(2) + (leaf_center[1] - pivot_y).powi(2)).sqrt();
+    assert!((radius - (0.31f64.powi(2) + 0.025f64.powi(2)).sqrt()).abs() < 1e-5);
 }
 
 #[test]
@@ -1583,7 +1584,7 @@ fn nested_grid_bakes_an_inner_post_and_one_leaf_per_child() {
     );
     assert_eq!(posts.len(), 1);
     assert!((posts[0].points[0].0).abs() < 1e-9);
-    let leaves = bake_grid_leaf_lines(&grid, params);
+    let leaves = bake_grid_leaf_lines(&grid, params, 0.06, 0.04, 0.04);
     assert_eq!(leaves.len(), 2);
 }
 

@@ -191,7 +191,13 @@ pub fn bake_opening_representation(
         ));
     }
     if slot_enabled(OpeningComponentSlot::Leaf2D) {
-        paths.extend(bake_grid_leaf_lines(grid, params));
+        paths.extend(bake_grid_leaf_lines(
+            grid,
+            params,
+            fixed_frame_section.face,
+            leaf_frame_section.face,
+            parts.leaf_frame.lateral_overlap.max(0.0),
+        ));
     }
     if slot_enabled(OpeningComponentSlot::Glazing2D) {
         paths.extend(bake_grid_glazing_lines(
@@ -224,7 +230,7 @@ pub fn bake_opening_representation(
         paths.extend(bake_grid_elevation_schema(
             grid,
             params,
-            (parts.leaf_frame.rebate_overlap + parts.leaf_frame.lateral_overlap).max(0.0),
+            parts.leaf_frame.lateral_overlap.max(0.0),
         ));
     }
     if slot_enabled(OpeningComponentSlot::ElevationMuntins2D) {
@@ -236,6 +242,25 @@ pub fn bake_opening_representation(
             &division_fallback,
             &leaf_frame_section,
         ));
+    }
+    // The leaf sits on the swing side of the fixed frame (see
+    // `LeafFrameDimensions::depth_center`); its plan line and swing glyph
+    // follow that plane instead of the wall mid-plane.
+    let leaf_y = parts.leaf_frame.depth_center(
+        0.0,
+        fixed_frame_section.depth,
+        leaf_frame_section.depth,
+        params.swing_side,
+    );
+    for baked in &mut paths {
+        if matches!(
+            baked.slot,
+            OpeningComponentSlot::Leaf2D | OpeningComponentSlot::Swing2D
+        ) {
+            for point in &mut baked.points {
+                point.1 += leaf_y;
+            }
+        }
     }
     paths.retain(|path| {
         path.resolved_look_role().map_or(true, |role| {
@@ -531,10 +556,29 @@ pub(super) fn unclosed_section_outline(section: &ResolvedSection) -> &[(f64, f64
     }
 }
 
-pub(super) fn bake_grid_leaf_lines(grid: &ConstructionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
-    let cells = flatten_resolved_cells(grid, params.width, params.height);
+pub(super) fn bake_grid_leaf_lines(
+    grid: &ConstructionGrid,
+    params: OpeningBakeParams,
+    frame_face: f64,
+    leaf_face: f64,
+    overlap: f64,
+) -> Vec<BakedPath> {
+    // Same leaf edges as the 3D model: the leaf overlaps the fixed frame
+    // laterally by `overlap`.
+    let cells = leaf_cells_with_bar_offsets(
+        grid,
+        params.width,
+        params.height,
+        frame_face,
+        None,
+        leaf_face,
+        overlap,
+        true,
+        params.kind == OpeningKind::Door,
+    );
     let mut paths = Vec::new();
-    for cell in cells {
+    for geo in cells {
+        let cell = &geo.cell;
         if !matches!(
             cell.cell.fill,
             crate::modules::aec::engine::construction_grid::CellFill::Door
@@ -542,8 +586,9 @@ pub(super) fn bake_grid_leaf_lines(grid: &ConstructionGrid, params: OpeningBakeP
         ) {
             continue;
         }
-        let center_x = (cell.left + cell.right) * 0.5;
-        let cell_width = cell.right - cell.left;
+        let (left, right) = (geo.left, geo.right);
+        let center_x = (left + right) * 0.5;
+        let cell_width = right - left;
         if params.kind == OpeningKind::Door {
             let hinge = cell.cell.operation.unwrap_or(params.hinge);
             let mut cell_params = params;
@@ -559,10 +604,10 @@ pub(super) fn bake_grid_leaf_lines(grid: &ConstructionGrid, params: OpeningBakeP
             );
             let start_x = match hinge.bearing() {
                 crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
-                    cell.left + params.frame_thickness * 0.5
+                    left + params.frame_thickness * 0.5
                 }
                 crate::modules::aec::engine::construction_grid::TrackEnd::End => {
-                    cell.right - params.frame_thickness * 0.5
+                    right - params.frame_thickness * 0.5
                 }
             };
             paths.push(path(
@@ -574,7 +619,7 @@ pub(super) fn bake_grid_leaf_lines(grid: &ConstructionGrid, params: OpeningBakeP
         } else {
             paths.push(path(
                 OpeningComponentSlot::Leaf2D,
-                vec![(cell.left, 0.0), (cell.right, 0.0)],
+                vec![(left, 0.0), (right, 0.0)],
                 false,
                 false,
             ));
@@ -1068,9 +1113,10 @@ pub(super) fn bake_grid_elevation_schema(
                     TrackEnd::Start => (left, right),
                     TrackEnd::End => (right, left),
                 };
+                // Apex on the strike side, open side at the hinge.
                 paths.push(path(
                     slot,
-                    vec![(strike_x, bottom), (hinge_x, mid_z), (strike_x, top)],
+                    vec![(hinge_x, bottom), (strike_x, mid_z), (hinge_x, top)],
                     false,
                     false,
                 ));
@@ -1655,8 +1701,10 @@ pub(super) fn collect_leaf_cells_with_bar_offsets(
                 right,
                 bottom,
                 top,
-                pivot_start: left_bar.map_or(cell.left + offset_x, |bar| bar.high),
-                pivot_end: right_bar.map_or(cell.right + offset_x, |bar| bar.low),
+                // The hinge axis sits on the leaf's own edge, which already
+                // includes the lateral overlap into the fixed frame.
+                pivot_start: left,
+                pivot_end: right,
             });
         }
     }

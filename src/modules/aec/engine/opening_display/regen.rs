@@ -600,9 +600,7 @@ fn emit_leaf_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
                     OpeningLookRole::Division,
                     library,
                 );
-            let overlap = (style.parts.leaf_frame.rebate_overlap.max(0.0)
-                + style.parts.leaf_frame.lateral_overlap.max(0.0))
-                .max(0.0);
+            let overlap = style.parts.leaf_frame.lateral_overlap.max(0.0);
             let cells = leaf_cells_with_bar_offsets(
                 grid,
                 opening.width,
@@ -655,7 +653,12 @@ fn emit_leaf_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
                     height,
                     leaf_frame_section.face,
                     leaf_frame_section.depth,
-                    style.parts.leaf_frame.depth_offset,
+                    style.parts.leaf_frame.depth_center(
+                            0.0,
+                            fixed_frame_section.depth,
+                            leaf_frame_section.depth,
+                            swing,
+                        ),
                     pivot_x,
                     angle,
                     operation,
@@ -759,8 +762,7 @@ fn emit_glazing_3d(scene: &mut Scene, ctx: &RegenCtx, b: &Body3d) {
                     fixed_frame_section.face
                 };
                 let overlap = if leaf_here {
-                    (style.parts.leaf_frame.rebate_overlap + style.parts.leaf_frame.lateral_overlap)
-                        .max(0.0)
+                    style.parts.leaf_frame.lateral_overlap.max(0.0)
                 } else {
                     0.0
                 };

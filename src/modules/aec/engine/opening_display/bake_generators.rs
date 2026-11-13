@@ -795,19 +795,20 @@ pub(super) fn bake_elevation_swing_triangle(
     let mid_h = (inset_bot + inset_top) * 0.5;
 
     match p.hinge.bearing() {
+        // Apex on the strike side, open side at the hinge.
         crate::modules::aec::engine::construction_grid::TrackEnd::Start => {
             let pts = vec![
-                (inset_w, inset_bot),
-                (-inset_w, mid_h),
-                (inset_w, inset_top),
+                (-inset_w, inset_bot),
+                (inset_w, mid_h),
+                (-inset_w, inset_top),
             ];
             vec![path(slot, pts, false, false)]
         }
         crate::modules::aec::engine::construction_grid::TrackEnd::End => {
             let pts = vec![
-                (-inset_w, inset_bot),
-                (inset_w, mid_h),
-                (-inset_w, inset_top),
+                (inset_w, inset_bot),
+                (-inset_w, mid_h),
+                (inset_w, inset_top),
             ];
             vec![path(slot, pts, false, false)]
         }
