@@ -1048,6 +1048,29 @@ pub(super) fn plan_operation_schema(
             false,
             false,
         )],
+        // Horizontal axis: the leaf tilts about a line across the cell, so the
+        // plan shows the leaf edge across the wall at both cell sides.
+        LeafOperation::PivotHorizontal { .. } => vec![
+            path(
+                slot,
+                vec![(cell.left, params.wall_y_min), (cell.left, params.wall_y_max)],
+                false,
+                false,
+            ),
+            path(
+                slot,
+                vec![(cell.right, params.wall_y_min), (cell.right, params.wall_y_max)],
+                false,
+                false,
+            ),
+        ],
+        // Vertical travel is invisible in plan; mark the cell with its centre line.
+        LeafOperation::SlideVertical { .. } => vec![path(
+            slot,
+            vec![(cell.left, 0.0), (cell.right, 0.0)],
+            false,
+            false,
+        )],
         LeafOperation::Slide { direction } | LeafOperation::Fold { stack: direction } => {
             let (from, to) = match direction {
                 TrackEnd::Start => (cell.right, cell.left),
@@ -1140,6 +1163,39 @@ pub(super) fn bake_grid_elevation_schema(
             LeafOperation::Pivot { .. } => {
                 paths.push(path(slot, vec![(mid_x, bottom), (mid_x, top)], false, false));
                 paths.push(path(slot, vec![(left, mid_z), (right, mid_z)], false, false));
+            }
+            // Horizontal pivot axis: axis line across the cell with arrows
+            // pointing out of the plane at both ends.
+            LeafOperation::PivotHorizontal { .. } => {
+                paths.push(path(slot, vec![(left, mid_z), (right, mid_z)], false, false));
+                let tip = (top - bottom) * 0.25;
+                paths.push(path(
+                    slot,
+                    vec![(left, mid_z), (mid_x, mid_z + tip), (right, mid_z)],
+                    false,
+                    false,
+                ));
+                paths.push(path(
+                    slot,
+                    vec![(left, mid_z), (mid_x, mid_z - tip), (right, mid_z)],
+                    false,
+                    false,
+                ));
+            }
+            LeafOperation::SlideVertical { direction } => {
+                // `Start` = down, `End` = up.
+                let (from, to) = match direction {
+                    TrackEnd::Start => (top, bottom),
+                    TrackEnd::End => (bottom, top),
+                };
+                paths.push(path(slot, vec![(mid_x, from), (mid_x, to)], false, false));
+                let head = (right - left) * 0.12;
+                paths.push(path(
+                    slot,
+                    vec![(mid_x - head, to - (to - from).signum() * head), (mid_x, to), (mid_x + head, to - (to - from).signum() * head)],
+                    false,
+                    false,
+                ));
             }
             LeafOperation::Slide { direction } | LeafOperation::Fold { stack: direction } => {
                 let (from, to) = match direction {

@@ -131,8 +131,19 @@ pub(super) fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a,
     } else if let Some(cell) = selected_resolved {
         let hinge_options = vec![
             ("".to_string(), tr!("aec", "opening-cell-style-default")),
-            ("Left".to_string(), t!("Left").to_string()),
-            ("Right".to_string(), t!("Right").to_string()),
+            ("TurnStart".to_string(), tr!("aec", "opening-op-turn-left")),
+            ("TurnEnd".to_string(), tr!("aec", "opening-op-turn-right")),
+            ("TiltTurnStart".to_string(), tr!("aec", "opening-op-tiltturn-left")),
+            ("TiltTurnEnd".to_string(), tr!("aec", "opening-op-tiltturn-right")),
+            ("Tilt".to_string(), tr!("aec", "opening-op-tilt")),
+            ("PivotStart".to_string(), tr!("aec", "opening-op-pivot-vertical")),
+            ("PivotHStart".to_string(), tr!("aec", "opening-op-pivot-horizontal")),
+            ("SlideStart".to_string(), tr!("aec", "opening-op-slide-left")),
+            ("SlideEnd".to_string(), tr!("aec", "opening-op-slide-right")),
+            ("SlideVEnd".to_string(), tr!("aec", "opening-op-slide-up")),
+            ("SlideVStart".to_string(), tr!("aec", "opening-op-slide-down")),
+            ("FoldStart".to_string(), tr!("aec", "opening-op-fold-left")),
+            ("FoldEnd".to_string(), tr!("aec", "opening-op-fold-right")),
         ];
         let hinge_value = hinge_options
             .iter()

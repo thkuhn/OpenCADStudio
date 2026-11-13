@@ -105,8 +105,14 @@ pub enum LeafOperation {
     Turn { side: TrackEnd },
     Tilt,
     TiltTurn { side: TrackEnd },
+    /// Pivot leaf on a vertical axis (`axis` = side the axis is shifted to).
     Pivot { axis: TrackEnd },
+    /// Pivot leaf on a horizontal axis.
+    PivotHorizontal { axis: TrackEnd },
+    /// Sliding leaf, horizontal travel.
     Slide { direction: TrackEnd },
+    /// Sliding leaf, vertical travel (`Start` = down, `End` = up).
+    SlideVertical { direction: TrackEnd },
     Fold { stack: TrackEnd },
 }
 
@@ -130,7 +136,9 @@ impl LeafOperation {
             Self::Turn { side }
             | Self::TiltTurn { side }
             | Self::Pivot { axis: side }
+            | Self::PivotHorizontal { axis: side }
             | Self::Slide { direction: side }
+            | Self::SlideVertical { direction: side }
             | Self::Fold { stack: side } => side,
             Self::Tilt => TrackEnd::Start,
         }
@@ -148,7 +156,13 @@ impl LeafOperation {
             Self::Pivot { axis } => Self::Pivot {
                 axis: axis.flipped(),
             },
+            Self::PivotHorizontal { axis } => Self::PivotHorizontal {
+                axis: axis.flipped(),
+            },
             Self::Slide { direction } => Self::Slide {
+                direction: direction.flipped(),
+            },
+            Self::SlideVertical { direction } => Self::SlideVertical {
                 direction: direction.flipped(),
             },
             Self::Fold { stack } => Self::Fold {
@@ -166,6 +180,10 @@ impl LeafOperation {
             Self::TiltTurn { side: TrackEnd::End } => "TiltTurnEnd",
             Self::Pivot { axis: TrackEnd::Start } => "PivotStart",
             Self::Pivot { axis: TrackEnd::End } => "PivotEnd",
+            Self::PivotHorizontal { axis: TrackEnd::Start } => "PivotHStart",
+            Self::PivotHorizontal { axis: TrackEnd::End } => "PivotHEnd",
+            Self::SlideVertical { direction: TrackEnd::Start } => "SlideVStart",
+            Self::SlideVertical { direction: TrackEnd::End } => "SlideVEnd",
             Self::Slide { direction: TrackEnd::Start } => "SlideStart",
             Self::Slide { direction: TrackEnd::End } => "SlideEnd",
             Self::Fold { stack: TrackEnd::Start } => "FoldStart",
@@ -181,6 +199,10 @@ impl LeafOperation {
             "TiltTurnEnd" => Self::TiltTurn { side: TrackEnd::End },
             "PivotStart" => Self::Pivot { axis: TrackEnd::Start },
             "PivotEnd" => Self::Pivot { axis: TrackEnd::End },
+            "PivotHStart" => Self::PivotHorizontal { axis: TrackEnd::Start },
+            "PivotHEnd" => Self::PivotHorizontal { axis: TrackEnd::End },
+            "SlideVStart" => Self::SlideVertical { direction: TrackEnd::Start },
+            "SlideVEnd" => Self::SlideVertical { direction: TrackEnd::End },
             "SlideStart" => Self::Slide { direction: TrackEnd::Start },
             "SlideEnd" => Self::Slide { direction: TrackEnd::End },
             "FoldStart" => Self::Fold { stack: TrackEnd::Start },
@@ -1322,6 +1344,27 @@ fn resolve_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_leaf_operation_round_trips_and_mirrors() {
+        for side in [TrackEnd::Start, TrackEnd::End] {
+            let all = [
+                LeafOperation::Turn { side },
+                LeafOperation::TiltTurn { side },
+                LeafOperation::Pivot { axis: side },
+                LeafOperation::PivotHorizontal { axis: side },
+                LeafOperation::Slide { direction: side },
+                LeafOperation::SlideVertical { direction: side },
+                LeafOperation::Fold { stack: side },
+            ];
+            for op in all {
+                assert_eq!(LeafOperation::from_str(op.as_str()), op, "{}", op.as_str());
+                assert_eq!(op.mirrored().mirrored(), op);
+                assert_ne!(op.mirrored(), op);
+            }
+        }
+        assert_eq!(LeafOperation::from_str("Tilt"), LeafOperation::Tilt);
+    }
 
     fn fraction() -> GridTrack {
         GridTrack {
